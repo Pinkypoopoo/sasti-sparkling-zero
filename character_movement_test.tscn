@@ -1,18 +1,154 @@
-[gd_scene format=3 uid="uid://6xsx2lt3qu6d"]
+[gd_scene load_steps=15 format=3 uid="uid://6xsx2lt3qu6d"]
 
-[ext_resource type="Script" uid="uid://cbjesut55x7n" path="res://character_body_3d.gd" id="1_21tq6"]
+[ext_resource type="Script" path="res://character_body_3d.gd" id="1_controller"]
+[ext_resource type="Script" path="res://gesture_combat.gd" id="2_combat"]
+[ext_resource type="Script" path="res://dev_studio.gd" id="3_dev"]
 
-[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_xi03r"]
+[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_1"]
+sky_top_color = Color(0.12, 0.2, 0.38, 1)
+sky_horizon_color = Color(0.6, 0.65, 0.72, 1)
+ground_horizon_color = Color(0.2, 0.22, 0.25, 1)
 
-[node name="character movement test" type="Node3D" unique_id=1079865124]
+[sub_resource type="Sky" id="Sky_1"]
+sky_material = SubResource("ProceduralSkyMaterial_1")
 
-[node name="CharacterBody3D" type="CharacterBody3D" parent="." unique_id=1226186145]
-script = ExtResource("1_21tq6")
+[sub_resource type="Environment" id="Environment_1"]
+background_mode = 2
+sky = SubResource("Sky_1")
+tonemap_mode = 2
+glow_enabled = true
 
-[node name="CollisionShape3D" type="CollisionShape3D" parent="CharacterBody3D" unique_id=1181839385]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.197007, 0)
-shape = SubResource("CapsuleShape3D_xi03r")
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_floor"]
+albedo_color = Color(0.08, 0.08, 0.1, 1)
+roughness = 0.8
+uv1_scale = Vector3(0.5, 0.5, 0.5)
+uv1_triplanar = true
 
-[node name="Camera3D" type="Camera3D" parent="CharacterBody3D" unique_id=2028898839]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.051988512, 2.0130196, 0.007039219)
-fov = 80.0
+[sub_resource type="BoxShape3D" id="BoxShape3D_floor"]
+size = Vector3(200, 1, 200)
+
+[sub_resource type="BoxMesh" id="BoxMesh_floor"]
+size = Vector3(200, 1, 200)
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_platform"]
+size = Vector3(14, 1, 14)
+
+[sub_resource type="BoxMesh" id="BoxMesh_platform"]
+size = Vector3(14, 1, 14)
+
+[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_capsule"]
+
+[sub_resource type="CapsuleMesh" id="CapsuleMesh_capsule"]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_dummy_ground"]
+albedo_color = Color(0.9, 0.65, 0.1, 1)
+emission_enabled = true
+emission = Color(0.9, 0.6, 0.1, 1)
+emission_energy_multiplier = 0.6
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_dummy_air"]
+albedo_color = Color(0.9, 0.15, 0.25, 1)
+emission_enabled = true
+emission = Color(0.95, 0.1, 0.2, 1)
+emission_energy_multiplier = 0.9
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_visor"]
+albedo_color = Color(0, 0.9, 1, 1)
+emission_enabled = true
+emission = Color(0, 0.85, 1, 1)
+emission_energy_multiplier = 2.0
+
+[sub_resource type="BoxMesh" id="BoxMesh_visor"]
+material = SubResource("StandardMaterial3D_visor")
+size = Vector3(0.6, 0.2, 0.2)
+
+[node name="Main" type="Node3D"]
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_1")
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+transform = Transform3D(-0.866025, -0.433013, 0.25, 0, 0.5, 0.866025, -0.5, 0.75, -0.433013, 0, 20, 0)
+shadow_enabled = true
+
+[node name="Arena" type="Node3D" parent="."]
+
+[node name="Floor" type="StaticBody3D" parent="Arena"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.5, 0)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Arena/Floor"]
+shape = SubResource("BoxShape3D_floor")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Arena/Floor"]
+mesh = SubResource("BoxMesh_floor")
+material_override = SubResource("StandardMaterial3D_floor")
+
+[node name="SkyPlatformLow" type="StaticBody3D" parent="Arena"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 20, 8, -20)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Arena/SkyPlatformLow"]
+shape = SubResource("BoxShape3D_platform")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Arena/SkyPlatformLow"]
+mesh = SubResource("BoxMesh_platform")
+
+[node name="TargetDummyGround" type="StaticBody3D" parent="Arena" groups=["lock_on_targets"]]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.5, -14)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Arena/TargetDummyGround"]
+shape = SubResource("CapsuleShape3D_capsule")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Arena/TargetDummyGround"]
+mesh = SubResource("CapsuleMesh_capsule")
+material_override = SubResource("StandardMaterial3D_dummy_ground")
+
+[node name="TargetDummyAir" type="StaticBody3D" parent="Arena" groups=["lock_on_targets"]]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 12, -25)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Arena/TargetDummyAir"]
+shape = SubResource("CapsuleShape3D_capsule")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Arena/TargetDummyAir"]
+mesh = SubResource("CapsuleMesh_capsule")
+material_override = SubResource("StandardMaterial3D_dummy_air")
+
+[node name="Player" type="CharacterBody3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0)
+script = ExtResource("1_controller")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Player"]
+shape = SubResource("CapsuleShape3D_capsule")
+
+[node name="VisualRoot" type="Node3D" parent="Player"]
+
+[node name="Body" type="MeshInstance3D" parent="Player/VisualRoot"]
+mesh = SubResource("CapsuleMesh_capsule")
+
+[node name="Visor" type="MeshInstance3D" parent="Player/VisualRoot"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.5, -0.4)
+mesh = SubResource("BoxMesh_visor")
+material_override = SubResource("StandardMaterial3D_visor")
+
+[node name="CameraPivot" type="Node3D" parent="Player"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.7, 0)
+
+[node name="SpringArm3D" type="SpringArm3D" parent="Player/CameraPivot"]
+spring_length = 4.0
+margin = 0.1
+
+[node name="Camera3D" type="Camera3D" parent="Player/CameraPivot/SpringArm3D"]
+current = true
+
+[node name="GestureCombat" type="Node" parent="Player"]
+script = ExtResource("2_combat")
+
+[node name="CanvasLayer" type="CanvasLayer" parent="Player"]
+
+[node name="DevStudio" type="Control" parent="Player/CanvasLayer"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("3_dev")
