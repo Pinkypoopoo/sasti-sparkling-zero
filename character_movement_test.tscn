@@ -1,154 +1,239 @@
-[gd_scene load_steps=15 format=3 uid="uid://6xsx2lt3qu6d"]
+[gd_scene load_steps=22 format=3 uid="uid://cx8mvq1character"]
 
-[ext_resource type="Script" path="res://character_body_3d.gd" id="1_controller"]
+[ext_resource type="Script" path="res://character_body_3d.gd" id="1_player"]
 [ext_resource type="Script" path="res://gesture_combat.gd" id="2_combat"]
-[ext_resource type="Script" path="res://dev_studio.gd" id="3_dev"]
+[ext_resource type="Script" path="res://dev_studio.gd" id="3_studio"]
 
-[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_1"]
-sky_top_color = Color(0.12, 0.2, 0.38, 1)
-sky_horizon_color = Color(0.6, 0.65, 0.72, 1)
-ground_horizon_color = Color(0.2, 0.22, 0.25, 1)
+[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_twilight"]
+sky_top_color = Color(0.06, 0.08, 0.14, 1)
+sky_horizon_color = Color(0.18, 0.16, 0.22, 1)
+ground_bottom_color = Color(0.02, 0.02, 0.04, 1)
+ground_horizon_color = Color(0.12, 0.11, 0.16, 1)
 
-[sub_resource type="Sky" id="Sky_1"]
-sky_material = SubResource("ProceduralSkyMaterial_1")
+[sub_resource type="Sky" id="Sky_env"]
+sky_material = SubResource("ProceduralSkyMaterial_twilight")
 
-[sub_resource type="Environment" id="Environment_1"]
+[sub_resource type="Environment" id="Environment_abyss"]
 background_mode = 2
-sky = SubResource("Sky_1")
-tonemap_mode = 2
-glow_enabled = true
+sky = SubResource("Sky_env")
+ambient_light_source = 3
+ambient_light_color = Color(0.15, 0.16, 0.22, 1)
+ambient_light_sky_contribution = 0.5
+tonemap_mode = 3
+fog_enabled = true
+fog_light_color = Color(0.14, 0.14, 0.2, 1)
+fog_density = 0.003
+fog_sky_affect = 0.2
+glow_enabled = false
 
 [sub_resource type="StandardMaterial3D" id="StandardMaterial3D_floor"]
-albedo_color = Color(0.08, 0.08, 0.1, 1)
+albedo_color = Color(0.08, 0.09, 0.11, 1)
+metallic = 0.2
 roughness = 0.8
-uv1_scale = Vector3(0.5, 0.5, 0.5)
-uv1_triplanar = true
-
-[sub_resource type="BoxShape3D" id="BoxShape3D_floor"]
-size = Vector3(200, 1, 200)
+uv1_scale = Vector3(100, 100, 100)
 
 [sub_resource type="BoxMesh" id="BoxMesh_floor"]
-size = Vector3(200, 1, 200)
+material = SubResource("StandardMaterial3D_floor")
+size = Vector3(400, 1, 400)
 
-[sub_resource type="BoxShape3D" id="BoxShape3D_platform"]
-size = Vector3(14, 1, 14)
+[sub_resource type="BoxShape3D" id="BoxShape3D_floor"]
+size = Vector3(400, 1, 400)
 
-[sub_resource type="BoxMesh" id="BoxMesh_platform"]
-size = Vector3(14, 1, 14)
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_stone"]
+albedo_color = Color(0.12, 0.13, 0.16, 1)
+metallic = 0.1
+roughness = 0.9
 
-[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_capsule"]
+[sub_resource type="BoxMesh" id="BoxMesh_spire"]
+material = SubResource("StandardMaterial3D_stone")
+size = Vector3(30, 160, 30)
 
-[sub_resource type="CapsuleMesh" id="CapsuleMesh_capsule"]
+[sub_resource type="BoxShape3D" id="BoxShape3D_spire"]
+size = Vector3(30, 160, 30)
 
-[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_dummy_ground"]
-albedo_color = Color(0.9, 0.65, 0.1, 1)
-emission_enabled = true
-emission = Color(0.9, 0.6, 0.1, 1)
-emission_energy_multiplier = 0.6
+[sub_resource type="BoxMesh" id="BoxMesh_summit"]
+material = SubResource("StandardMaterial3D_stone")
+size = Vector3(30, 2, 30)
 
-[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_dummy_air"]
-albedo_color = Color(0.9, 0.15, 0.25, 1)
-emission_enabled = true
-emission = Color(0.95, 0.1, 0.2, 1)
-emission_energy_multiplier = 0.9
+[sub_resource type="BoxShape3D" id="BoxShape3D_summit"]
+size = Vector3(30, 2, 30)
 
-[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_visor"]
-albedo_color = Color(0, 0.9, 1, 1)
-emission_enabled = true
-emission = Color(0, 0.85, 1, 1)
-emission_energy_multiplier = 2.0
+[sub_resource type="BoxMesh" id="BoxMesh_arch"]
+material = SubResource("StandardMaterial3D_stone")
+size = Vector3(8, 45, 8)
 
-[sub_resource type="BoxMesh" id="BoxMesh_visor"]
-material = SubResource("StandardMaterial3D_visor")
-size = Vector3(0.6, 0.2, 0.2)
+[sub_resource type="BoxShape3D" id="BoxShape3D_arch"]
+size = Vector3(8, 45, 8)
+
+[sub_resource type="BoxMesh" id="BoxMesh_sanctum_low"]
+material = SubResource("StandardMaterial3D_stone")
+size = Vector3(16, 1, 16)
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_sanctum_low"]
+size = Vector3(16, 1, 16)
+
+[sub_resource type="BoxMesh" id="BoxMesh_sanctum_high"]
+material = SubResource("StandardMaterial3D_stone")
+size = Vector3(20, 1, 20)
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_sanctum_high"]
+size = Vector3(20, 1, 20)
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_dummy"]
+albedo_color = Color(0.45, 0.18, 0.18, 1)
+metallic = 0.1
+roughness = 0.7
+
+[sub_resource type="CapsuleMesh" id="CapsuleMesh_dummy"]
+material = SubResource("StandardMaterial3D_dummy")
+radius = 0.5
+height = 2.0
+
+[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_dummy"]
+radius = 0.5
+height = 2.0
+
+[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_player"]
+radius = 0.5
+height = 1.8
+
+[sub_resource type="CapsuleMesh" id="CapsuleMesh_player_body"]
+radius = 0.45
+height = 1.75
+
+[sub_resource type="BoxMesh" id="BoxMesh_player_visor"]
+size = Vector3(0.35, 0.12, 0.25)
 
 [node name="Main" type="Node3D"]
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
-environment = SubResource("Environment_1")
+environment = SubResource("Environment_abyss")
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
-transform = Transform3D(-0.866025, -0.433013, 0.25, 0, 0.5, 0.866025, -0.5, 0.75, -0.433013, 0, 20, 0)
+transform = Transform3D(0.707107, -0.40558, 0.579228, 0, 0.819152, 0.573576, -0.707107, -0.40558, 0.579228, 0, 80, 0)
+light_color = Color(0.9, 0.88, 0.95, 1)
+light_energy = 1.2
 shadow_enabled = true
 
-[node name="Arena" type="Node3D" parent="."]
-
-[node name="Floor" type="StaticBody3D" parent="Arena"]
+[node name="Floor" type="StaticBody3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.5, 0)
 
-[node name="CollisionShape3D" type="CollisionShape3D" parent="Arena/Floor"]
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Floor"]
 shape = SubResource("BoxShape3D_floor")
 
-[node name="MeshInstance3D" type="MeshInstance3D" parent="Arena/Floor"]
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Floor"]
 mesh = SubResource("BoxMesh_floor")
-material_override = SubResource("StandardMaterial3D_floor")
 
-[node name="SkyPlatformLow" type="StaticBody3D" parent="Arena"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 20, 8, -20)
+[node name="AbyssalSpire" type="StaticBody3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 80, -140)
 
-[node name="CollisionShape3D" type="CollisionShape3D" parent="Arena/SkyPlatformLow"]
-shape = SubResource("BoxShape3D_platform")
+[node name="CollisionShape3D" type="CollisionShape3D" parent="AbyssalSpire"]
+shape = SubResource("BoxShape3D_spire")
 
-[node name="MeshInstance3D" type="MeshInstance3D" parent="Arena/SkyPlatformLow"]
-mesh = SubResource("BoxMesh_platform")
+[node name="MeshInstance3D" type="MeshInstance3D" parent="AbyssalSpire"]
+mesh = SubResource("BoxMesh_spire")
 
-[node name="TargetDummyGround" type="StaticBody3D" parent="Arena" groups=["lock_on_targets"]]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.5, -14)
+[node name="SpireSummitPlatform" type="StaticBody3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 160, -140)
 
-[node name="CollisionShape3D" type="CollisionShape3D" parent="Arena/TargetDummyGround"]
-shape = SubResource("CapsuleShape3D_capsule")
+[node name="CollisionShape3D" type="CollisionShape3D" parent="SpireSummitPlatform"]
+shape = SubResource("BoxShape3D_summit")
 
-[node name="MeshInstance3D" type="MeshInstance3D" parent="Arena/TargetDummyGround"]
-mesh = SubResource("CapsuleMesh_capsule")
-material_override = SubResource("StandardMaterial3D_dummy_ground")
+[node name="MeshInstance3D" type="MeshInstance3D" parent="SpireSummitPlatform"]
+mesh = SubResource("BoxMesh_summit")
 
-[node name="TargetDummyAir" type="StaticBody3D" parent="Arena" groups=["lock_on_targets"]]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 12, -25)
+[node name="RuinedGreatArchLeft" type="StaticBody3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -35, 22.5, -70)
 
-[node name="CollisionShape3D" type="CollisionShape3D" parent="Arena/TargetDummyAir"]
-shape = SubResource("CapsuleShape3D_capsule")
+[node name="CollisionShape3D" type="CollisionShape3D" parent="RuinedGreatArchLeft"]
+shape = SubResource("BoxShape3D_arch")
 
-[node name="MeshInstance3D" type="MeshInstance3D" parent="Arena/TargetDummyAir"]
-mesh = SubResource("CapsuleMesh_capsule")
-material_override = SubResource("StandardMaterial3D_dummy_air")
+[node name="MeshInstance3D" type="MeshInstance3D" parent="RuinedGreatArchLeft"]
+mesh = SubResource("BoxMesh_arch")
+
+[node name="RuinedGreatArchRight" type="StaticBody3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 35, 22.5, -70)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="RuinedGreatArchRight"]
+shape = SubResource("BoxShape3D_arch")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="RuinedGreatArchRight"]
+mesh = SubResource("BoxMesh_arch")
+
+[node name="SkySanctumLow" type="StaticBody3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 24, 10, -24)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="SkySanctumLow"]
+shape = SubResource("BoxShape3D_sanctum_low")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="SkySanctumLow"]
+mesh = SubResource("BoxMesh_sanctum_low")
+
+[node name="SkySanctumHigh" type="StaticBody3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -28, 32, -55)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="SkySanctumHigh"]
+shape = SubResource("BoxShape3D_sanctum_high")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="SkySanctumHigh"]
+mesh = SubResource("BoxMesh_sanctum_high")
+
+[node name="TargetDummyGround" type="CharacterBody3D" parent="." groups=["lock_on_targets"]]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, -14)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="TargetDummyGround"]
+shape = SubResource("CapsuleShape3D_dummy")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="TargetDummyGround"]
+mesh = SubResource("CapsuleMesh_dummy")
+
+[node name="TargetDummyAir" type="CharacterBody3D" parent="." groups=["lock_on_targets"]]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 14, -28)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="TargetDummyAir"]
+shape = SubResource("CapsuleShape3D_dummy")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="TargetDummyAir"]
+mesh = SubResource("CapsuleMesh_dummy")
 
 [node name="Player" type="CharacterBody3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0)
-script = ExtResource("1_controller")
+script = ExtResource("1_player")
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="Player"]
-shape = SubResource("CapsuleShape3D_capsule")
+shape = SubResource("CapsuleShape3D_player")
 
 [node name="VisualRoot" type="Node3D" parent="Player"]
 
 [node name="Body" type="MeshInstance3D" parent="Player/VisualRoot"]
-mesh = SubResource("CapsuleMesh_capsule")
+mesh = SubResource("CapsuleMesh_player_body")
 
 [node name="Visor" type="MeshInstance3D" parent="Player/VisualRoot"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.5, -0.4)
-mesh = SubResource("BoxMesh_visor")
-material_override = SubResource("StandardMaterial3D_visor")
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.45, -0.4)
+mesh = SubResource("BoxMesh_player_visor")
 
 [node name="CameraPivot" type="Node3D" parent="Player"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.7, 0)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.4, 0)
 
 [node name="SpringArm3D" type="SpringArm3D" parent="Player/CameraPivot"]
 spring_length = 4.0
-margin = 0.1
+margin = 0.2
 
 [node name="Camera3D" type="Camera3D" parent="Player/CameraPivot/SpringArm3D"]
 current = true
+fov = 78.0
 
-[node name="GestureCombat" type="Node" parent="Player"]
+[node name="CombatManager" type="Node" parent="."]
 script = ExtResource("2_combat")
+player_node_path = NodePath("../Player")
 
-[node name="CanvasLayer" type="CanvasLayer" parent="Player"]
-
-[node name="DevStudio" type="Control" parent="Player/CanvasLayer"]
+[node name="DevStudio" type="Control" parent="."]
 layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-script = ExtResource("3_dev")
+script = ExtResource("3_studio")
+player_node_path = NodePath("../Player")
+combat_node_path = NodePath("../CombatManager")
