@@ -1,4 +1,4 @@
-[gd_scene load_steps=10 format=3 uid="uid://cx8mvq1character"]
+[gd_scene load_steps=22 format=3 uid="uid://cx8mvq1character"]
 
 [ext_resource type="Script" path="res://character_body_3d.gd" id="1_player"]
 [ext_resource type="Script" path="res://gesture_combat.gd" id="2_combat"]
@@ -6,6 +6,9 @@
 
 [sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_twilight"]
 sky_top_color = Color(0.06, 0.08, 0.14, 1)
+sky_horizon_color = Color(0.18, 0.16, 0.22, 1)
+ground_bottom_color = Color(0.02, 0.02, 0.04, 1)
+ground_horizon_color = Color(0.12, 0.11, 0.16, 1)
 
 [sub_resource type="Sky" id="Sky_env"]
 sky_material = SubResource("ProceduralSkyMaterial_twilight")
@@ -14,8 +17,12 @@ sky_material = SubResource("ProceduralSkyMaterial_twilight")
 background_mode = 2
 sky = SubResource("Sky_env")
 ambient_light_source = 3
+ambient_light_color = Color(0.15, 0.16, 0.22, 1)
 tonemap_mode = 3
 fog_enabled = true
+fog_light_color = Color(0.14, 0.14, 0.2, 1)
+fog_density = 0.003
+glow_enabled = false
 
 [sub_resource type="BoxShape3D" id="BoxShape3D_floor"]
 size = Vector3(400, 1, 400)
@@ -23,9 +30,54 @@ size = Vector3(400, 1, 400)
 [sub_resource type="BoxMesh" id="BoxMesh_floor"]
 size = Vector3(400, 1, 400)
 
+[sub_resource type="BoxShape3D" id="BoxShape3D_spire"]
+size = Vector3(30, 160, 30)
+
+[sub_resource type="BoxMesh" id="BoxMesh_spire"]
+size = Vector3(30, 160, 30)
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_summit"]
+size = Vector3(30, 2, 30)
+
+[sub_resource type="BoxMesh" id="BoxMesh_summit"]
+size = Vector3(30, 2, 30)
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_arch"]
+size = Vector3(8, 45, 8)
+
+[sub_resource type="BoxMesh" id="BoxMesh_arch"]
+size = Vector3(8, 45, 8)
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_sanctum_low"]
+size = Vector3(16, 1, 16)
+
+[sub_resource type="BoxMesh" id="BoxMesh_sanctum_low"]
+size = Vector3(16, 1, 16)
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_sanctum_high"]
+size = Vector3(20, 1, 20)
+
+[sub_resource type="BoxMesh" id="BoxMesh_sanctum_high"]
+size = Vector3(20, 1, 20)
+
+[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_dummy"]
+radius = 0.5
+height = 2.0
+
+[sub_resource type="CapsuleMesh" id="CapsuleMesh_dummy"]
+radius = 0.5
+height = 2.0
+
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_player"]
 radius = 0.5
 height = 1.8
+
+[sub_resource type="CapsuleMesh" id="CapsuleMesh_player"]
+radius = 0.45
+height = 1.75
+
+[sub_resource type="BoxMesh" id="BoxMesh_visor"]
+size = Vector3(0.35, 0.12, 0.25)
 
 [node name="Main" type="Node3D"]
 
@@ -33,7 +85,7 @@ height = 1.8
 environment = SubResource("Environment_abyss")
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 0.707, 0.707, 0, -0.707, 0.707, 0, 20, 0)
+transform = Transform3D(0.707, -0.406, 0.579, 0, 0.819, 0.574, -0.707, -0.406, 0.579, 0, 80, 0)
 shadow_enabled = true
 
 [node name="Floor" type="StaticBody3D" parent="."]
@@ -45,6 +97,78 @@ shape = SubResource("BoxShape3D_floor")
 [node name="MeshInstance3D" type="MeshInstance3D" parent="Floor"]
 mesh = SubResource("BoxMesh_floor")
 
+[node name="AbyssalSpire" type="StaticBody3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 80, -140)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="AbyssalSpire"]
+shape = SubResource("BoxShape3D_spire")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="AbyssalSpire"]
+mesh = SubResource("BoxMesh_spire")
+
+[node name="SpireSummitPlatform" type="StaticBody3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 160, -140)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="SpireSummitPlatform"]
+shape = SubResource("BoxShape3D_summit")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="SpireSummitPlatform"]
+mesh = SubResource("BoxMesh_summit")
+
+[node name="RuinedGreatArchLeft" type="StaticBody3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -35, 22.5, -70)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="RuinedGreatArchLeft"]
+shape = SubResource("BoxShape3D_arch")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="RuinedGreatArchLeft"]
+mesh = SubResource("BoxMesh_arch")
+
+[node name="RuinedGreatArchRight" type="StaticBody3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 35, 22.5, -70)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="RuinedGreatArchRight"]
+shape = SubResource("BoxShape3D_arch")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="RuinedGreatArchRight"]
+mesh = SubResource("BoxMesh_arch")
+
+[node name="SkySanctumLow" type="StaticBody3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 24, 10, -24)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="SkySanctumLow"]
+shape = SubResource("BoxShape3D_sanctum_low")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="SkySanctumLow"]
+mesh = SubResource("BoxMesh_sanctum_low")
+
+[node name="SkySanctumHigh" type="StaticBody3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -28, 32, -55)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="SkySanctumHigh"]
+shape = SubResource("BoxShape3D_sanctum_high")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="SkySanctumHigh"]
+mesh = SubResource("BoxMesh_sanctum_high")
+
+[node name="TargetDummyGround" type="CharacterBody3D" parent="." groups=["lock_on_targets"]]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, -14)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="TargetDummyGround"]
+shape = SubResource("CapsuleShape3D_dummy")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="TargetDummyGround"]
+mesh = SubResource("CapsuleMesh_dummy")
+
+[node name="TargetDummyAir" type="CharacterBody3D" parent="." groups=["lock_on_targets"]]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 14, -28)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="TargetDummyAir"]
+shape = SubResource("CapsuleShape3D_dummy")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="TargetDummyAir"]
+mesh = SubResource("CapsuleMesh_dummy")
+
 [node name="Player" type="CharacterBody3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0)
 script = ExtResource("1_player")
@@ -54,14 +178,23 @@ shape = SubResource("CapsuleShape3D_player")
 
 [node name="VisualRoot" type="Node3D" parent="Player"]
 
+[node name="Body" type="MeshInstance3D" parent="Player/VisualRoot"]
+mesh = SubResource("CapsuleMesh_player")
+
+[node name="Visor" type="MeshInstance3D" parent="Player/VisualRoot"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.45, -0.4)
+mesh = SubResource("BoxMesh_visor")
+
 [node name="CameraPivot" type="Node3D" parent="Player"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.4, 0)
 
 [node name="SpringArm3D" type="SpringArm3D" parent="Player/CameraPivot"]
 spring_length = 4.0
+margin = 0.2
 
 [node name="Camera3D" type="Camera3D" parent="Player/CameraPivot/SpringArm3D"]
 current = true
+fov = 78.0
 
 [node name="CombatManager" type="Node" parent="."]
 script = ExtResource("2_combat")
@@ -71,4 +204,6 @@ layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
 script = ExtResource("3_studio")
