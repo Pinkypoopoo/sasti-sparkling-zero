@@ -1,6 +1,9 @@
 class_name PlayerController
 extends CharacterBody3D
 
+const CombatDataScript = preload("res://combat_data.gd")
+const DashVFXScript = preload("res://dash_vfx.gd")
+
 enum MoveState { GROUND, SPRINT, AIR, STEP, DASH, WINDUP, GUARD, HITSTUN }
 enum DashStyle { DBZ_VANISH_RUSH, BLEACH_SONIDO, SANDEVISTAN_ECHO, MACH_CONE_BURST, SHADOW_ABYSS_SINK, TOUKI_HORIZON_FLASH }
 
@@ -54,6 +57,8 @@ var dash_dir: Vector3 = Vector3.FORWARD
 var dash_start_pos: Vector3 = Vector3.ZERO
 var whip_lag_timer: float = 0.0
 var air_hang_timer: float = 0.0
+var hitstun_timer: float = 0.0
+var sway_timer: float = 0.0
 var jump_count: int = 0
 var max_jumps: int = 2
 var is_locked_on: bool = false
@@ -77,8 +82,6 @@ var is_left_dragging: bool = false
 @onready var camera: Camera3D = $CameraPivot/SpringArm3D/Camera3D
 @onready var combat: Node = get_node_or_null("../CombatManager")
 
-const CombatDataScript = preload("res://combat_data.gd")
-const DashVFXScript = preload("res://dash_vfx.gd")
 var data_store = null
 var dash_vfx = null
 var anime_mat: ShaderMaterial = null
@@ -181,12 +184,23 @@ func _reset_dash_visuals() -> void:
 		visual_root.scale = Vector3.ONE
 		visual_root.rotation.x = 0.0
 		visual_root.rotation.z = 0.0
-		visual_root.position.y = 0.0
+		visual_root.position = Vector3.ZERO
 
 func trigger_air_hang(duration: float = 0.42) -> void:
 	air_hang_timer = maxf(air_hang_timer, duration)
 	if not is_on_floor() and velocity.y < 1.5:
 		velocity.y = 1.5
+
+func apply_hitstun(duration: float, knock_vec: Vector3) -> void:
+	_reset_dash_visuals()
+	state = MoveState.HITSTUN
+	hitstun_timer = duration
+	velocity = knock_vec
+	if visual_root:
+		visual_root.rotation.x = deg_to_rad(24.0)
+
+func trigger_sonic_sway_pose(duration: float = 0.28) -> void:
+	sway_timer = maxf(sway_timer, duration)
 
 func apply_race_by_name(r_name: String) -> void:
 	if not data_store or not data_store.profiles.has(r_name): return
@@ -351,6 +365,7 @@ func _handle_left_release(pos: Vector2) -> void:
 		_trigger_jump()
 
 func _trigger_jump() -> void:
+	if state == MoveState.HITSTUN: return
 	if jump_count < max_jumps:
 		jump_count += 1
 		state = MoveState.AIR
@@ -359,7 +374,9 @@ func _trigger_jump() -> void:
 			dash_vfx.spawn_step_sigil(global_position, Color(0.95, 0.95, 1.0), 1.1)
 
 func trigger_dash(dir: Vector3) -> void:
-	if dash_cd_timer > 0.0: return
+	if dash_cd_timer > 0.0 or state == MoveState.HITSTUN: return
+	if combat and combat.try_vanish_counter_on_dash():
+		return
 	_reset_dash_visuals()
 	state = MoveState.DASH
 	dash_timer = dash_duration
@@ -368,7 +385,6 @@ func trigger_dash(dir: Vector3) -> void:
 	dash_dir = dir.normalized() if dir.length_squared() > 0.01 else -global_transform.basis.z
 	whip_lag_timer = camera_whip_lag
 
-	# Sparking Zero Z-Vanish behind close target OR Homing Burst Pursuit toward distant/airborne target
 	if is_locked_on and is_instance_valid(lock_target):
 		var dist_to_t := global_position.distance_to(lock_target.global_position)
 		var to_target := (lock_target.global_position - global_position).normalized()
@@ -395,6 +411,7 @@ func _physics_process(delta: float) -> void:
 	if dash_cd_timer > 0.0: dash_cd_timer -= delta
 	if whip_lag_timer > 0.0: whip_lag_timer -= delta
 	if air_hang_timer > 0.0: air_hang_timer -= delta
+	if sway_timer > 0.0: sway_timer -= delta
 
 	var mv_vec := Vector2.ZERO
 	var is_sprint_drag := false
@@ -408,6 +425,15 @@ func _physics_process(delta: float) -> void:
 		is_sprint_drag = Input.is_action_pressed("dash")
 
 	match state:
+		MoveState.HITSTUN:
+			hitstun_timer -= delta
+			velocity.x = lerpf(velocity.x, 0.0, 8.0 * delta)
+			velocity.z = lerpf(velocity.z, 0.0, 8.0 * delta)
+			if not is_on_floor():
+				velocity.y += get_gravity().y * delta
+			if hitstun_timer <= 0.0:
+				_reset_dash_visuals()
+				state = MoveState.AIR if not is_on_floor() else MoveState.GROUND
 		MoveState.DASH:
 			dash_timer -= delta
 			var spd_mult := 1.35 if dash_style == DashStyle.BLEACH_SONIDO else 1.0
@@ -428,6 +454,8 @@ func _physics_process(delta: float) -> void:
 			var cr := camera.global_transform.basis.x; cr.y = 0.0; cr = cr.normalized()
 			var t_dir := (cr * mv_vec.x + cf * -mv_vec.y).normalized()
 			var spd := (sprint_speed if is_sprint_drag else run_speed)
+			if state == MoveState.GUARD:
+				spd *= 0.35
 			velocity.x = lerpf(velocity.x, t_dir.x * spd, 14.0 * delta)
 			velocity.z = lerpf(velocity.z, t_dir.z * spd, 14.0 * delta)
 
@@ -437,7 +465,11 @@ func _physics_process(delta: float) -> void:
 			elif velocity.y < 0.0:
 				velocity.y = 0.0
 
-			if t_dir.length_squared() > 0.01:
+			if is_locked_on and is_instance_valid(lock_target):
+				var to_t := lock_target.global_position - global_position
+				if Vector2(to_t.x, to_t.z).length_squared() > 0.05:
+					visual_root.rotation.y = lerp_angle(visual_root.rotation.y, atan2(-to_t.x, -to_t.z), 18.0 * delta)
+			elif t_dir.length_squared() > 0.01:
 				visual_root.rotation.y = lerp_angle(visual_root.rotation.y, atan2(-t_dir.x, -t_dir.z), 15.0 * delta)
 
 	move_and_slide()
@@ -462,13 +494,19 @@ func _update_stepped_animation(delta: float) -> void:
 			active_anim_player.callback_mode_process = AnimationMixer.ANIMATION_CALLBACK_MODE_PROCESS_MANUAL
 			active_anim_player.advance(advance_time)
 		elif state != MoveState.DASH and visual_root:
-			var h_speed: float = Vector2(velocity.x, velocity.z).length()
-			if h_speed > 1.5 and is_on_floor():
-				visual_root.position.y = absf(sin(stepped_time * 11.0)) * 0.14
-				visual_root.rotation.x = deg_to_rad(-8.0)
+			if sway_timer > 0.0:
+				visual_root.position.x = sin(stepped_time * 42.0) * 0.42
+				visual_root.rotation.z = sin(stepped_time * 42.0) * deg_to_rad(18.0)
 			else:
-				visual_root.position.y = sin(stepped_time * 3.5) * 0.04
-				visual_root.rotation.x = 0.0
+				visual_root.position.x = 0.0
+				visual_root.rotation.z = 0.0
+				var h_speed: float = Vector2(velocity.x, velocity.z).length()
+				if h_speed > 1.5 and is_on_floor():
+					visual_root.position.y = absf(sin(stepped_time * 11.0)) * 0.14
+					visual_root.rotation.x = deg_to_rad(-8.0)
+				elif state != MoveState.HITSTUN:
+					visual_root.position.y = sin(stepped_time * 3.5) * 0.04
+					visual_root.rotation.x = 0.0
 
 func _process(delta: float) -> void:
 	if is_locked_on and is_instance_valid(lock_target):

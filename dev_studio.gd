@@ -57,12 +57,12 @@ func _build_ui() -> void:
 
 	btn_lock = _add_quick_btn("[ LOCK (Q) ]", func(): if player: player.toggle_lock_on())
 	_add_quick_btn("[ SWITCH ]", func(): if player: player.cycle_lock_target())
-	btn_ai = _add_quick_btn("[ AI: RIVAL ]", func():
+	btn_ai = _add_quick_btn("[ AI: ADAPTIVE_RIVAL ]", func():
 		if combat:
 			combat.ai_mode = ((combat.ai_mode + 1) % 4) as GestureCombat.AIMode
 			btn_ai.text = "[ AI: %s ]" % GestureCombat.AIMode.keys()[combat.ai_mode]
 	)
-	btn_fps = _add_quick_btn("[ FPS: MAX ]", _cycle_fps)
+	btn_fps = _add_quick_btn("[ FPS: NATIVE ]", _cycle_fps)
 	_add_quick_btn("[ SAVE JSON ]", func():
 		if player and player.data_store:
 			player.data_store.save_to_disk(player)
@@ -117,7 +117,6 @@ func _add_quick_btn(txt: String, cb: Callable) -> Button:
 
 func _cycle_fps() -> void:
 	fps_mode_idx = (fps_mode_idx + 1) % 3
-	# Do NOT call VSYNC_DISABLED on Android to prevent Vulkan swap_chain_resize warning
 	var is_android := DisplayServer.get_name() == "Android"
 	match fps_mode_idx:
 		0:
@@ -350,6 +349,8 @@ func _build_tab_visuals() -> void:
 	_add_row(vb, player, "hatch_width", 0.0, 0.25, 0.01)
 	_add_row(vb, player, "outline_width", 0.0, 0.08, 0.002)
 	_add_row(vb, player, "rim_strength", 0.0, 2.5, 0.05)
+	_add_row(vb, combat, "ai_telegraph_time", 0.15, 1.2, 0.05)
+	_add_row(vb, combat, "ai_attack_cooldown", 0.4, 3.5, 0.1)
 	_add_row(vb, combat, "ai_adaptation_rate", 0.05, 1.0, 0.05)
 	var rst := Button.new()
 	rst.text = " [ Reset Target Dummies & Clear AI Memory ] "
@@ -378,7 +379,6 @@ func _process(_delta: float) -> void:
 func _draw() -> void:
 	if not player or not combat: return
 
-	# 1. Left Riptide Swipe-Sequence Orb
 	var l_pos := combat.left_dot_pos
 	var l_open := combat.is_left_dot_active or combat.left_dot_pinned
 	draw_circle(l_pos, combat.left_dot_collapsed_r, Color(0.15, 0.55, 1.0, 0.45))
@@ -396,20 +396,19 @@ func _draw() -> void:
 		var chain_str := " -> ".join(combat.current_swipe_chain) if not combat.current_swipe_chain.is_empty() else "SWIPE SEQUENCE"
 		draw_string(ThemeDB.fallback_font, l_pos + Vector2(-55, -combat.left_dot_expanded_r - 12), chain_str, HORIZONTAL_ALIGNMENT_CENTER, -1, 14, Color(1.0, 0.85, 0.2))
 
-	# 2. Right 3-Zone Physical Attack & Sonic Sway Orb
 	var r_pos := combat.right_dot_pos
 	var r_open := combat.is_right_dot_active or combat.right_dot_pinned
-	draw_circle(r_pos, combat.right_dot_collapsed_r, Color(0.95, 0.22, 0.28, 0.5))
+	var r_col := Color(0.2, 0.9, 1.0, 0.65) if combat.sonic_sway_holding else Color(0.95, 0.22, 0.28, 0.5)
+	draw_circle(r_pos, combat.right_dot_collapsed_r, r_col)
 	draw_arc(r_pos, combat.right_dot_collapsed_r, 0.0, TAU, 32, Color(1.0, 0.75, 0.75, 0.95), 2.5)
-	draw_string(ThemeDB.fallback_font, r_pos + Vector2(-14, 5), "ATK", HORIZONTAL_ALIGNMENT_CENTER, -1, 12, Color.WHITE)
+	draw_string(ThemeDB.fallback_font, r_pos + Vector2(-18, 5), "SWAY" if combat.sonic_sway_holding else "ATK", HORIZONTAL_ALIGNMENT_CENTER, -1, 12, Color.WHITE)
 	if r_open:
 		var center := combat.right_touch_start if combat.is_right_dot_active else r_pos
 		draw_circle(center, combat.right_dot_expanded_r, Color(0.08, 0.04, 0.06, 0.55))
-		draw_arc(center, 28.0, 0.0, TAU, 32, Color(1, 1, 1, 0.5), 1.5)
+		draw_arc(center, 32.0, 0.0, TAU, 32, Color(0.3, 0.95, 1.0, 0.85), 2.0)
 		draw_arc(center, player.feint_threshold_px, 0.0, TAU, 48, Color(1.0, 0.85, 0.15, 0.85), 2.5)
 		draw_arc(center, combat.right_dot_expanded_r, 0.0, TAU, 48, Color(1.0, 0.3, 0.35, 0.85), 2.5)
 
-	# 3. Bottom-Left Player HP & Touki Bars
 	var hud_p := Vector2(20, get_viewport_rect().size.y - 68)
 	var hp_r := clampf(player.hp / maxf(1.0, player.max_hp), 0.0, 1.0)
 	var mp_r := clampf(player.mana / maxf(1.0, player.max_mana), 0.0, 1.0)
@@ -422,18 +421,31 @@ func _draw() -> void:
 	draw_rect(Rect2(mp_p + Vector2(2, 2), Vector2(196 * mp_r, 10)), Color(0.95, 0.18, 0.25))
 	draw_string(ThemeDB.fallback_font, mp_p + Vector2(8, 11), "TOUKI: %d / %d (%s)" % [int(player.mana), int(player.max_mana), combat.active_infusion], HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color.WHITE)
 
-	# 4. Target Dummy Floating HP + Posture Bars
 	for t in combat.target_stats.keys():
 		if is_instance_valid(t) and t is Node3D and not player.camera.is_position_behind(t.global_position):
-			var sp := player.camera.unproject_position(t.global_position + Vector3(0, 2.2, 0))
-			var s: Dictionary = combat.target_stats[t]
+			var td := t as Node3D
+			var sp := player.camera.unproject_position(td.global_position + Vector3(0, 2.2, 0))
+			var s: Dictionary = combat.target_stats[td]
 			var thp := clampf(s["hp"] / s["max_hp"], 0.0, 1.0)
 			var tpo := clampf(s["posture"] / s["max_posture"], 0.0, 1.0)
 			draw_rect(Rect2(sp - Vector2(45, 0), Vector2(90, 8)), Color(0.05, 0.05, 0.07, 0.9))
 			draw_rect(Rect2(sp - Vector2(44, -1), Vector2(88 * thp, 6)), Color(0.9, 0.2, 0.22))
 			draw_rect(Rect2(sp - Vector2(45, -10), Vector2(90, 5)), Color(0.05, 0.05, 0.07, 0.9))
 			draw_rect(Rect2(sp - Vector2(44, -9), Vector2(88 * tpo, 3)), Color(1.0, 0.82, 0.15))
-			draw_string(ThemeDB.fallback_font, sp + Vector2(-45, -14), str(s["ai_state"]), HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(1, 0.9, 0.4))
+
+			var st_txt := str(s["ai_state"])
+			var st_col := Color(1, 0.9, 0.4)
+			if st_txt == "TELEGRAPH":
+				st_txt = "!! PARRY / SWAY NOW !!"
+				st_col = Color(1.0, 0.15, 0.2)
+				var body_sp := player.camera.unproject_position(td.global_position + Vector3(0, 1.0, 0))
+				var ring_r := clampf((s["state_timer"] / maxf(0.1, combat.ai_telegraph_time)) * 75.0, 18.0, 75.0)
+				draw_arc(body_sp, ring_r, 0.0, TAU, 36, Color(1.0, 0.15, 0.2, 0.95), 3.5)
+				draw_arc(body_sp, 22.0, 0.0, TAU, 32, Color(1.0, 0.9, 0.3, 0.8), 2.0)
+			elif st_txt == "STRIKE_ACTIVE":
+				st_txt = ">> STRIKE! <<"
+				st_col = Color(1.0, 0.95, 0.3)
+			draw_string(ThemeDB.fallback_font, sp + Vector2(-52, -14), st_txt, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, st_col)
 
 	if combat.impact_flash_timer > 0.0:
 		draw_rect(get_viewport_rect(), Color(1, 1, 1, 0.92))
