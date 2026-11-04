@@ -8,17 +8,17 @@ var custom_races: Dictionary = {
 	"Human_Touki": {
 		"max_hp": 1000.0, "hp_regen": 15.0, "max_mana": 100.0, "mana_regen": 12.0,
 		"physical_strength": 1.0, "base_power": 1.0, "step_mult": 1.15, "flight_mult": 1.0,
-		"dash_style": DashStyle.DBZ_VANISH_RUSH, "aura_color": Color(0.3, 0.7, 1.0), "model_path": ""
+		"dash_style": DashStyle.DBZ_VANISH_RUSH, "aura_color": Color(0.95, 0.12, 0.18), "model_path": ""
 	},
 	"Demon_Fiend": {
 		"max_hp": 1400.0, "hp_regen": 20.0, "max_mana": 85.0, "mana_regen": 8.0,
 		"physical_strength": 1.35, "base_power": 1.1, "step_mult": 0.95, "flight_mult": 0.9,
-		"dash_style": DashStyle.SHADOW_ABYSS_SINK, "aura_color": Color(0.9, 0.15, 0.25), "model_path": ""
+		"dash_style": DashStyle.SHADOW_ABYSS_SINK, "aura_color": Color(0.9, 0.1, 0.2), "model_path": ""
 	},
 	"Beastkin_Vanguard": {
 		"max_hp": 1150.0, "hp_regen": 18.0, "max_mana": 90.0, "mana_regen": 10.0,
 		"physical_strength": 1.25, "base_power": 0.9, "step_mult": 1.4, "flight_mult": 1.05,
-		"dash_style": DashStyle.MACH_CONE_BURST, "aura_color": Color(1.0, 0.75, 0.2), "model_path": ""
+		"dash_style": DashStyle.MACH_CONE_BURST, "aura_color": Color(1.0, 0.78, 0.15), "model_path": ""
 	},
 	"Elf_Caster": {
 		"max_hp": 850.0, "hp_regen": 12.0, "max_mana": 160.0, "mana_regen": 18.0,
@@ -45,8 +45,10 @@ var active_race_name: String = "Human_Touki"
 @export var vanish_strobe_hz: float = 18.0
 @export var letterbox_amount: float = 0.0
 @export var cel_cut_threshold: float = 0.45
-@export var outline_width: float = 0.025
-@export var rim_strength: float = 0.8
+@export var hatch_width: float = 0.08
+@export var outline_width: float = 0.024
+@export var rim_strength: float = 0.9
+@export var anim_step_fps: float = 12.0
 @export var camera_sensitivity: float = 0.22
 @export var model_scale: float = 1.0
 @export var model_rot_offset: float = 0.0
@@ -74,6 +76,7 @@ var cam_rot_y: float = 0.0
 var dash_timer: float = 0.0
 var dash_cd_timer: float = 0.0
 var dash_dir: Vector3 = Vector3.FORWARD
+var dash_start_pos: Vector3 = Vector3.ZERO
 var dash_leads_to_flight: bool = false
 var whip_lag_timer: float = 0.0
 var hitstun_timer: float = 0.0
@@ -82,6 +85,10 @@ var is_momentum_coasting: bool = false
 var coasting_velocity: Vector3 = Vector3.ZERO
 var is_locked_on: bool = false
 var lock_target: Node3D = null
+
+var anim_step_accum: float = 0.0
+var stepped_time: float = 0.0
+var echo_color_idx: int = 0
 
 var left_touch_id: int = -1
 var right_look_touch_id: int = -1
@@ -105,6 +112,10 @@ var afterimage_alphas: Array[float] = [0.0, 0.0, 0.0]
 var afterimage_mats: Array[StandardMaterial3D] = []
 var afterimage_idx: int = 0
 var afterimage_timer: float = 0.0
+var dash_fx_mesh: MeshInstance3D = null
+var dash_fx_mat: StandardMaterial3D = null
+var dash_fx_timer: float = 0.0
+
 var custom_model_root: Node3D = null
 var active_anim_player: AnimationPlayer = null
 var active_skeleton: Skeleton3D = null
@@ -116,7 +127,6 @@ func _ready() -> void:
 	_setup_afterimages()
 	_register_input_actions()
 	apply_race_by_name(active_race_name)
-	# Never capture mouse on touchscreen devices so UI buttons remain tappable
 	if not DisplayServer.is_touchscreen_available():
 		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 	else:
@@ -125,26 +135,46 @@ func _ready() -> void:
 func _setup_materials() -> void:
 	var base_code := """
 shader_type spatial;
-render_mode diffuse_toon, specular_toon;
-uniform vec4 albedo : source_color = vec4(0.2, 0.25, 0.32, 1.0);
-uniform vec4 rim_color : source_color = vec4(0.3, 0.7, 1.0, 1.0);
+render_mode diffuse_toon, specular_toon, ambient_light_disabled;
+uniform vec4 albedo : source_color = vec4(0.18, 0.20, 0.26, 1.0);
+uniform vec4 shadow_color : source_color = vec4(0.015, 0.01, 0.02, 1.0);
+uniform vec4 rim_color : source_color = vec4(0.95, 0.12, 0.18, 1.0);
 uniform float cel_cut : hint_range(0.0, 1.0) = 0.45;
-uniform float rim_str : hint_range(0.0, 2.0) = 0.8;
-void fragment() { ALBEDO = albedo.rgb; ROUGHNESS = 0.8; SPECULAR = 0.1; }
+uniform float hatch_width : hint_range(0.0, 0.3) = 0.08;
+uniform float rim_str : hint_range(0.0, 2.5) = 0.9;
+
+void fragment() {
+	ALBEDO = albedo.rgb;
+	ROUGHNESS = 0.85;
+	SPECULAR = 0.1;
+}
+
 void light() {
 	float NdotL = clamp(dot(NORMAL, LIGHT), 0.0, 1.0);
-	float cel = step(cel_cut, NdotL);
-	float rim = step(0.76, 1.0 - clamp(dot(NORMAL, VIEW), 0.0, 1.0));
-	DIFFUSE_LIGHT += ALBEDO * LIGHT_COLOR * (cel * 0.82 + 0.18) * ATTENUATION;
-	DIFFUSE_LIGHT += rim * rim_str * rim_color.rgb * LIGHT_COLOR * ATTENUATION;
+	vec3 H = normalize(LIGHT + VIEW);
+	float spec = step(0.88, pow(max(dot(NORMAL, H), 0.0), 16.0));
+	float rim = step(0.78, 1.0 - clamp(dot(NORMAL, VIEW), 0.0, 1.0));
+
+	float hatch_pattern = step(0.0, sin((FRAGCOORD.x + FRAGCOORD.y) * 0.95));
+	vec3 ink_lit = ALBEDO * LIGHT_COLOR * ATTENUATION;
+	vec3 ink_hatch = mix(shadow_color.rgb, ink_lit, hatch_pattern * 0.65);
+
+	vec3 band_color = shadow_color.rgb;
+	if (NdotL >= cel_cut + hatch_width) {
+		band_color = ink_lit;
+	} else if (NdotL >= cel_cut) {
+		band_color = ink_hatch;
+	}
+
+	DIFFUSE_LIGHT += band_color + (spec * vec3(0.95, 0.92, 0.88) * ATTENUATION) + (rim * rim_str * rim_color.rgb);
 }
 """
 	var outline_code := """
 shader_type spatial;
 render_mode cull_front, unshaded;
-uniform float width = 0.025;
+uniform float width = 0.024;
 void vertex() { VERTEX += NORMAL * width; }
-void fragment() { ALBEDO = vec3(0.02, 0.02, 0.03); }
+void fragment() { ALBEDO = vec3(0.015, 0.0, 0.015); }
 """
 	outline_mat = ShaderMaterial.new()
 	outline_mat.shader = Shader.new()
@@ -157,12 +187,13 @@ void fragment() { ALBEDO = vec3(0.02, 0.02, 0.03); }
 	if body_mesh: body_mesh.set_surface_override_material(0, anime_mat)
 	if visor_mesh: visor_mesh.set_surface_override_material(0, anime_mat)
 
-func update_cel_shader(cel: float, out_w: float, rim_s: float, rim_col: Color = Color(0.3, 0.7, 1.0)) -> void:
+func update_cel_shader(cel: float, out_w: float, rim_s: float, rim_col: Color = Color(0.95, 0.12, 0.18)) -> void:
 	cel_cut_threshold = cel
 	outline_width = out_w
 	rim_strength = rim_s
 	if anime_mat:
 		anime_mat.set_shader_parameter("cel_cut", cel)
+		anime_mat.set_shader_parameter("hatch_width", hatch_width)
 		anime_mat.set_shader_parameter("rim_str", rim_s)
 		anime_mat.set_shader_parameter("rim_color", rim_col)
 	if outline_mat:
@@ -183,21 +214,44 @@ func _setup_afterimages() -> void:
 		var mat := StandardMaterial3D.new()
 		mat.shading_mode = StandardMaterial3D.SHADING_MODE_UNSHADED
 		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-		mat.albedo_color = Color(0.3, 0.8, 1.0, 0.0)
+		mat.albedo_color = Color(0.95, 0.12, 0.18, 0.0)
 		mi.material_override = mat
 		holder.add_child(mi)
 		afterimages.append(mi)
 		afterimage_mats.append(mat)
 
-func spawn_afterimage(col: Color) -> void:
+	dash_fx_mesh = MeshInstance3D.new()
+	var cyl := CylinderMesh.new()
+	cyl.top_radius = 0.35
+	cyl.bottom_radius = 0.35
+	cyl.height = 3.0
+	dash_fx_mesh.mesh = cyl
+	dash_fx_mesh.top_level = true
+	dash_fx_mesh.visible = false
+	dash_fx_mat = StandardMaterial3D.new()
+	dash_fx_mat.shading_mode = StandardMaterial3D.SHADING_MODE_UNSHADED
+	dash_fx_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	dash_fx_mat.albedo_color = Color(0.95, 0.15, 0.2, 0.85)
+	dash_fx_mesh.material_override = dash_fx_mat
+	holder.add_child(dash_fx_mesh)
+
+func spawn_afterimage(col: Color, alpha_val: float = 0.75) -> void:
 	if afterimages.is_empty(): return
 	var mi := afterimages[afterimage_idx]
 	var mat := afterimage_mats[afterimage_idx]
 	mi.global_transform = visual_root.global_transform if visual_root else global_transform
 	mi.visible = true
-	afterimage_alphas[afterimage_idx] = 0.65
-	mat.albedo_color = Color(col.r, col.g, col.b, 0.65)
+	afterimage_alphas[afterimage_idx] = alpha_val
+	mat.albedo_color = Color(col.r, col.g, col.b, alpha_val)
 	afterimage_idx = (afterimage_idx + 1) % 3
+
+func _reset_dash_visuals() -> void:
+	if visual_root:
+		visual_root.visible = true
+		visual_root.scale = Vector3.ONE
+		visual_root.rotation.x = 0.0
+		visual_root.rotation.z = 0.0
+		visual_root.position.y = 0.0
 
 func apply_race_by_name(r_name: String) -> void:
 	if not custom_races.has(r_name): return
@@ -214,7 +268,7 @@ func apply_race_by_name(r_name: String) -> void:
 	step_mult = r.get("step_mult", 1.15)
 	flight_mult = r.get("flight_mult", 1.0)
 	dash_style = r.get("dash_style", DashStyle.DBZ_VANISH_RUSH) as DashStyle
-	var col: Color = r.get("aura_color", Color(0.3, 0.7, 1.0))
+	var col: Color = r.get("aura_color", Color(0.95, 0.12, 0.18))
 	update_cel_shader(cel_cut_threshold, outline_width, rim_strength, col)
 	var m_path: String = r.get("model_path", "")
 	if not m_path.is_empty():
@@ -354,19 +408,16 @@ func _handle_left_release(pos: Vector2) -> void:
 	var dir := delta.normalized()
 	var duration := (Time.get_ticks_msec() / 1000.0) - left_touch_start_time
 
-	# Long vertical flick or left-edge altitude flick -> Skyward (+Y) or Meteor Dive (-Y)
 	if left_touch_start.x < 75.0 or (dist > 130.0 and absf(dir.y) > 0.7):
 		if dir.y < -0.7:
 			trigger_dash(Vector3.UP, true)
 		elif dir.y > 0.7:
 			trigger_dash(Vector3.DOWN, false)
-	# Short flick -> Spammable 8-way directional dash
 	elif duration <= 0.22 and dist >= 38.0:
 		var cf := -camera.global_transform.basis.z; cf.y = 0.0; cf = cf.normalized()
 		var cr := camera.global_transform.basis.x; cr.y = 0.0; cr = cr.normalized()
 		var w_dir := (cr * dir.x + cf * -dir.y).normalized()
 		trigger_dash(w_dir, state == MoveState.FLIGHT)
-	# Quick tap -> 3-stage Jump / Double Jump / Flight
 	elif duration < 0.22 and dist < 28.0:
 		_trigger_jump()
 
@@ -385,21 +436,53 @@ func _trigger_jump() -> void:
 
 func trigger_dash(dir: Vector3, keep_flight: bool = false) -> void:
 	if dash_cd_timer > 0.0: return
+	_reset_dash_visuals()
 	state = MoveState.DASH
 	dash_timer = dash_duration
 	dash_cd_timer = dash_cooldown
 	dash_leads_to_flight = keep_flight
+	dash_start_pos = global_position
 	dash_dir = dir.normalized() if dir.length_squared() > 0.01 else -global_transform.basis.z
 	whip_lag_timer = camera_whip_lag
 
-	# Close-range Z-Vanish behind locked target
 	if is_locked_on and is_instance_valid(lock_target) and global_position.distance_to(lock_target.global_position) < 8.0 and dir.y > -0.5:
 		global_position = lock_target.global_position + lock_target.global_transform.basis.z * 2.2
 		cam_rot_y += 180.0
 	else:
 		velocity = dash_dir * dash_speed * step_mult
 
-	spawn_afterimage(Color(0.3, 0.85, 1.0))
+	match dash_style:
+		DashStyle.DBZ_VANISH_RUSH:
+			if visual_root: visual_root.visible = false
+			camera.fov = dash_fov_kick + 14.0
+			spawn_afterimage(Color(0.95, 0.95, 1.0), 0.85)
+		DashStyle.BLEACH_SONIDO:
+			spawn_afterimage(Color(0.01, 0.01, 0.02), 0.96)
+			velocity *= 1.35
+		DashStyle.SANDEVISTAN_ECHO:
+			echo_color_idx = 0
+			spawn_afterimage(Color(0.95, 0.12, 0.18), 0.85)
+		DashStyle.MACH_CONE_BURST:
+			if visual_root:
+				visual_root.rotation.x = deg_to_rad(-42.0)
+				visual_root.scale = Vector3(0.8, 0.8, 1.45)
+			if dash_fx_mesh:
+				dash_fx_mesh.global_position = dash_start_pos + Vector3(0, 1.0, 0)
+				dash_fx_mesh.scale = Vector3(3.5, 0.08, 3.5)
+				dash_fx_mat.albedo_color = Color(0.95, 0.95, 1.0, 0.85)
+				dash_fx_mesh.visible = true
+				dash_fx_timer = 0.22
+		DashStyle.SHADOW_ABYSS_SINK:
+			if visual_root:
+				visual_root.scale = Vector3(1.85, 0.04, 1.85)
+			spawn_afterimage(Color(0.02, 0.0, 0.04), 0.92)
+		DashStyle.TOUKI_HORIZON_FLASH:
+			if dash_fx_mesh:
+				dash_fx_mesh.global_position = dash_start_pos + Vector3(0, 1.0, 0)
+				dash_fx_mesh.scale = Vector3(0.6, 2.5, 0.6)
+				dash_fx_mat.albedo_color = Color(0.95, 0.12, 0.18, 0.9)
+				dash_fx_mesh.visible = true
+				dash_fx_timer = 0.25
 
 func _physics_process(delta: float) -> void:
 	hp = minf(max_hp, hp + hp_regen * delta)
@@ -421,18 +504,19 @@ func _physics_process(delta: float) -> void:
 	match state:
 		MoveState.DASH:
 			dash_timer -= delta
-			velocity = dash_dir * dash_speed * step_mult
-			# Apply race dash visuals
-			if dash_style == DashStyle.DBZ_VANISH_RUSH:
-				visual_root.visible = sin(Time.get_ticks_msec() * 0.001 * vanish_strobe_hz * TAU) > 0.0
-			elif dash_style == DashStyle.SHADOW_ABYSS_SINK:
-				visual_root.scale.y = 0.08
+			var spd_mult := 1.35 if dash_style == DashStyle.BLEACH_SONIDO else 1.0
+			velocity = dash_dir * dash_speed * step_mult * spd_mult
+			if dash_style == DashStyle.DBZ_VANISH_RUSH and visual_root:
+				visual_root.visible = dash_timer < (dash_duration * 0.2)
+			elif dash_style == DashStyle.SHADOW_ABYSS_SINK and visual_root:
+				visual_root.scale = Vector3(1.85, 0.04, 1.85)
+			elif dash_style == DashStyle.MACH_CONE_BURST and visual_root:
+				visual_root.rotation.x = deg_to_rad(-42.0)
+				visual_root.scale = Vector3(0.8, 0.8, 1.45)
 			if dash_timer <= 0.0:
-				visual_root.visible = true
-				visual_root.scale = Vector3.ONE
+				_reset_dash_visuals()
 				state = MoveState.FLIGHT if (dash_leads_to_flight or not is_on_floor()) else MoveState.GROUND
 		MoveState.FLIGHT:
-			visual_root.visible = true
 			var cf := -camera.global_transform.basis.z
 			var cr := camera.global_transform.basis.x
 			var t_vel := (cr * mv_vec.x + cf * -mv_vec.y).normalized() * flight_speed * flight_mult
@@ -444,7 +528,6 @@ func _physics_process(delta: float) -> void:
 			if mv_vec.length_squared() > 0.01:
 				visual_root.rotation.y = lerp_angle(visual_root.rotation.y, atan2(-velocity.x, -velocity.z), 14.0 * delta)
 		MoveState.GROUND, MoveState.SPRINT, MoveState.WINDUP, MoveState.GUARD, MoveState.HITSTUN:
-			visual_root.visible = true
 			var cf := -camera.global_transform.basis.z; cf.y = 0.0; cf = cf.normalized()
 			var cr := camera.global_transform.basis.x; cr.y = 0.0; cr = cr.normalized()
 			var t_dir := (cr * mv_vec.x + cf * -mv_vec.y).normalized()
@@ -470,16 +553,50 @@ func _physics_process(delta: float) -> void:
 			state = MoveState.GROUND
 
 	_update_afterimages(delta)
+	_update_stepped_animation(delta)
+
+func _update_stepped_animation(delta: float) -> void:
+	var step_interval: float = 1.0 / maxf(1.0, anim_step_fps)
+	anim_step_accum += delta
+	if anim_step_accum >= step_interval:
+		var steps: int = int(anim_step_accum / step_interval)
+		var advance_time: float = float(steps) * step_interval
+		anim_step_accum -= advance_time
+		stepped_time += advance_time
+		if active_anim_player:
+			active_anim_player.callback_mode_process = AnimationMixer.ANIMATION_CALLBACK_MODE_PROCESS_MANUAL
+			active_anim_player.advance(advance_time)
+		elif state != MoveState.DASH and visual_root:
+			var h_speed: float = Vector2(velocity.x, velocity.z).length()
+			if h_speed > 1.5 and is_on_floor():
+				visual_root.position.y = absf(sin(stepped_time * 11.0)) * 0.14
+				visual_root.rotation.x = deg_to_rad(-8.0)
+			else:
+				visual_root.position.y = sin(stepped_time * 3.5) * 0.04
+				visual_root.rotation.x = 0.0
 
 func _update_afterimages(delta: float) -> void:
+	if dash_fx_timer > 0.0:
+		dash_fx_timer -= delta
+		if dash_fx_timer <= 0.0 and dash_fx_mesh:
+			dash_fx_mesh.visible = false
+
 	if state == MoveState.DASH or velocity.length_squared() > 700.0:
 		afterimage_timer -= delta
 		if afterimage_timer <= 0.0:
-			afterimage_timer = 0.045
-			spawn_afterimage(Color(0.25, 0.85, 1.0))
+			afterimage_timer = 0.035 if dash_style == DashStyle.SANDEVISTAN_ECHO else 0.05
+			if dash_style == DashStyle.SANDEVISTAN_ECHO:
+				var echo_cols: Array[Color] = [Color(0.95, 0.12, 0.18), Color(1.0, 0.82, 0.15), Color(0.92, 0.92, 0.96)]
+				spawn_afterimage(echo_cols[echo_color_idx % 3], 0.85)
+				echo_color_idx += 1
+			elif dash_style == DashStyle.BLEACH_SONIDO:
+				spawn_afterimage(Color(0.01, 0.01, 0.02), 0.9)
+			else:
+				spawn_afterimage(Color(0.95, 0.12, 0.18), 0.65)
+
 	for i in range(3):
 		if afterimage_alphas[i] > 0.0:
-			afterimage_alphas[i] = maxf(0.0, afterimage_alphas[i] - delta * 4.0)
+			afterimage_alphas[i] = maxf(0.0, afterimage_alphas[i] - delta * 3.5)
 			var c := afterimage_mats[i].albedo_color
 			c.a = afterimage_alphas[i]
 			afterimage_mats[i].albedo_color = c

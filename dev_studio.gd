@@ -180,6 +180,8 @@ func _add_row(parent: Control, obj: Object, prop: String, min_v: float, max_v: f
 		guard[0] = true
 		sp.value = v
 		obj.set(prop, v)
+		if prop in ["cel_cut_threshold", "outline_width", "rim_strength", "hatch_width"] and player:
+			player.update_cel_shader(player.cel_cut_threshold, player.outline_width, player.rim_strength)
 		guard[0] = false
 	)
 	sp.value_changed.connect(func(v: float):
@@ -187,6 +189,8 @@ func _add_row(parent: Control, obj: Object, prop: String, min_v: float, max_v: f
 		guard[0] = true
 		s.value = v
 		obj.set(prop, v)
+		if prop in ["cel_cut_threshold", "outline_width", "rim_strength", "hatch_width"] and player:
+			player.update_cel_shader(player.cel_cut_threshold, player.outline_width, player.rim_strength)
 		guard[0] = false
 	)
 	h.add_child(s)
@@ -254,7 +258,7 @@ func _build_tab_races() -> void:
 			"max_mana": player.max_mana, "mana_regen": player.mana_regen,
 			"physical_strength": player.physical_strength, "base_power": player.base_power,
 			"step_mult": player.step_mult, "flight_mult": player.flight_mult,
-			"dash_style": player.dash_style, "aura_color": Color(0.4, 0.8, 1.0), "model_path": ""
+			"dash_style": player.dash_style, "aura_color": Color(0.95, 0.12, 0.18), "model_path": ""
 		}
 		r_opt.add_item(rn)
 		r_opt.selected = r_opt.item_count - 1
@@ -315,7 +319,9 @@ func _build_tab_models() -> void:
 
 func _build_tab_visuals() -> void:
 	var vb := _make_scroll_tab("5. Shaders & AI Lab")
+	_add_row(vb, player, "anim_step_fps", 6.0, 60.0, 1.0)
 	_add_row(vb, player, "cel_cut_threshold", 0.05, 0.95, 0.02)
+	_add_row(vb, player, "hatch_width", 0.0, 0.25, 0.01)
 	_add_row(vb, player, "outline_width", 0.0, 0.08, 0.002)
 	_add_row(vb, player, "rim_strength", 0.0, 2.5, 0.05)
 	_add_row(vb, combat, "ai_reaction_delay", 0.02, 0.8, 0.02)
@@ -332,11 +338,13 @@ func _build_tab_visuals() -> void:
 func _process(_delta: float) -> void:
 	if not player or not combat: return
 	var fps := Engine.get_frames_per_second()
+	var panel_hz := int(DisplayServer.screen_get_refresh_rate())
 	var gpu_ms := RenderingServer.viewport_get_measured_render_time_gpu(get_viewport().get_viewport_rid())
 	var cpu_ms := Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0
 	var st_name: String = PlayerController.MoveState.keys()[player.state]
-	telemetry.text = "FPS: %d | GPU: %.2f ms | CPU: %.2f ms\nRace: %s | State: %s | Action: %s" % [
-		fps, gpu_ms, cpu_ms, player.active_race_name, st_name, combat.last_combat_action
+	var dash_name: String = PlayerController.DashStyle.keys()[player.dash_style]
+	telemetry.text = "FPS: %d | Panel Hz: %d | GPU: %.2f ms | CPU: %.2f ms\nRace: %s | Dash: %s | State: %s | Action: %s" % [
+		fps, panel_hz, gpu_ms, cpu_ms, player.active_race_name, dash_name, st_name, combat.last_combat_action
 	]
 	btn_lock.modulate = Color(0.3, 1.0, 0.5) if player.is_locked_on else Color.WHITE
 	queue_redraw()
@@ -344,7 +352,6 @@ func _process(_delta: float) -> void:
 func _draw() -> void:
 	if not player or not combat: return
 
-	# 1. Left Spell Weave Hover Dot & 5-Node Runic Pentagon
 	var l_pos := combat.left_dot_pos
 	draw_circle(l_pos, combat.left_dot_collapsed_r, Color(0.15, 0.55, 1.0, 0.45))
 	draw_arc(l_pos, combat.left_dot_collapsed_r, 0.0, TAU, 32, Color(0.5, 0.85, 1.0, 0.9), 2.5)
@@ -358,7 +365,6 @@ func _draw() -> void:
 			draw_circle(np, 24.0 if is_sel else 18.0, GestureCombat.ELEMENT_COLORS[i])
 			draw_string(ThemeDB.fallback_font, np + Vector2(-14, 5), GestureCombat.ELEMENTS[i].substr(0, 3), HORIZONTAL_ALIGNMENT_CENTER, -1, 11, Color.WHITE)
 
-	# 2. Right Physical Combat Hover Dot & 3-Zone Feint Ring
 	var r_pos := combat.right_dot_pos
 	var r_open := combat.is_right_dot_active or combat.right_dot_pinned
 	draw_circle(r_pos, combat.right_dot_collapsed_r, Color(0.95, 0.22, 0.28, 0.5))
@@ -371,7 +377,6 @@ func _draw() -> void:
 		draw_arc(center, player.feint_threshold_px, 0.0, TAU, 48, Color(1.0, 0.85, 0.15, 0.85), 2.5)
 		draw_arc(center, combat.right_dot_expanded_r, 0.0, TAU, 48, Color(1.0, 0.3, 0.35, 0.85), 2.5)
 
-	# 3. Bottom-Left Player HP & Touki Bars
 	var hud_p := Vector2(20, get_viewport_rect().size.y - 68)
 	var hp_r := clampf(player.hp / maxf(1.0, player.max_hp), 0.0, 1.0)
 	var mp_r := clampf(player.mana / maxf(1.0, player.max_mana), 0.0, 1.0)
@@ -384,7 +389,6 @@ func _draw() -> void:
 	draw_rect(Rect2(mp_p + Vector2(2, 2), Vector2(196 * mp_r, 10)), Color(0.2, 0.65, 1.0))
 	draw_string(ThemeDB.fallback_font, mp_p + Vector2(8, 11), "TOUKI: %d / %d (%s)" % [int(player.mana), int(player.max_mana), combat.active_infusion], HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color.WHITE)
 
-	# 4. Target Dummy Floating HP + Posture Bars
 	for t in combat.target_stats.keys():
 		if is_instance_valid(t) and t is Node3D and not player.camera.is_position_behind(t.global_position):
 			var sp := player.camera.unproject_position(t.global_position + Vector3(0, 2.2, 0))
@@ -397,6 +401,5 @@ func _draw() -> void:
 			draw_rect(Rect2(sp - Vector2(44, -9), Vector2(88 * tpo, 3)), Color(1.0, 0.82, 0.15))
 			draw_string(ThemeDB.fallback_font, sp + Vector2(-45, -14), str(s["ai_state"]), HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(1, 0.9, 0.4))
 
-	# 5. 2-Frame B&W Impact Flash
 	if combat.impact_flash_timer > 0.0:
 		draw_rect(get_viewport_rect(), Color(1, 1, 1, 0.92))
