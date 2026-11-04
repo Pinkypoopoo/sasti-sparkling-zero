@@ -1,49 +1,25 @@
 class_name PlayerController
 extends CharacterBody3D
 
-enum MoveState { GROUND, SPRINT, FLIGHT, STEP, DASH, WINDUP, GUARD, HITSTUN }
+enum MoveState { GROUND, SPRINT, AIR, STEP, DASH, WINDUP, GUARD, HITSTUN }
 enum DashStyle { DBZ_VANISH_RUSH, BLEACH_SONIDO, SANDEVISTAN_ECHO, MACH_CONE_BURST, SHADOW_ABYSS_SINK, TOUKI_HORIZON_FLASH }
 
-var custom_races: Dictionary = {
-	"Human_Touki": {
-		"max_hp": 1000.0, "hp_regen": 15.0, "max_mana": 100.0, "mana_regen": 12.0,
-		"physical_strength": 1.0, "base_power": 1.0, "step_mult": 1.15, "flight_mult": 1.0,
-		"dash_style": DashStyle.DBZ_VANISH_RUSH, "aura_color": Color(0.95, 0.12, 0.18), "model_path": ""
-	},
-	"Demon_Fiend": {
-		"max_hp": 1400.0, "hp_regen": 20.0, "max_mana": 85.0, "mana_regen": 8.0,
-		"physical_strength": 1.35, "base_power": 1.1, "step_mult": 0.95, "flight_mult": 0.9,
-		"dash_style": DashStyle.SHADOW_ABYSS_SINK, "aura_color": Color(0.9, 0.1, 0.2), "model_path": ""
-	},
-	"Beastkin_Vanguard": {
-		"max_hp": 1150.0, "hp_regen": 18.0, "max_mana": 90.0, "mana_regen": 10.0,
-		"physical_strength": 1.25, "base_power": 0.9, "step_mult": 1.4, "flight_mult": 1.05,
-		"dash_style": DashStyle.MACH_CONE_BURST, "aura_color": Color(1.0, 0.78, 0.15), "model_path": ""
-	},
-	"Elf_Caster": {
-		"max_hp": 850.0, "hp_regen": 12.0, "max_mana": 160.0, "mana_regen": 18.0,
-		"physical_strength": 0.9, "base_power": 1.45, "step_mult": 1.1, "flight_mult": 1.3,
-		"dash_style": DashStyle.TOUKI_HORIZON_FLASH, "aura_color": Color(0.2, 0.95, 0.7), "model_path": ""
-	}
-}
-var active_race_name: String = "Human_Touki"
+var active_race_name: String = "Profile_1"
 
 @export var run_speed: float = 16.0
 @export var sprint_speed: float = 28.0
-@export var flight_speed: float = 32.0
 @export var step_speed: float = 34.0
-@export var dash_speed: float = 60.0
-@export var dash_duration: float = 0.22
+@export var dash_speed: float = 62.0
+@export var dash_duration: float = 0.20
 @export var dash_cooldown: float = 0.04
-@export var jump_velocity: float = 12.0
-@export var altitude_burst: float = 18.0
+@export var jump_velocity: float = 13.5
+@export var air_combo_gravity_scale: float = 0.15
 @export var feint_threshold_px: float = 90.0
-@export var camera_distance: float = 4.0
+@export var camera_distance: float = 4.2
 @export var base_fov: float = 78.0
 @export var dash_fov_kick: float = 100.0
 @export var camera_whip_lag: float = 0.055
 @export var vanish_strobe_hz: float = 18.0
-@export var letterbox_amount: float = 0.0
 @export var cel_cut_threshold: float = 0.45
 @export var hatch_width: float = 0.08
 @export var outline_width: float = 0.024
@@ -52,8 +28,8 @@ var active_race_name: String = "Human_Touki"
 @export var camera_sensitivity: float = 0.22
 @export var model_scale: float = 1.0
 @export var model_rot_offset: float = 0.0
+@export var afterimage_enabled: bool = false
 
-var jiggle_enabled: bool = true
 var jiggle_stiffness: float = 18.0
 var jiggle_damping: float = 4.5
 var jiggle_gravity: float = 0.6
@@ -62,12 +38,11 @@ var hp: float = 1000.0
 var max_hp: float = 1000.0
 var mana: float = 100.0
 var max_mana: float = 100.0
-var mana_regen: float = 12.0
+var mana_regen: float = 14.0
 var hp_regen: float = 15.0
 var physical_strength: float = 1.0
 var base_power: float = 1.0
 var step_mult: float = 1.15
-var flight_mult: float = 1.0
 var dash_style: DashStyle = DashStyle.DBZ_VANISH_RUSH
 
 var state: MoveState = MoveState.GROUND
@@ -77,18 +52,15 @@ var dash_timer: float = 0.0
 var dash_cd_timer: float = 0.0
 var dash_dir: Vector3 = Vector3.FORWARD
 var dash_start_pos: Vector3 = Vector3.ZERO
-var dash_leads_to_flight: bool = false
 var whip_lag_timer: float = 0.0
-var hitstun_timer: float = 0.0
+var air_hang_timer: float = 0.0
 var jump_count: int = 0
-var is_momentum_coasting: bool = false
-var coasting_velocity: Vector3 = Vector3.ZERO
+var max_jumps: int = 2
 var is_locked_on: bool = false
 var lock_target: Node3D = null
 
 var anim_step_accum: float = 0.0
 var stepped_time: float = 0.0
-var echo_color_idx: int = 0
 
 var left_touch_id: int = -1
 var right_look_touch_id: int = -1
@@ -105,17 +77,12 @@ var is_left_dragging: bool = false
 @onready var camera: Camera3D = $CameraPivot/SpringArm3D/Camera3D
 @onready var combat: Node = get_node_or_null("../CombatManager")
 
+const CombatDataScript = preload("res://combat_data.gd")
+const DashVFXScript = preload("res://dash_vfx.gd")
+var data_store = null
+var dash_vfx = null
 var anime_mat: ShaderMaterial = null
 var outline_mat: ShaderMaterial = null
-var afterimages: Array[MeshInstance3D] = []
-var afterimage_alphas: Array[float] = [0.0, 0.0, 0.0]
-var afterimage_mats: Array[StandardMaterial3D] = []
-var afterimage_idx: int = 0
-var afterimage_timer: float = 0.0
-var dash_fx_mesh: MeshInstance3D = null
-var dash_fx_mat: StandardMaterial3D = null
-var dash_fx_timer: float = 0.0
-
 var custom_model_root: Node3D = null
 var active_anim_player: AnimationPlayer = null
 var active_skeleton: Skeleton3D = null
@@ -123,10 +90,19 @@ var active_skeleton: Skeleton3D = null
 func _ready() -> void:
 	DirAccess.make_dir_recursive_absolute("user://models")
 	DirAccess.make_dir_recursive_absolute("user://vfx")
+	data_store = CombatDataScript.new()
+	data_store.name = "CombatData"
+	add_child(data_store)
+
+	dash_vfx = DashVFXScript.new()
+	dash_vfx.name = "DashVFX"
+	add_child(dash_vfx)
+
 	_setup_materials()
-	_setup_afterimages()
 	_register_input_actions()
+	data_store.load_from_disk(self)
 	apply_race_by_name(active_race_name)
+
 	if not DisplayServer.is_touchscreen_available():
 		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 	else:
@@ -199,52 +175,6 @@ func update_cel_shader(cel: float, out_w: float, rim_s: float, rim_col: Color = 
 	if outline_mat:
 		outline_mat.set_shader_parameter("width", out_w)
 
-func _setup_afterimages() -> void:
-	var holder := Node3D.new()
-	holder.name = "AfterimagePool"
-	add_child(holder)
-	var mesh := CapsuleMesh.new()
-	mesh.radius = 0.45
-	mesh.height = 1.75
-	for i in range(3):
-		var mi := MeshInstance3D.new()
-		mi.mesh = mesh
-		mi.top_level = true
-		mi.visible = false
-		var mat := StandardMaterial3D.new()
-		mat.shading_mode = StandardMaterial3D.SHADING_MODE_UNSHADED
-		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-		mat.albedo_color = Color(0.95, 0.12, 0.18, 0.0)
-		mi.material_override = mat
-		holder.add_child(mi)
-		afterimages.append(mi)
-		afterimage_mats.append(mat)
-
-	dash_fx_mesh = MeshInstance3D.new()
-	var cyl := CylinderMesh.new()
-	cyl.top_radius = 0.35
-	cyl.bottom_radius = 0.35
-	cyl.height = 3.0
-	dash_fx_mesh.mesh = cyl
-	dash_fx_mesh.top_level = true
-	dash_fx_mesh.visible = false
-	dash_fx_mat = StandardMaterial3D.new()
-	dash_fx_mat.shading_mode = StandardMaterial3D.SHADING_MODE_UNSHADED
-	dash_fx_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	dash_fx_mat.albedo_color = Color(0.95, 0.15, 0.2, 0.85)
-	dash_fx_mesh.material_override = dash_fx_mat
-	holder.add_child(dash_fx_mesh)
-
-func spawn_afterimage(col: Color, alpha_val: float = 0.75) -> void:
-	if afterimages.is_empty(): return
-	var mi := afterimages[afterimage_idx]
-	var mat := afterimage_mats[afterimage_idx]
-	mi.global_transform = visual_root.global_transform if visual_root else global_transform
-	mi.visible = true
-	afterimage_alphas[afterimage_idx] = alpha_val
-	mat.albedo_color = Color(col.r, col.g, col.b, alpha_val)
-	afterimage_idx = (afterimage_idx + 1) % 3
-
 func _reset_dash_visuals() -> void:
 	if visual_root:
 		visual_root.visible = true
@@ -253,24 +183,31 @@ func _reset_dash_visuals() -> void:
 		visual_root.rotation.z = 0.0
 		visual_root.position.y = 0.0
 
+func trigger_air_hang(duration: float = 0.42) -> void:
+	air_hang_timer = maxf(air_hang_timer, duration)
+	if not is_on_floor() and velocity.y < 1.5:
+		velocity.y = 1.5
+
 func apply_race_by_name(r_name: String) -> void:
-	if not custom_races.has(r_name): return
+	if not data_store or not data_store.profiles.has(r_name): return
 	active_race_name = r_name
-	var r: Dictionary = custom_races[r_name]
-	max_hp = r.get("max_hp", 1000.0)
+	var r: Dictionary = data_store.profiles[r_name]
+	max_hp = float(r.get("max_hp", 1000.0))
 	hp = max_hp
-	hp_regen = r.get("hp_regen", 15.0)
-	max_mana = r.get("max_mana", 100.0)
+	hp_regen = float(r.get("hp_regen", 15.0))
+	max_mana = float(r.get("max_mana", 100.0))
 	mana = max_mana
-	mana_regen = r.get("mana_regen", 12.0)
-	physical_strength = r.get("physical_strength", 1.0)
-	base_power = r.get("base_power", 1.0)
-	step_mult = r.get("step_mult", 1.15)
-	flight_mult = r.get("flight_mult", 1.0)
-	dash_style = r.get("dash_style", DashStyle.DBZ_VANISH_RUSH) as DashStyle
-	var col: Color = r.get("aura_color", Color(0.95, 0.12, 0.18))
-	update_cel_shader(cel_cut_threshold, outline_width, rim_strength, col)
-	var m_path: String = r.get("model_path", "")
+	mana_regen = float(r.get("mana_regen", 14.0))
+	physical_strength = float(r.get("physical_strength", 1.0))
+	base_power = float(r.get("base_power", 1.0))
+	step_mult = float(r.get("step_mult", 1.15))
+	dash_style = int(r.get("dash_style", 0)) as DashStyle
+	afterimage_enabled = bool(r.get("afterimage_on", false))
+	var ac: Array = r.get("aura_color", [0.95, 0.12, 0.18])
+	update_cel_shader(cel_cut_threshold, outline_width, rim_strength, Color(ac[0], ac[1], ac[2]))
+	if dash_vfx and not afterimage_enabled:
+		dash_vfx.clear_afterimages()
+	var m_path: String = str(r.get("model_path", ""))
 	if not m_path.is_empty():
 		swap_custom_model(m_path)
 
@@ -315,7 +252,7 @@ func _find_skeleton(n: Node) -> Skeleton3D:
 func _register_input_actions() -> void:
 	var acts := {
 		"move_forward": KEY_W, "move_back": KEY_S, "move_left": KEY_A, "move_right": KEY_D,
-		"jump": KEY_SPACE, "dash": KEY_SHIFT, "fly": KEY_F, "lock_on": KEY_Q
+		"jump": KEY_SPACE, "dash": KEY_SHIFT, "lock_on": KEY_Q
 	}
 	for a in acts.keys():
 		if not InputMap.has_action(a):
@@ -333,15 +270,14 @@ func toggle_lock_on() -> void:
 
 func cycle_lock_target() -> void:
 	var targets := get_tree().get_nodes_in_group("lock_on_targets")
-	if targets.is_empty():
-		is_locked_on = false
-		lock_target = null
-		return
 	var valid_targets: Array[Node3D] = []
 	for t in targets:
 		if t is Node3D and t != self:
 			valid_targets.append(t as Node3D)
-	if valid_targets.is_empty(): return
+	if valid_targets.is_empty():
+		is_locked_on = false
+		lock_target = null
+		return
 	if not is_locked_on or not is_instance_valid(lock_target):
 		lock_target = valid_targets[0]
 		is_locked_on = true
@@ -355,7 +291,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 	if event is InputEventMouseMotion and Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED:
 		cam_rot_y -= event.relative.x * 0.18
-		cam_rot_x = clampf(cam_rot_x - event.relative.y * 0.18, -75.0, 75.0)
+		cam_rot_x = clampf(cam_rot_x - event.relative.y * 0.18, -70.0, 70.0)
 
 	if event is InputEventScreenTouch:
 		if event.pressed:
@@ -386,10 +322,8 @@ func _unhandled_input(event: InputEvent) -> void:
 				is_left_dragging = true
 		elif event.index == right_look_touch_id:
 			cam_rot_y -= event.relative.x * camera_sensitivity
-			cam_rot_x = clampf(cam_rot_x - event.relative.y * camera_sensitivity, -75.0, 75.0)
+			cam_rot_x = clampf(cam_rot_x - event.relative.y * camera_sensitivity, -70.0, 70.0)
 
-	if event.is_action_pressed("fly"):
-		state = MoveState.FLIGHT if state != MoveState.FLIGHT else MoveState.GROUND
 	if event.is_action_pressed("lock_on"):
 		toggle_lock_on()
 	if event.is_action_pressed("jump") and not DisplayServer.is_touchscreen_available():
@@ -400,7 +334,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		var cr := camera.global_transform.basis.x; cr.y = 0.0; cr = cr.normalized()
 		var d := (cr * in_v.x + cf * -in_v.y).normalized()
 		if d.length_squared() < 0.01: d = cf
-		trigger_dash(d, state == MoveState.FLIGHT)
+		trigger_dash(d)
 
 func _handle_left_release(pos: Vector2) -> void:
 	var delta := pos - left_touch_start
@@ -408,87 +342,59 @@ func _handle_left_release(pos: Vector2) -> void:
 	var dir := delta.normalized()
 	var duration := (Time.get_ticks_msec() / 1000.0) - left_touch_start_time
 
-	if left_touch_start.x < 75.0 or (dist > 130.0 and absf(dir.y) > 0.7):
-		if dir.y < -0.7:
-			trigger_dash(Vector3.UP, true)
-		elif dir.y > 0.7:
-			trigger_dash(Vector3.DOWN, false)
-	elif duration <= 0.22 and dist >= 38.0:
+	if duration <= 0.24 and dist >= 36.0:
 		var cf := -camera.global_transform.basis.z; cf.y = 0.0; cf = cf.normalized()
 		var cr := camera.global_transform.basis.x; cr.y = 0.0; cr = cr.normalized()
 		var w_dir := (cr * dir.x + cf * -dir.y).normalized()
-		trigger_dash(w_dir, state == MoveState.FLIGHT)
-	elif duration < 0.22 and dist < 28.0:
+		trigger_dash(w_dir)
+	elif duration < 0.24 and dist < 28.0:
 		_trigger_jump()
 
 func _trigger_jump() -> void:
-	if state == MoveState.FLIGHT:
-		velocity.y = altitude_burst
-		return
-	jump_count += 1
-	if jump_count == 1:
-		velocity.y = jump_velocity
-	elif jump_count == 2:
-		velocity.y = jump_velocity * 1.15
-	elif jump_count >= 3:
-		state = MoveState.FLIGHT
-		velocity.y = altitude_burst
+	if jump_count < max_jumps:
+		jump_count += 1
+		state = MoveState.AIR
+		velocity.y = jump_velocity * (1.12 if jump_count == 2 else 1.0)
+		if dash_vfx:
+			dash_vfx.spawn_step_sigil(global_position, Color(0.95, 0.95, 1.0), 1.1)
 
-func trigger_dash(dir: Vector3, keep_flight: bool = false) -> void:
+func trigger_dash(dir: Vector3) -> void:
 	if dash_cd_timer > 0.0: return
 	_reset_dash_visuals()
 	state = MoveState.DASH
 	dash_timer = dash_duration
 	dash_cd_timer = dash_cooldown
-	dash_leads_to_flight = keep_flight
 	dash_start_pos = global_position
 	dash_dir = dir.normalized() if dir.length_squared() > 0.01 else -global_transform.basis.z
 	whip_lag_timer = camera_whip_lag
 
-	if is_locked_on and is_instance_valid(lock_target) and global_position.distance_to(lock_target.global_position) < 8.0 and dir.y > -0.5:
-		global_position = lock_target.global_position + lock_target.global_transform.basis.z * 2.2
-		cam_rot_y += 180.0
+	# Sparking Zero Z-Vanish behind close target OR Homing Burst Pursuit toward distant/airborne target
+	if is_locked_on and is_instance_valid(lock_target):
+		var dist_to_t := global_position.distance_to(lock_target.global_position)
+		var to_target := (lock_target.global_position - global_position).normalized()
+		if dist_to_t < 8.5 and dash_dir.dot(Vector3(to_target.x, 0, to_target.z).normalized()) > 0.2:
+			global_position = lock_target.global_position + lock_target.global_transform.basis.z * 2.2
+			dash_dir = (lock_target.global_position - global_position).normalized()
+			velocity = Vector3.ZERO
+			cam_rot_y += 180.0
+			trigger_air_hang(0.45)
+		elif dash_dir.dot(Vector3(to_target.x, 0, to_target.z).normalized()) > 0.45:
+			dash_dir = to_target
+			velocity = dash_dir * dash_speed * step_mult
+		else:
+			velocity = dash_dir * dash_speed * step_mult
 	else:
 		velocity = dash_dir * dash_speed * step_mult
 
-	match dash_style:
-		DashStyle.DBZ_VANISH_RUSH:
-			if visual_root: visual_root.visible = false
-			camera.fov = dash_fov_kick + 14.0
-			spawn_afterimage(Color(0.95, 0.95, 1.0), 0.85)
-		DashStyle.BLEACH_SONIDO:
-			spawn_afterimage(Color(0.01, 0.01, 0.02), 0.96)
-			velocity *= 1.35
-		DashStyle.SANDEVISTAN_ECHO:
-			echo_color_idx = 0
-			spawn_afterimage(Color(0.95, 0.12, 0.18), 0.85)
-		DashStyle.MACH_CONE_BURST:
-			if visual_root:
-				visual_root.rotation.x = deg_to_rad(-42.0)
-				visual_root.scale = Vector3(0.8, 0.8, 1.45)
-			if dash_fx_mesh:
-				dash_fx_mesh.global_position = dash_start_pos + Vector3(0, 1.0, 0)
-				dash_fx_mesh.scale = Vector3(3.5, 0.08, 3.5)
-				dash_fx_mat.albedo_color = Color(0.95, 0.95, 1.0, 0.85)
-				dash_fx_mesh.visible = true
-				dash_fx_timer = 0.22
-		DashStyle.SHADOW_ABYSS_SINK:
-			if visual_root:
-				visual_root.scale = Vector3(1.85, 0.04, 1.85)
-			spawn_afterimage(Color(0.02, 0.0, 0.04), 0.92)
-		DashStyle.TOUKI_HORIZON_FLASH:
-			if dash_fx_mesh:
-				dash_fx_mesh.global_position = dash_start_pos + Vector3(0, 1.0, 0)
-				dash_fx_mesh.scale = Vector3(0.6, 2.5, 0.6)
-				dash_fx_mat.albedo_color = Color(0.95, 0.12, 0.18, 0.9)
-				dash_fx_mesh.visible = true
-				dash_fx_timer = 0.25
+	if dash_vfx:
+		dash_vfx.trigger_style_fx(dash_style, dash_start_pos, global_position + dash_dir * 6.0, visual_root, afterimage_enabled)
 
 func _physics_process(delta: float) -> void:
 	hp = minf(max_hp, hp + hp_regen * delta)
 	mana = minf(max_mana, mana + mana_regen * delta)
 	if dash_cd_timer > 0.0: dash_cd_timer -= delta
 	if whip_lag_timer > 0.0: whip_lag_timer -= delta
+	if air_hang_timer > 0.0: air_hang_timer -= delta
 
 	var mv_vec := Vector2.ZERO
 	var is_sprint_drag := false
@@ -505,7 +411,8 @@ func _physics_process(delta: float) -> void:
 		MoveState.DASH:
 			dash_timer -= delta
 			var spd_mult := 1.35 if dash_style == DashStyle.BLEACH_SONIDO else 1.0
-			velocity = dash_dir * dash_speed * step_mult * spd_mult
+			if velocity.length_squared() > 1.0:
+				velocity = dash_dir * dash_speed * step_mult * spd_mult
 			if dash_style == DashStyle.DBZ_VANISH_RUSH and visual_root:
 				visual_root.visible = dash_timer < (dash_duration * 0.2)
 			elif dash_style == DashStyle.SHADOW_ABYSS_SINK and visual_root:
@@ -515,44 +422,32 @@ func _physics_process(delta: float) -> void:
 				visual_root.scale = Vector3(0.8, 0.8, 1.45)
 			if dash_timer <= 0.0:
 				_reset_dash_visuals()
-				state = MoveState.FLIGHT if (dash_leads_to_flight or not is_on_floor()) else MoveState.GROUND
-		MoveState.FLIGHT:
-			var cf := -camera.global_transform.basis.z
-			var cr := camera.global_transform.basis.x
-			var t_vel := (cr * mv_vec.x + cf * -mv_vec.y).normalized() * flight_speed * flight_mult
-			if is_momentum_coasting:
-				velocity = velocity.lerp(coasting_velocity, 4.0 * delta)
-			else:
-				velocity = velocity.lerp(t_vel, 10.0 * delta)
-				coasting_velocity = velocity
-			if mv_vec.length_squared() > 0.01:
-				visual_root.rotation.y = lerp_angle(visual_root.rotation.y, atan2(-velocity.x, -velocity.z), 14.0 * delta)
-		MoveState.GROUND, MoveState.SPRINT, MoveState.WINDUP, MoveState.GUARD, MoveState.HITSTUN:
+				state = MoveState.AIR if not is_on_floor() else MoveState.GROUND
+		_:
 			var cf := -camera.global_transform.basis.z; cf.y = 0.0; cf = cf.normalized()
 			var cr := camera.global_transform.basis.x; cr.y = 0.0; cr = cr.normalized()
 			var t_dir := (cr * mv_vec.x + cf * -mv_vec.y).normalized()
 			var spd := (sprint_speed if is_sprint_drag else run_speed)
-			if is_momentum_coasting:
-				velocity.x = lerpf(velocity.x, coasting_velocity.x, 4.0 * delta)
-				velocity.z = lerpf(velocity.z, coasting_velocity.z, 4.0 * delta)
-			else:
-				velocity.x = lerpf(velocity.x, t_dir.x * spd, 14.0 * delta)
-				velocity.z = lerpf(velocity.z, t_dir.z * spd, 14.0 * delta)
-				coasting_velocity = velocity
+			velocity.x = lerpf(velocity.x, t_dir.x * spd, 14.0 * delta)
+			velocity.z = lerpf(velocity.z, t_dir.z * spd, 14.0 * delta)
+
 			if not is_on_floor():
-				velocity.y += get_gravity().y * delta
+				var g_scale := air_combo_gravity_scale if air_hang_timer > 0.0 else 1.0
+				velocity.y += get_gravity().y * g_scale * delta
 			elif velocity.y < 0.0:
 				velocity.y = 0.0
+
 			if t_dir.length_squared() > 0.01:
 				visual_root.rotation.y = lerp_angle(visual_root.rotation.y, atan2(-t_dir.x, -t_dir.z), 15.0 * delta)
 
 	move_and_slide()
 	if is_on_floor():
 		jump_count = 0
-		if state == MoveState.FLIGHT and velocity.y <= 0.0:
+		if state == MoveState.AIR:
 			state = MoveState.GROUND
 
-	_update_afterimages(delta)
+	if dash_vfx:
+		dash_vfx.update_vfx(delta, state == MoveState.DASH, dash_style, visual_root, afterimage_enabled)
 	_update_stepped_animation(delta)
 
 func _update_stepped_animation(delta: float) -> void:
@@ -574,34 +469,6 @@ func _update_stepped_animation(delta: float) -> void:
 			else:
 				visual_root.position.y = sin(stepped_time * 3.5) * 0.04
 				visual_root.rotation.x = 0.0
-
-func _update_afterimages(delta: float) -> void:
-	if dash_fx_timer > 0.0:
-		dash_fx_timer -= delta
-		if dash_fx_timer <= 0.0 and dash_fx_mesh:
-			dash_fx_mesh.visible = false
-
-	if state == MoveState.DASH or velocity.length_squared() > 700.0:
-		afterimage_timer -= delta
-		if afterimage_timer <= 0.0:
-			afterimage_timer = 0.035 if dash_style == DashStyle.SANDEVISTAN_ECHO else 0.05
-			if dash_style == DashStyle.SANDEVISTAN_ECHO:
-				var echo_cols: Array[Color] = [Color(0.95, 0.12, 0.18), Color(1.0, 0.82, 0.15), Color(0.92, 0.92, 0.96)]
-				spawn_afterimage(echo_cols[echo_color_idx % 3], 0.85)
-				echo_color_idx += 1
-			elif dash_style == DashStyle.BLEACH_SONIDO:
-				spawn_afterimage(Color(0.01, 0.01, 0.02), 0.9)
-			else:
-				spawn_afterimage(Color(0.95, 0.12, 0.18), 0.65)
-
-	for i in range(3):
-		if afterimage_alphas[i] > 0.0:
-			afterimage_alphas[i] = maxf(0.0, afterimage_alphas[i] - delta * 3.5)
-			var c := afterimage_mats[i].albedo_color
-			c.a = afterimage_alphas[i]
-			afterimage_mats[i].albedo_color = c
-			if afterimage_alphas[i] <= 0.0:
-				afterimages[i].visible = false
 
 func _process(delta: float) -> void:
 	if is_locked_on and is_instance_valid(lock_target):

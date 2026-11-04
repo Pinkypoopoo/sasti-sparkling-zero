@@ -47,7 +47,7 @@ func _build_ui() -> void:
 	action_bar = HBoxContainer.new()
 	action_bar.anchor_left = 1.0
 	action_bar.anchor_right = 1.0
-	action_bar.offset_left = -740
+	action_bar.offset_left = -760
 	action_bar.offset_top = 12
 	action_bar.offset_right = -16
 	action_bar.offset_bottom = 52
@@ -57,16 +57,17 @@ func _build_ui() -> void:
 
 	btn_lock = _add_quick_btn("[ LOCK (Q) ]", func(): if player: player.toggle_lock_on())
 	_add_quick_btn("[ SWITCH ]", func(): if player: player.cycle_lock_target())
-	_add_quick_btn("[ FLY (F) ]", func():
-		if player:
-			player.state = PlayerController.MoveState.FLIGHT if player.state != PlayerController.MoveState.FLIGHT else PlayerController.MoveState.GROUND
-	)
 	btn_ai = _add_quick_btn("[ AI: RIVAL ]", func():
 		if combat:
 			combat.ai_mode = ((combat.ai_mode + 1) % 4) as GestureCombat.AIMode
 			btn_ai.text = "[ AI: %s ]" % GestureCombat.AIMode.keys()[combat.ai_mode]
 	)
-	btn_fps = _add_quick_btn("[ FPS: VSYNC ]", _cycle_fps)
+	btn_fps = _add_quick_btn("[ FPS: MAX ]", _cycle_fps)
+	_add_quick_btn("[ SAVE JSON ]", func():
+		if player and player.data_store:
+			player.data_store.save_to_disk(player)
+			if combat: combat.last_combat_action = "SAVED TO JSON!"
+	)
 	_add_quick_btn("[ DEV STUDIO (Tab) ]", _toggle_dev_panel)
 
 	dev_panel = PanelContainer.new()
@@ -75,10 +76,10 @@ func _build_ui() -> void:
 	dev_panel.anchor_top = 0.5
 	dev_panel.anchor_right = 0.5
 	dev_panel.anchor_bottom = 0.5
-	dev_panel.offset_left = -360
-	dev_panel.offset_top = -230
-	dev_panel.offset_right = 360
-	dev_panel.offset_bottom = 230
+	dev_panel.offset_left = -380
+	dev_panel.offset_top = -240
+	dev_panel.offset_right = 380
+	dev_panel.offset_bottom = 240
 	add_child(dev_panel)
 
 	var root_vbox := VBoxContainer.new()
@@ -86,7 +87,7 @@ func _build_ui() -> void:
 
 	var header := HBoxContainer.new()
 	var title := Label.new()
-	title.text = "  SASTI SPARKLING ZERO — DEV STUDIO"
+	title.text = "  SASTI SPARKLING ZERO — MODULAR DEV STUDIO"
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	header.add_child(title)
 	var close_b := Button.new()
@@ -101,8 +102,8 @@ func _build_ui() -> void:
 
 	_build_tab_physics()
 	_build_tab_races()
-	_build_tab_gestures()
-	_build_tab_models()
+	_build_tab_moves()
+	_build_tab_spells()
 	_build_tab_visuals()
 
 func _add_quick_btn(txt: String, cb: Callable) -> Button:
@@ -115,25 +116,22 @@ func _add_quick_btn(txt: String, cb: Callable) -> Button:
 	return b
 
 func _cycle_fps() -> void:
-	fps_mode_idx = (fps_mode_idx + 1) % 4
+	fps_mode_idx = (fps_mode_idx + 1) % 3
+	# Do NOT call VSYNC_DISABLED on Android to prevent Vulkan swap_chain_resize warning
+	var is_android := DisplayServer.get_name() == "Android"
 	match fps_mode_idx:
 		0:
-			DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_ENABLED)
+			if not is_android: DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_ENABLED)
 			Engine.max_fps = 0
-			Engine.physics_ticks_per_second = 60
-			btn_fps.text = "[ FPS: VSYNC ]"
+			Engine.physics_ticks_per_second = 120
+			btn_fps.text = "[ FPS: NATIVE ]"
 		1:
-			DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
-			Engine.max_fps = 0
-			Engine.physics_ticks_per_second = 144
-			btn_fps.text = "[ FPS: UNLIMITED ]"
-		2:
-			DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+			if not is_android: DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 			Engine.max_fps = 144
 			Engine.physics_ticks_per_second = 144
 			btn_fps.text = "[ FPS: 144Hz ]"
-		3:
-			DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+		2:
+			if not is_android: DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 			Engine.max_fps = 165
 			Engine.physics_ticks_per_second = 165
 			btn_fps.text = "[ FPS: 165Hz ]"
@@ -153,7 +151,7 @@ func _add_row(parent: Control, obj: Object, prop: String, min_v: float, max_v: f
 	parent.add_child(h)
 	var l := Label.new()
 	l.text = prop
-	l.custom_minimum_size = Vector2(175, 0)
+	l.custom_minimum_size = Vector2(180, 0)
 	h.add_child(l)
 
 	var s := HSlider.new()
@@ -197,134 +195,161 @@ func _add_row(parent: Control, obj: Object, prop: String, min_v: float, max_v: f
 	h.add_child(sp)
 
 func _build_tab_physics() -> void:
-	var vb := _make_scroll_tab("1. Physics & Orbs")
+	var vb := _make_scroll_tab("1. Physics & Hang-Time")
 	var p_defs := [
 		["run_speed", 4.0, 45.0, 0.5], ["sprint_speed", 10.0, 70.0, 0.5],
-		["flight_speed", 10.0, 80.0, 0.5], ["dash_speed", 20.0, 120.0, 1.0],
-		["dash_duration", 0.05, 0.6, 0.01], ["dash_cooldown", 0.0, 0.5, 0.01],
-		["jump_velocity", 5.0, 35.0, 0.5], ["altitude_burst", 5.0, 45.0, 0.5],
-		["camera_distance", 1.5, 14.0, 0.2], ["base_fov", 50.0, 115.0, 1.0],
-		["camera_sensitivity", 0.05, 1.0, 0.01], ["feint_threshold_px", 40.0, 180.0, 2.0]
+		["dash_speed", 20.0, 120.0, 1.0], ["dash_duration", 0.05, 0.6, 0.01],
+		["dash_cooldown", 0.0, 0.5, 0.01], ["jump_velocity", 5.0, 35.0, 0.5],
+		["air_combo_gravity_scale", 0.02, 1.0, 0.02], ["camera_distance", 1.5, 14.0, 0.2],
+		["base_fov", 50.0, 115.0, 1.0], ["camera_sensitivity", 0.05, 1.0, 0.01],
+		["feint_threshold_px", 40.0, 180.0, 2.0]
 	]
 	for d in p_defs:
 		_add_row(vb, player, d[0], d[1], d[2], d[3])
-	_add_row(vb, combat, "right_dot_collapsed_r", 24.0, 90.0, 2.0)
-	_add_row(vb, combat, "right_dot_expanded_r", 80.0, 240.0, 5.0)
-	_add_row(vb, combat, "left_dot_collapsed_r", 24.0, 90.0, 2.0)
-	_add_row(vb, combat, "left_dot_expanded_r", 80.0, 240.0, 5.0)
 
 func _build_tab_races() -> void:
-	var vb := _make_scroll_tab("2. Race & Dash Builder")
+	var vb := _make_scroll_tab("2. Profile & Dash")
 	var top := HBoxContainer.new()
 	vb.add_child(top)
 	var r_opt := OptionButton.new()
 	r_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	if player:
-		for k in player.custom_races.keys(): r_opt.add_item(k)
+	for k in ["Profile_1", "Profile_2", "Profile_3", "Profile_4"]:
+		r_opt.add_item(k)
 	top.add_child(r_opt)
 
-	var new_name := LineEdit.new()
-	new_name.placeholder_text = "New Race Name..."
-	new_name.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	top.add_child(new_name)
-
-	var btn_add := Button.new()
-	btn_add.text = " + Create/Save Race "
-	top.add_child(btn_add)
-
 	var style_row := HBoxContainer.new()
-	var s_lbl := Label.new(); s_lbl.text = "Dash Visual Style:"; s_lbl.custom_minimum_size = Vector2(175, 0)
+	var s_lbl := Label.new(); s_lbl.text = "Dash Style:"; s_lbl.custom_minimum_size = Vector2(140, 0)
 	style_row.add_child(s_lbl)
 	var style_opt := OptionButton.new()
 	for st in PlayerController.DashStyle.keys(): style_opt.add_item(st)
+	style_row.add_child(style_opt)
+
+	var chk_after := CheckBox.new()
+	chk_after.text = "Paradox Afterimage Clones"
+	chk_after.button_pressed = false
+	style_row.add_child(chk_after)
+	vb.add_child(style_row)
+
 	style_opt.item_selected.connect(func(idx: int):
 		if player:
 			player.dash_style = idx as PlayerController.DashStyle
-			player.custom_races[player.active_race_name]["dash_style"] = idx
+			if player.data_store:
+				player.data_store.profiles[player.active_race_name]["dash_style"] = idx
 	)
-	style_row.add_child(style_opt)
-	vb.add_child(style_row)
-
+	chk_after.toggled.connect(func(on: bool):
+		if player:
+			player.afterimage_enabled = on
+			if player.data_store:
+				player.data_store.profiles[player.active_race_name]["afterimage_on"] = on
+			if not on and player.dash_vfx:
+				player.dash_vfx.clear_afterimages()
+	)
 	r_opt.item_selected.connect(func(idx: int):
 		if player:
 			player.apply_race_by_name(r_opt.get_item_text(idx))
 			style_opt.selected = player.dash_style
-	)
-	btn_add.pressed.connect(func():
-		if not player or new_name.text.strip_edges().is_empty(): return
-		var rn := new_name.text.strip_edges()
-		player.custom_races[rn] = {
-			"max_hp": player.max_hp, "hp_regen": player.hp_regen,
-			"max_mana": player.max_mana, "mana_regen": player.mana_regen,
-			"physical_strength": player.physical_strength, "base_power": player.base_power,
-			"step_mult": player.step_mult, "flight_mult": player.flight_mult,
-			"dash_style": player.dash_style, "aura_color": Color(0.95, 0.12, 0.18), "model_path": ""
-		}
-		r_opt.add_item(rn)
-		r_opt.selected = r_opt.item_count - 1
-		player.apply_race_by_name(rn)
+			chk_after.button_pressed = player.afterimage_enabled
 	)
 
-	var r_defs := [
-		["max_hp", 200.0, 5000.0, 50.0], ["hp_regen", 0.0, 100.0, 1.0],
-		["max_mana", 20.0, 500.0, 10.0], ["mana_regen", 0.0, 50.0, 1.0],
-		["physical_strength", 0.2, 5.0, 0.05], ["base_power", 0.2, 5.0, 0.05],
-		["step_mult", 0.5, 3.0, 0.05], ["flight_mult", 0.5, 3.0, 0.05],
-		["vanish_strobe_hz", 4.0, 40.0, 1.0]
-	]
-	for d in r_defs:
+	for d in [["max_hp", 200.0, 5000.0, 50.0], ["max_mana", 20.0, 500.0, 10.0], ["physical_strength", 0.2, 5.0, 0.05], ["base_power", 0.2, 5.0, 0.05], ["step_mult", 0.5, 3.0, 0.05]]:
 		_add_row(vb, player, d[0], d[1], d[2], d[3])
 
-func _build_tab_gestures() -> void:
-	var vb := _make_scroll_tab("3. Gesture & VFX Maker")
-	var m_opt := OptionButton.new()
-	if combat:
-		for k in combat.action_table.keys(): m_opt.add_item(k)
-	vb.add_child(m_opt)
+func _build_tab_moves() -> void:
+	var vb := _make_scroll_tab("3. Physical Move Slots")
+	var top := HBoxContainer.new(); vb.add_child(top)
+	var m_opt := OptionButton.new(); m_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var slot_keys := ["Slot_1_Up", "Slot_2_Down", "Slot_3_Left", "Slot_4_Right", "Slot_5_Diag_UL", "Slot_6_Diag_UR", "Slot_7_Burst", "Slot_8_Counter"]
+	for k in slot_keys: m_opt.add_item(k)
+	top.add_child(m_opt)
 
-	var dyn := VBoxContainer.new()
-	vb.add_child(dyn)
+	var new_m := LineEdit.new(); new_m.placeholder_text = "New Move Slot Name..."; top.add_child(new_m)
+	var b_add := Button.new(); b_add.text = "+ Add Slot"; top.add_child(b_add)
 
+	var dyn := VBoxContainer.new(); vb.add_child(dyn)
 	var rebuild := func(m_key: String):
 		for c in dyn.get_children(): c.queue_free()
-		if not combat or not combat.action_table.has(m_key): return
-		var entry: Dictionary = combat.action_table[m_key]
-		for f in [["step_force", 0.0, 50.0], ["lunge_force", 0.0, 60.0], ["vertical_lift", -30.0, 30.0], ["dmg", 10.0, 600.0], ["posture", 5.0, 300.0]]:
+		if not player or not player.data_store or not player.data_store.move_slots.has(m_key): return
+		var entry: Dictionary = player.data_store.move_slots[m_key]
+		for f in [["step_force", 0.0, 50.0], ["lunge_force", 0.0, 60.0], ["vertical_lift", -30.0, 30.0], ["dmg", 10.0, 600.0], ["posture", 5.0, 300.0], ["knockback", 0.0, 45.0], ["launch_y", -25.0, 25.0]]:
 			var row := HBoxContainer.new(); dyn.add_child(row)
 			var l := Label.new(); l.text = f[0]; l.custom_minimum_size = Vector2(160, 0); row.add_child(l)
-			var sp := SpinBox.new(); sp.min_value = f[1]; sp.max_value = f[2]; sp.step = 1.0; sp.allow_greater = true
-			sp.value = entry.get(f[0], 10.0)
-			var key_name: String = f[0]
-			sp.value_changed.connect(func(v: float): entry[key_name] = v)
+			var sp := SpinBox.new(); sp.min_value = f[1]; sp.max_value = f[2]; sp.step = 0.5; sp.allow_greater = true
+			sp.value = float(entry.get(f[0], 10.0))
+			var k_name: String = f[0]
+			sp.value_changed.connect(func(v: float): entry[k_name] = v)
 			row.add_child(sp)
+
 	m_opt.item_selected.connect(func(i: int): rebuild.call(m_opt.get_item_text(i)))
-	if m_opt.item_count > 0: rebuild.call(m_opt.get_item_text(0))
+	b_add.pressed.connect(func():
+		if not player or not player.data_store or new_m.text.strip_edges().is_empty(): return
+		var nk := new_m.text.strip_edges()
+		player.data_store.move_slots[nk] = {"dir": "UP", "step_force": 15.0, "lunge_force": 18.0, "vertical_lift": 5.0, "dmg": 100.0, "posture": 45.0, "knockback": 8.0, "launch_y": 5.0, "anim": ""}
+		m_opt.add_item(nk)
+		m_opt.selected = m_opt.item_count - 1
+		rebuild.call(nk)
+	)
+	call_deferred("_deferred_init_moves", rebuild)
 
-func _build_tab_models() -> void:
-	var vb := _make_scroll_tab("4. 3D Model & Jiggle")
-	var row := HBoxContainer.new(); vb.add_child(row)
-	var p_edit := LineEdit.new()
-	p_edit.placeholder_text = "res://models/hero.glb or user://models/hero.glb"
-	p_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row.add_child(p_edit)
-	var b_load := Button.new(); b_load.text = " Load .GLB "
-	b_load.pressed.connect(func(): if player: player.swap_custom_model(p_edit.text))
-	row.add_child(b_load)
+func _deferred_init_moves(cb: Callable) -> void:
+	cb.call("Slot_1_Up")
 
-	_add_row(vb, player, "model_scale", 0.05, 10.0, 0.05)
-	_add_row(vb, player, "model_rot_offset", -180.0, 180.0, 5.0)
-	_add_row(vb, player, "jiggle_stiffness", 1.0, 50.0, 0.5)
-	_add_row(vb, player, "jiggle_damping", 0.5, 20.0, 0.2)
-	_add_row(vb, player, "jiggle_gravity", 0.0, 5.0, 0.1)
+func _build_tab_spells() -> void:
+	var vb := _make_scroll_tab("4. Riptide Spell Maker")
+	var top := HBoxContainer.new(); vb.add_child(top)
+	var sp_opt := OptionButton.new(); sp_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	for k in ["Spell_Slot_1", "Spell_Slot_2", "Spell_Slot_3", "Spell_Slot_4", "Spell_Slot_5", "Spell_Slot_6"]:
+		sp_opt.add_item(k)
+	top.add_child(sp_opt)
+
+	var new_sp := LineEdit.new(); new_sp.placeholder_text = "New Spell Slot Name..."; top.add_child(new_sp)
+	var b_add := Button.new(); b_add.text = "+ Add Spell"; top.add_child(b_add)
+
+	var dyn := VBoxContainer.new(); vb.add_child(dyn)
+	var rebuild := func(s_key: String):
+		for c in dyn.get_children(): c.queue_free()
+		if not player or not player.data_store or not player.data_store.spell_slots.has(s_key): return
+		var entry: Dictionary = player.data_store.spell_slots[s_key]
+
+		var seq_row := HBoxContainer.new(); dyn.add_child(seq_row)
+		var sl := Label.new(); sl.text = "Swipe Sequence (UP,DOWN,LEFT,RIGHT):"; sl.custom_minimum_size = Vector2(240, 0); seq_row.add_child(sl)
+		var seq_edit := LineEdit.new(); seq_edit.text = str(entry.get("sequence", "UP,UP")); seq_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		seq_edit.text_changed.connect(func(txt: String): entry["sequence"] = txt.to_upper().strip_edges())
+		seq_row.add_child(seq_edit)
+
+		for f in [["step_force", 5.0, 50.0], ["vertical_hop", 0.0, 25.0], ["dmg", 20.0, 600.0], ["posture", 10.0, 300.0], ["proj_speed", 15.0, 120.0]]:
+			var row := HBoxContainer.new(); dyn.add_child(row)
+			var l := Label.new(); l.text = f[0]; l.custom_minimum_size = Vector2(180, 0); row.add_child(l)
+			var sp := SpinBox.new(); sp.min_value = f[1]; sp.max_value = f[2]; sp.step = 1.0; sp.allow_greater = true
+			sp.value = float(entry.get(f[0], 20.0))
+			var k_name: String = f[0]
+			sp.value_changed.connect(func(v: float): entry[k_name] = v)
+			row.add_child(sp)
+
+	sp_opt.item_selected.connect(func(i: int): rebuild.call(sp_opt.get_item_text(i)))
+	b_add.pressed.connect(func():
+		if not player or not player.data_store or new_sp.text.strip_edges().is_empty(): return
+		var nk := new_sp.text.strip_edges()
+		player.data_store.spell_slots[nk] = {"sequence": "UP,DOWN,UP", "step_force": 24.0, "vertical_hop": 6.0, "dmg": 175.0, "posture": 80.0, "proj_speed": 52.0, "color": [0.95, 0.15, 0.2]}
+		sp_opt.add_item(nk)
+		sp_opt.selected = sp_opt.item_count - 1
+		rebuild.call(nk)
+	)
+	call_deferred("_deferred_init_spells", rebuild)
+
+func _deferred_init_spells(cb: Callable) -> void:
+	cb.call("Spell_Slot_1")
 
 func _build_tab_visuals() -> void:
-	var vb := _make_scroll_tab("5. Shaders & AI Lab")
+	var vb := _make_scroll_tab("5. Shaders, 3D Model & AI")
+	var m_row := HBoxContainer.new(); vb.add_child(m_row)
+	var p_edit := LineEdit.new(); p_edit.placeholder_text = "res://models/hero.glb or user://models/hero.glb"; p_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL; m_row.add_child(p_edit)
+	var b_load := Button.new(); b_load.text = " Load .GLB "; b_load.pressed.connect(func(): if player: player.swap_custom_model(p_edit.text)); m_row.add_child(b_load)
+
 	_add_row(vb, player, "anim_step_fps", 6.0, 60.0, 1.0)
 	_add_row(vb, player, "cel_cut_threshold", 0.05, 0.95, 0.02)
 	_add_row(vb, player, "hatch_width", 0.0, 0.25, 0.01)
 	_add_row(vb, player, "outline_width", 0.0, 0.08, 0.002)
 	_add_row(vb, player, "rim_strength", 0.0, 2.5, 0.05)
-	_add_row(vb, combat, "ai_reaction_delay", 0.02, 0.8, 0.02)
 	_add_row(vb, combat, "ai_adaptation_rate", 0.05, 1.0, 0.05)
 	var rst := Button.new()
 	rst.text = " [ Reset Target Dummies & Clear AI Memory ] "
@@ -343,8 +368,9 @@ func _process(_delta: float) -> void:
 	var cpu_ms := Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0
 	var st_name: String = PlayerController.MoveState.keys()[player.state]
 	var dash_name: String = PlayerController.DashStyle.keys()[player.dash_style]
-	telemetry.text = "FPS: %d | Panel Hz: %d | GPU: %.2f ms | CPU: %.2f ms\nRace: %s | Dash: %s | State: %s | Action: %s" % [
-		fps, panel_hz, gpu_ms, cpu_ms, player.active_race_name, dash_name, st_name, combat.last_combat_action
+	var seq_txt := " -> ".join(combat.current_swipe_chain) if not combat.current_swipe_chain.is_empty() else combat.active_infusion
+	telemetry.text = "FPS: %d | Panel Hz: %d (OS Cap) | GPU: %.2f ms | CPU: %.2f ms\nProfile: %s | Dash: %s | State: %s | Weave: [%s] | Action: %s" % [
+		fps, panel_hz, gpu_ms, cpu_ms, player.active_race_name, dash_name, st_name, seq_txt, combat.last_combat_action
 	]
 	btn_lock.modulate = Color(0.3, 1.0, 0.5) if player.is_locked_on else Color.WHITE
 	queue_redraw()
@@ -352,19 +378,25 @@ func _process(_delta: float) -> void:
 func _draw() -> void:
 	if not player or not combat: return
 
+	# 1. Left Riptide Swipe-Sequence Orb
 	var l_pos := combat.left_dot_pos
+	var l_open := combat.is_left_dot_active or combat.left_dot_pinned
 	draw_circle(l_pos, combat.left_dot_collapsed_r, Color(0.15, 0.55, 1.0, 0.45))
 	draw_arc(l_pos, combat.left_dot_collapsed_r, 0.0, TAU, 32, Color(0.5, 0.85, 1.0, 0.9), 2.5)
-	draw_string(ThemeDB.fallback_font, l_pos + Vector2(-18, 5), "SPELL", HORIZONTAL_ALIGNMENT_CENTER, -1, 12, Color.WHITE)
-	if combat.is_left_dot_active:
-		draw_circle(l_pos, combat.left_dot_expanded_r, Color(0.05, 0.08, 0.14, 0.78))
-		draw_arc(l_pos, combat.left_dot_expanded_r, 0.0, TAU, 48, Color(0.3, 0.8, 1.0, 0.85), 2.5)
-		for i in range(5):
-			var np := combat.get_pentagon_node_pos(i)
-			var is_sel := (i == combat.selected_element_1 or i == combat.selected_element_2)
-			draw_circle(np, 24.0 if is_sel else 18.0, GestureCombat.ELEMENT_COLORS[i])
-			draw_string(ThemeDB.fallback_font, np + Vector2(-14, 5), GestureCombat.ELEMENTS[i].substr(0, 3), HORIZONTAL_ALIGNMENT_CENTER, -1, 11, Color.WHITE)
+	draw_string(ThemeDB.fallback_font, l_pos + Vector2(-20, 5), "WEAVE", HORIZONTAL_ALIGNMENT_CENTER, -1, 12, Color.WHITE)
+	if l_open:
+		draw_circle(l_pos, combat.left_dot_expanded_r, Color(0.05, 0.08, 0.14, 0.72))
+		draw_arc(l_pos, combat.left_dot_expanded_r, 0.0, TAU, 48, Color(0.95, 0.2, 0.3, 0.9), 2.5)
+		var dirs := [["UP", Vector2(0, -85)], ["DOWN", Vector2(0, 85)], ["LEFT", Vector2(-85, 0)], ["RIGHT", Vector2(85, 0)]]
+		for d in dirs:
+			var dp: Vector2 = l_pos + d[1]
+			var active_d := combat.current_swipe_chain.has(d[0])
+			draw_circle(dp, 22.0, Color(0.95, 0.15, 0.25, 0.9) if active_d else Color(0.2, 0.3, 0.45, 0.75))
+			draw_string(ThemeDB.fallback_font, dp + Vector2(-14, 5), str(d[0]).substr(0, 2), HORIZONTAL_ALIGNMENT_CENTER, -1, 11, Color.WHITE)
+		var chain_str := " -> ".join(combat.current_swipe_chain) if not combat.current_swipe_chain.is_empty() else "SWIPE SEQUENCE"
+		draw_string(ThemeDB.fallback_font, l_pos + Vector2(-55, -combat.left_dot_expanded_r - 12), chain_str, HORIZONTAL_ALIGNMENT_CENTER, -1, 14, Color(1.0, 0.85, 0.2))
 
+	# 2. Right 3-Zone Physical Attack & Sonic Sway Orb
 	var r_pos := combat.right_dot_pos
 	var r_open := combat.is_right_dot_active or combat.right_dot_pinned
 	draw_circle(r_pos, combat.right_dot_collapsed_r, Color(0.95, 0.22, 0.28, 0.5))
@@ -377,6 +409,7 @@ func _draw() -> void:
 		draw_arc(center, player.feint_threshold_px, 0.0, TAU, 48, Color(1.0, 0.85, 0.15, 0.85), 2.5)
 		draw_arc(center, combat.right_dot_expanded_r, 0.0, TAU, 48, Color(1.0, 0.3, 0.35, 0.85), 2.5)
 
+	# 3. Bottom-Left Player HP & Touki Bars
 	var hud_p := Vector2(20, get_viewport_rect().size.y - 68)
 	var hp_r := clampf(player.hp / maxf(1.0, player.max_hp), 0.0, 1.0)
 	var mp_r := clampf(player.mana / maxf(1.0, player.max_mana), 0.0, 1.0)
@@ -386,9 +419,10 @@ func _draw() -> void:
 
 	var mp_p := hud_p + Vector2(0, 22)
 	draw_rect(Rect2(mp_p, Vector2(200, 14)), Color(0.06, 0.07, 0.1, 0.9))
-	draw_rect(Rect2(mp_p + Vector2(2, 2), Vector2(196 * mp_r, 10)), Color(0.2, 0.65, 1.0))
+	draw_rect(Rect2(mp_p + Vector2(2, 2), Vector2(196 * mp_r, 10)), Color(0.95, 0.18, 0.25))
 	draw_string(ThemeDB.fallback_font, mp_p + Vector2(8, 11), "TOUKI: %d / %d (%s)" % [int(player.mana), int(player.max_mana), combat.active_infusion], HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color.WHITE)
 
+	# 4. Target Dummy Floating HP + Posture Bars
 	for t in combat.target_stats.keys():
 		if is_instance_valid(t) and t is Node3D and not player.camera.is_position_behind(t.global_position):
 			var sp := player.camera.unproject_position(t.global_position + Vector3(0, 2.2, 0))
