@@ -3,15 +3,21 @@ extends Control
 
 @onready var player: PlayerController = get_node_or_null("../Player") as PlayerController
 @onready var combat: GestureCombat = get_node_or_null("../CombatManager") as GestureCombat
+@onready var world_env: WorldEnvironment = get_node_or_null("../WorldEnvironment") as WorldEnvironment
+@onready var floor_mesh: MeshInstance3D = get_node_or_null("../Floor/MeshInstance3D") as MeshInstance3D
 
 var telemetry: Label
 var action_bar: HBoxContainer
 var dev_panel: PanelContainer
 var tab_container: TabContainer
 var fps_mode_idx: int = 0
+var region_idx: int = 0
 var btn_fps: Button
 var btn_lock: Button
 var btn_ai: Button
+var btn_region: Button
+
+const REGION_NAMES: Array[String] = ["INK_CATHEDRAL", "BLAME_MEGASTRUC", "GOTHIC_ECLIPSE"]
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -47,16 +53,17 @@ func _build_ui() -> void:
 	action_bar = HBoxContainer.new()
 	action_bar.anchor_left = 1.0
 	action_bar.anchor_right = 1.0
-	action_bar.offset_left = -760
+	action_bar.offset_left = -880
 	action_bar.offset_top = 12
 	action_bar.offset_right = -16
 	action_bar.offset_bottom = 52
 	action_bar.alignment = BoxContainer.ALIGNMENT_END
-	action_bar.add_theme_constant_override("separation", 6)
+	action_bar.add_theme_constant_override("separation", 5)
 	add_child(action_bar)
 
 	btn_lock = _add_quick_btn("[ LOCK (Q) ]", func(): if player: player.toggle_lock_on())
 	_add_quick_btn("[ SWITCH ]", func(): if player: player.cycle_lock_target())
+	btn_region = _add_quick_btn("[ REG: INK_CATHEDRAL ]", _cycle_region)
 	btn_ai = _add_quick_btn("[ AI: ADAPTIVE_RIVAL ]", func():
 		if combat:
 			combat.ai_mode = ((combat.ai_mode + 1) % 4) as GestureCombat.AIMode
@@ -114,6 +121,37 @@ func _add_quick_btn(txt: String, cb: Callable) -> Button:
 	b.pressed.connect(cb)
 	action_bar.add_child(b)
 	return b
+
+func _cycle_region() -> void:
+	region_idx = (region_idx + 1) % 3
+	btn_region.text = "[ REG: %s ]" % REGION_NAMES[region_idx]
+	var env := world_env.environment if world_env else null
+	var fmat := StandardMaterial3D.new()
+	fmat.roughness = 0.92
+	match region_idx:
+		0: # INK_CATHEDRAL (Monochrome Lithograph)
+			if env:
+				env.background_color = Color(0.06, 0.06, 0.08)
+				env.fog_light_color = Color(0.12, 0.12, 0.14)
+			fmat.albedo_color = Color(0.78, 0.77, 0.75)
+			if player and player.dash_vfx and player.dash_vfx.stone_mat:
+				player.dash_vfx.stone_mat.albedo_color = Color(0.76, 0.75, 0.73)
+		1: # BLAME_MEGASTRUC (Obsidian & Abyssal Cyan)
+			if env:
+				env.background_color = Color(0.02, 0.05, 0.09)
+				env.fog_light_color = Color(0.05, 0.16, 0.25)
+			fmat.albedo_color = Color(0.14, 0.18, 0.24)
+			if player and player.dash_vfx and player.dash_vfx.stone_mat:
+				player.dash_vfx.stone_mat.albedo_color = Color(0.22, 0.28, 0.36)
+		2: # GOTHIC_ECLIPSE (Dark Souls Crimson/Gold Dusk)
+			if env:
+				env.background_color = Color(0.18, 0.05, 0.06)
+				env.fog_light_color = Color(0.35, 0.12, 0.10)
+			fmat.albedo_color = Color(0.38, 0.32, 0.26)
+			if player and player.dash_vfx and player.dash_vfx.stone_mat:
+				player.dash_vfx.stone_mat.albedo_color = Color(0.52, 0.44, 0.36)
+	if floor_mesh:
+		floor_mesh.material_override = fmat
 
 func _cycle_fps() -> void:
 	fps_mode_idx = (fps_mode_idx + 1) % 3
@@ -194,14 +232,15 @@ func _add_row(parent: Control, obj: Object, prop: String, min_v: float, max_v: f
 	h.add_child(sp)
 
 func _build_tab_physics() -> void:
-	var vb := _make_scroll_tab("1. Physics & Hang-Time")
+	var vb := _make_scroll_tab("1. Camera & Physics")
 	var p_defs := [
+		["camera_offset_y", 0.8, 6.0, 0.1], ["camera_offset_x", -2.5, 2.5, 0.05],
+		["camera_pitch_bias", -45.0, 15.0, 1.0], ["camera_distance", 1.5, 14.0, 0.2],
+		["base_fov", 50.0, 115.0, 1.0], ["camera_sensitivity", 0.05, 1.0, 0.01],
 		["run_speed", 4.0, 45.0, 0.5], ["sprint_speed", 10.0, 70.0, 0.5],
 		["dash_speed", 20.0, 120.0, 1.0], ["dash_duration", 0.05, 0.6, 0.01],
 		["dash_cooldown", 0.0, 0.5, 0.01], ["jump_velocity", 5.0, 35.0, 0.5],
-		["air_combo_gravity_scale", 0.02, 1.0, 0.02], ["camera_distance", 1.5, 14.0, 0.2],
-		["base_fov", 50.0, 115.0, 1.0], ["camera_sensitivity", 0.05, 1.0, 0.01],
-		["feint_threshold_px", 40.0, 180.0, 2.0]
+		["air_combo_gravity_scale", 0.02, 1.0, 0.02], ["feint_threshold_px", 40.0, 180.0, 2.0]
 	]
 	for d in p_defs:
 		_add_row(vb, player, d[0], d[1], d[2], d[3])
@@ -269,7 +308,7 @@ func _build_tab_moves() -> void:
 		for c in dyn.get_children(): c.queue_free()
 		if not player or not player.data_store or not player.data_store.move_slots.has(m_key): return
 		var entry: Dictionary = player.data_store.move_slots[m_key]
-		for f in [["step_force", 0.0, 50.0], ["lunge_force", 0.0, 60.0], ["vertical_lift", -30.0, 30.0], ["dmg", 10.0, 600.0], ["posture", 5.0, 300.0], ["knockback", 0.0, 45.0], ["launch_y", -25.0, 25.0]]:
+		for f in [["step_force", 0.0, 50.0], ["lunge_force", 0.0, 60.0], ["vertical_lift", -30.0, 30.0], ["dmg", 10.0, 600.0], ["posture", 5.0, 300.0], ["knockback", 0.0, 45.0], ["launch_y", -25.0, 25.0], ["roll_deg", -180.0, 180.0]]:
 			var row := HBoxContainer.new(); dyn.add_child(row)
 			var l := Label.new(); l.text = f[0]; l.custom_minimum_size = Vector2(160, 0); row.add_child(l)
 			var sp := SpinBox.new(); sp.min_value = f[1]; sp.max_value = f[2]; sp.step = 0.5; sp.allow_greater = true
@@ -282,7 +321,7 @@ func _build_tab_moves() -> void:
 	b_add.pressed.connect(func():
 		if not player or not player.data_store or new_m.text.strip_edges().is_empty(): return
 		var nk := new_m.text.strip_edges()
-		player.data_store.move_slots[nk] = {"dir": "UP", "step_force": 15.0, "lunge_force": 18.0, "vertical_lift": 5.0, "dmg": 100.0, "posture": 45.0, "knockback": 8.0, "launch_y": 5.0, "anim": ""}
+		player.data_store.move_slots[nk] = {"dir": "UP", "step_force": 15.0, "lunge_force": 18.0, "vertical_lift": 5.0, "dmg": 100.0, "posture": 45.0, "knockback": 8.0, "launch_y": 5.0, "roll_deg": 45.0}
 		m_opt.add_item(nk)
 		m_opt.selected = m_opt.item_count - 1
 		rebuild.call(nk)
@@ -339,7 +378,7 @@ func _deferred_init_spells(cb: Callable) -> void:
 	cb.call("Spell_Slot_1")
 
 func _build_tab_visuals() -> void:
-	var vb := _make_scroll_tab("5. Shaders, 3D Model & AI")
+	var vb := _make_scroll_tab("5. Shaders, Region & AI")
 	var m_row := HBoxContainer.new(); vb.add_child(m_row)
 	var p_edit := LineEdit.new(); p_edit.placeholder_text = "res://models/hero.glb or user://models/hero.glb"; p_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL; m_row.add_child(p_edit)
 	var b_load := Button.new(); b_load.text = " Load .GLB "; b_load.pressed.connect(func(): if player: player.swap_custom_model(p_edit.text)); m_row.add_child(b_load)
@@ -353,11 +392,13 @@ func _build_tab_visuals() -> void:
 	_add_row(vb, combat, "ai_attack_cooldown", 0.4, 3.5, 0.1)
 	_add_row(vb, combat, "ai_adaptation_rate", 0.05, 1.0, 0.05)
 	var rst := Button.new()
-	rst.text = " [ Reset Target Dummies & Clear AI Memory ] "
+	rst.text = " [ Reset Dummies & Rebuild Shattered Pillars ] "
 	rst.pressed.connect(func():
 		if combat:
 			combat._init_targets()
 			combat.player_habits.clear()
+		if player and player.dash_vfx:
+			player.dash_vfx.reset_destructibles()
 	)
 	vb.add_child(rst)
 

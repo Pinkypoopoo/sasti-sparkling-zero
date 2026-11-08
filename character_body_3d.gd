@@ -18,7 +18,10 @@ var active_race_name: String = "Profile_1"
 @export var jump_velocity: float = 13.5
 @export var air_combo_gravity_scale: float = 0.15
 @export var feint_threshold_px: float = 90.0
-@export var camera_distance: float = 4.2
+@export var camera_distance: float = 4.8
+@export var camera_offset_x: float = 0.85
+@export var camera_offset_y: float = 2.65
+@export var camera_pitch_bias: float = -16.0
 @export var base_fov: float = 78.0
 @export var dash_fov_kick: float = 100.0
 @export var camera_whip_lag: float = 0.055
@@ -49,7 +52,7 @@ var step_mult: float = 1.15
 var dash_style: DashStyle = DashStyle.DBZ_VANISH_RUSH
 
 var state: MoveState = MoveState.GROUND
-var cam_rot_x: float = -8.0
+var cam_rot_x: float = -16.0
 var cam_rot_y: float = 0.0
 var dash_timer: float = 0.0
 var dash_cd_timer: float = 0.0
@@ -59,6 +62,8 @@ var whip_lag_timer: float = 0.0
 var air_hang_timer: float = 0.0
 var hitstun_timer: float = 0.0
 var sway_timer: float = 0.0
+var swing_anim_timer: float = 0.0
+var swing_target_rot: Vector3 = Vector3.ZERO
 var jump_count: int = 0
 var max_jumps: int = 2
 var is_locked_on: bool = false
@@ -86,6 +91,8 @@ var data_store = null
 var dash_vfx = null
 var anime_mat: ShaderMaterial = null
 var outline_mat: ShaderMaterial = null
+var weapon_pivot: Node3D = null
+var offhand_halo: MeshInstance3D = null
 var custom_model_root: Node3D = null
 var active_anim_player: AnimationPlayer = null
 var active_skeleton: Skeleton3D = null
@@ -102,6 +109,7 @@ func _ready() -> void:
 	add_child(dash_vfx)
 
 	_setup_materials()
+	_setup_weapon_rig()
 	_register_input_actions()
 	data_store.load_from_disk(self)
 	apply_race_by_name(active_race_name)
@@ -165,6 +173,75 @@ void fragment() { ALBEDO = vec3(0.015, 0.0, 0.015); }
 	update_cel_shader(cel_cut_threshold, outline_width, rim_strength)
 	if body_mesh: body_mesh.set_surface_override_material(0, anime_mat)
 	if visor_mesh: visor_mesh.set_surface_override_material(0, anime_mat)
+
+func _setup_weapon_rig() -> void:
+	if not visual_root: return
+	weapon_pivot = Node3D.new()
+	weapon_pivot.name = "WeaponPivot"
+	weapon_pivot.position = Vector3(0.52, 1.15, -0.15)
+	visual_root.add_child(weapon_pivot)
+
+	var dark_iron := StandardMaterial3D.new()
+	dark_iron.shading_mode = StandardMaterial3D.SHADING_MODE_UNSHADED
+	dark_iron.albedo_color = Color(0.02, 0.02, 0.03)
+
+	var white_edge := StandardMaterial3D.new()
+	white_edge.shading_mode = StandardMaterial3D.SHADING_MODE_UNSHADED
+	white_edge.albedo_color = Color(0.96, 0.95, 0.92)
+
+	var blade_core := MeshInstance3D.new()
+	var b_box := BoxMesh.new()
+	b_box.size = Vector3(0.09, 2.35, 0.28)
+	blade_core.mesh = b_box
+	blade_core.position = Vector3(0, 1.15, 0)
+	blade_core.material_override = dark_iron
+	weapon_pivot.add_child(blade_core)
+
+	var blade_edge := MeshInstance3D.new()
+	var e_box := BoxMesh.new()
+	e_box.size = Vector3(0.04, 2.42, 0.34)
+	blade_edge.mesh = e_box
+	blade_edge.position = Vector3(0, 1.15, -0.04)
+	blade_edge.material_override = white_edge
+	weapon_pivot.add_child(blade_edge)
+
+	var guard_mi := MeshInstance3D.new()
+	var g_box := BoxMesh.new()
+	g_box.size = Vector3(0.24, 0.12, 0.75)
+	guard_mi.mesh = g_box
+	guard_mi.position = Vector3(0, 0.0, 0)
+	guard_mi.material_override = white_edge
+	weapon_pivot.add_child(guard_mi)
+
+	# Rest greatsword over shoulder in default Seinen stance
+	weapon_pivot.rotation_degrees = Vector3(38.0, 0.0, -22.0)
+
+	# Offhand floating occult catalyst ring
+	offhand_halo = MeshInstance3D.new()
+	var t_mesh := TorusMesh.new()
+	t_mesh.inner_radius = 0.28
+	t_mesh.outer_radius = 0.35
+	offhand_halo.mesh = t_mesh
+	offhand_halo.position = Vector3(-0.62, 1.25, -0.35)
+	offhand_halo.rotation_degrees = Vector3(75.0, 0.0, 15.0)
+	var h_mat := StandardMaterial3D.new()
+	h_mat.shading_mode = StandardMaterial3D.SHADING_MODE_UNSHADED
+	h_mat.albedo_color = Color(0.95, 0.15, 0.22)
+	offhand_halo.material_override = h_mat
+	visual_root.add_child(offhand_halo)
+
+func trigger_weapon_windup(dir: Vector2) -> void:
+	if not weapon_pivot: return
+	weapon_pivot.rotation_degrees = Vector3(65.0 + dir.y * 35.0, dir.x * 45.0, -55.0 * signf(dir.x if absf(dir.x) > 0.1 else 1.0))
+
+func trigger_weapon_swing(roll_deg: float, core_col: Color = Color(0.98, 0.96, 0.92)) -> void:
+	swing_anim_timer = 0.24
+	swing_target_rot = Vector3(-95.0, deg_to_rad(roll_deg) * 25.0, roll_deg * 0.65)
+	if weapon_pivot:
+		weapon_pivot.rotation_degrees = swing_target_rot
+	if dash_vfx:
+		var fwd := -visual_root.global_transform.basis.z if visual_root else -global_transform.basis.z
+		dash_vfx.spawn_slash_arc(global_position + Vector3(0, 1.2, 0) + fwd * 0.8, fwd, roll_deg, core_col)
 
 func update_cel_shader(cel: float, out_w: float, rim_s: float, rim_col: Color = Color(0.95, 0.12, 0.18)) -> void:
 	cel_cut_threshold = cel
@@ -305,7 +382,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 	if event is InputEventMouseMotion and Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED:
 		cam_rot_y -= event.relative.x * 0.18
-		cam_rot_x = clampf(cam_rot_x - event.relative.y * 0.18, -70.0, 70.0)
+		cam_rot_x = clampf(cam_rot_x - event.relative.y * 0.18, -70.0, 45.0)
 
 	if event is InputEventScreenTouch:
 		if event.pressed:
@@ -336,7 +413,7 @@ func _unhandled_input(event: InputEvent) -> void:
 				is_left_dragging = true
 		elif event.index == right_look_touch_id:
 			cam_rot_y -= event.relative.x * camera_sensitivity
-			cam_rot_x = clampf(cam_rot_x - event.relative.y * camera_sensitivity, -70.0, 70.0)
+			cam_rot_x = clampf(cam_rot_x - event.relative.y * camera_sensitivity, -70.0, 45.0)
 
 	if event.is_action_pressed("lock_on"):
 		toggle_lock_on()
@@ -404,6 +481,7 @@ func trigger_dash(dir: Vector3) -> void:
 
 	if dash_vfx:
 		dash_vfx.trigger_style_fx(dash_style, dash_start_pos, global_position + dash_dir * 6.0, visual_root, afterimage_enabled)
+		dash_vfx.check_destruction(global_position, 3.2, dash_dir, false)
 
 func _physics_process(delta: float) -> void:
 	hp = minf(max_hp, hp + hp_regen * delta)
@@ -412,6 +490,7 @@ func _physics_process(delta: float) -> void:
 	if whip_lag_timer > 0.0: whip_lag_timer -= delta
 	if air_hang_timer > 0.0: air_hang_timer -= delta
 	if sway_timer > 0.0: sway_timer -= delta
+	if swing_anim_timer > 0.0: swing_anim_timer -= delta
 
 	var mv_vec := Vector2.ZERO
 	var is_sprint_drag := false
@@ -439,6 +518,8 @@ func _physics_process(delta: float) -> void:
 			var spd_mult := 1.35 if dash_style == DashStyle.BLEACH_SONIDO else 1.0
 			if velocity.length_squared() > 1.0:
 				velocity = dash_dir * dash_speed * step_mult * spd_mult
+			if dash_vfx:
+				dash_vfx.check_destruction(global_position, 3.0, dash_dir, false)
 			if dash_style == DashStyle.DBZ_VANISH_RUSH and visual_root:
 				visual_root.visible = dash_timer < (dash_duration * 0.2)
 			elif dash_style == DashStyle.SHADOW_ABYSS_SINK and visual_root:
@@ -490,6 +571,14 @@ func _update_stepped_animation(delta: float) -> void:
 		var advance_time: float = float(steps) * step_interval
 		anim_step_accum -= advance_time
 		stepped_time += advance_time
+		if offhand_halo:
+			offhand_halo.rotation.z += advance_time * 3.2
+		if weapon_pivot and swing_anim_timer <= 0.0 and state != MoveState.WINDUP:
+			if state == MoveState.GUARD or sway_timer > 0.0:
+				weapon_pivot.rotation_degrees = Vector3(15.0, 45.0, -70.0)
+			else:
+				weapon_pivot.rotation_degrees = Vector3(38.0 + sin(stepped_time * 3.5) * 4.0, 0.0, -22.0)
+
 		if active_anim_player:
 			active_anim_player.callback_mode_process = AnimationMixer.ANIMATION_CALLBACK_MODE_PROCESS_MANUAL
 			active_anim_player.advance(advance_time)
@@ -509,16 +598,24 @@ func _update_stepped_animation(delta: float) -> void:
 					visual_root.rotation.x = 0.0
 
 func _process(delta: float) -> void:
+	# Elevated Over-the-Shoulder Camera Framing (Fixes Floor-Scrape & Capsule Eclipse)
+	if camera_pivot:
+		camera_pivot.position = camera_pivot.position.lerp(Vector3(0.0, camera_offset_y, 0.0), 14.0 * delta)
+	if spring_arm:
+		spring_arm.position = spring_arm.position.lerp(Vector3(camera_offset_x, 0.0, 0.0), 14.0 * delta)
+		spring_arm.spring_length = lerpf(spring_arm.spring_length, camera_distance, 10.0 * delta)
+
 	if is_locked_on and is_instance_valid(lock_target):
-		var diff := (lock_target.global_position + Vector3(0, 1.2, 0)) - global_position
+		var cam_eye := global_position + Vector3(0.0, camera_offset_y, 0.0)
+		var target_focus := lock_target.global_position + Vector3(0.0, 1.0, 0.0)
+		var diff := target_focus - cam_eye
 		var flat := Vector2(diff.x, diff.z)
 		cam_rot_y = rad_to_deg(atan2(-flat.x, -flat.y))
-		cam_rot_x = clampf(rad_to_deg(atan2(diff.y, flat.length())), -55.0, 55.0)
+		var elevation_deg := rad_to_deg(atan2(diff.y, maxf(2.5, flat.length())))
+		cam_rot_x = clampf(elevation_deg + (camera_pitch_bias * 0.55), -60.0, 25.0)
 
 	var cam_lerp := 6.0 if whip_lag_timer > 0.0 else 24.0
 	camera_pivot.rotation_degrees.y = lerp_angle(deg_to_rad(camera_pivot.rotation_degrees.y), deg_to_rad(cam_rot_y), cam_lerp * delta) * 180.0 / PI
 	camera_pivot.rotation_degrees.x = lerpf(camera_pivot.rotation_degrees.x, cam_rot_x, cam_lerp * delta)
-	if spring_arm:
-		spring_arm.spring_length = lerpf(spring_arm.spring_length, camera_distance, 10.0 * delta)
 	var target_fov := dash_fov_kick if state == MoveState.DASH else base_fov
 	camera.fov = lerpf(camera.fov, target_fov, 12.0 * delta)

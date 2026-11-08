@@ -27,14 +27,14 @@ var profiles: Dictionary = {
 }
 
 var move_slots: Dictionary = {
-	"Slot_1_Up": {"dir": "UP", "step_force": 14.0, "lunge_force": 18.0, "vertical_lift": 13.5, "dmg": 95.0, "posture": 45.0, "knockback": 6.0, "launch_y": 13.5, "anim": ""},
-	"Slot_2_Down": {"dir": "DOWN", "step_force": 12.0, "lunge_force": 22.0, "vertical_lift": -16.0, "dmg": 130.0, "posture": 65.0, "knockback": 10.0, "launch_y": -14.0, "anim": ""},
-	"Slot_3_Left": {"dir": "LEFT", "step_force": 16.0, "lunge_force": 16.0, "vertical_lift": 1.5, "dmg": 85.0, "posture": 35.0, "knockback": 5.0, "launch_y": 1.5, "anim": ""},
-	"Slot_4_Right": {"dir": "RIGHT", "step_force": 16.0, "lunge_force": 16.0, "vertical_lift": 1.5, "dmg": 85.0, "posture": 35.0, "knockback": 5.0, "launch_y": 1.5, "anim": ""},
-	"Slot_5_Diag_UL": {"dir": "DIAG_UL", "step_force": 15.0, "lunge_force": 20.0, "vertical_lift": 6.0, "dmg": 105.0, "posture": 50.0, "knockback": 8.0, "launch_y": 6.0, "anim": ""},
-	"Slot_6_Diag_UR": {"dir": "DIAG_UR", "step_force": 15.0, "lunge_force": 20.0, "vertical_lift": 6.0, "dmg": 105.0, "posture": 50.0, "knockback": 8.0, "launch_y": 6.0, "anim": ""},
-	"Slot_7_Burst": {"dir": "DIAG_DL", "step_force": 18.0, "lunge_force": 26.0, "vertical_lift": 0.0, "dmg": 140.0, "posture": 80.0, "knockback": 22.0, "launch_y": 4.0, "anim": ""},
-	"Slot_8_Counter": {"dir": "COUNTER", "step_force": 0.0, "lunge_force": 14.0, "vertical_lift": 2.0, "dmg": 190.0, "posture": 120.0, "knockback": 16.0, "launch_y": 5.0, "anim": ""}
+	"Slot_1_Up": {"dir": "UP", "step_force": 14.0, "lunge_force": 18.0, "vertical_lift": 13.5, "dmg": 95.0, "posture": 45.0, "knockback": 6.0, "launch_y": 13.5, "roll_deg": 90.0},
+	"Slot_2_Down": {"dir": "DOWN", "step_force": 12.0, "lunge_force": 22.0, "vertical_lift": -16.0, "dmg": 130.0, "posture": 65.0, "knockback": 10.0, "launch_y": -14.0, "roll_deg": -90.0},
+	"Slot_3_Left": {"dir": "LEFT", "step_force": 16.0, "lunge_force": 16.0, "vertical_lift": 1.5, "dmg": 85.0, "posture": 35.0, "knockback": 5.0, "launch_y": 1.5, "roll_deg": 180.0},
+	"Slot_4_Right": {"dir": "RIGHT", "step_force": 16.0, "lunge_force": 16.0, "vertical_lift": 1.5, "dmg": 85.0, "posture": 35.0, "knockback": 5.0, "launch_y": 1.5, "roll_deg": 0.0},
+	"Slot_5_Diag_UL": {"dir": "DIAG_UL", "step_force": 15.0, "lunge_force": 20.0, "vertical_lift": 6.0, "dmg": 105.0, "posture": 50.0, "knockback": 8.0, "launch_y": 6.0, "roll_deg": 135.0},
+	"Slot_6_Diag_UR": {"dir": "DIAG_UR", "step_force": 15.0, "lunge_force": 20.0, "vertical_lift": 6.0, "dmg": 105.0, "posture": 50.0, "knockback": 8.0, "launch_y": 6.0, "roll_deg": 45.0},
+	"Slot_7_Burst": {"dir": "DIAG_DL", "step_force": 18.0, "lunge_force": 26.0, "vertical_lift": 0.0, "dmg": 140.0, "posture": 80.0, "knockback": 22.0, "launch_y": 4.0, "roll_deg": -35.0},
+	"Slot_8_Counter": {"dir": "COUNTER", "step_force": 0.0, "lunge_force": 14.0, "vertical_lift": 2.0, "dmg": 190.0, "posture": 120.0, "knockback": 16.0, "launch_y": 5.0, "roll_deg": 20.0}
 }
 
 var spell_slots: Dictionary = {
@@ -54,7 +54,12 @@ func save_to_disk(player: Node) -> void:
 		"player_tunables": {}
 	}
 	if player:
-		for prop in ["run_speed", "sprint_speed", "dash_speed", "dash_duration", "dash_cooldown", "jump_velocity", "air_combo_gravity_scale", "camera_distance", "base_fov", "anim_step_fps", "cel_cut_threshold", "hatch_width", "outline_width", "rim_strength", "afterimage_enabled"]:
+		for prop in [
+			"run_speed", "sprint_speed", "dash_speed", "dash_duration", "dash_cooldown",
+			"jump_velocity", "air_combo_gravity_scale", "camera_distance", "camera_offset_x",
+			"camera_offset_y", "camera_pitch_bias", "base_fov", "anim_step_fps",
+			"cel_cut_threshold", "hatch_width", "outline_width", "rim_strength", "afterimage_enabled"
+		]:
 			payload["player_tunables"][prop] = player.get(prop)
 	var f := FileAccess.open(SAVE_PATH, FileAccess.WRITE)
 	if f:

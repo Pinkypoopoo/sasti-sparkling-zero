@@ -82,6 +82,27 @@ func _find_mesh_instance(n: Node) -> MeshInstance3D:
 		if r: return r
 	return null
 
+func _attach_dummy_weapon(td: Node3D) -> Node3D:
+	var existing := td.get_node_or_null("DummyWeaponPivot")
+	if existing: return existing as Node3D
+	var wp := Node3D.new()
+	wp.name = "DummyWeaponPivot"
+	wp.position = Vector3(0.55, 0.4, -0.2)
+	td.add_child(wp)
+
+	var blade := MeshInstance3D.new()
+	var box := BoxMesh.new()
+	box.size = Vector3(0.1, 2.3, 0.3)
+	blade.mesh = box
+	blade.position = Vector3(0, 1.1, 0)
+	var bmat := StandardMaterial3D.new()
+	bmat.shading_mode = StandardMaterial3D.SHADING_MODE_UNSHADED
+	bmat.albedo_color = Color(0.95, 0.15, 0.22)
+	blade.material_override = bmat
+	wp.add_child(blade)
+	wp.rotation_degrees = Vector3(35.0, 0.0, -20.0)
+	return wp
+
 func _init_targets() -> void:
 	target_stats.clear()
 	for t in get_tree().get_nodes_in_group("lock_on_targets"):
@@ -93,6 +114,7 @@ func _init_targets() -> void:
 			dmat.roughness = 0.8
 			if mi:
 				mi.material_override = dmat
+			var wp := _attach_dummy_weapon(td)
 			target_stats[td] = {
 				"hp": 1500.0, "max_hp": 1500.0,
 				"posture": 0.0, "max_posture": 300.0,
@@ -100,7 +122,7 @@ func _init_targets() -> void:
 				"state_timer": 1.0, "whiff_timer": 0.0,
 				"combo_left": 0, "strike_hit_done": false,
 				"vel": Vector3.ZERO, "home_pos": td.global_position,
-				"mat": dmat
+				"mat": dmat, "weapon": wp
 			}
 
 func is_point_in_right_dot(pos: Vector2) -> bool:
@@ -152,7 +174,6 @@ func _start_right_orb(pos: Vector2) -> void:
 		player.state = PlayerController.MoveState.GUARD
 	if auto_lock_enabled and player and not player.is_locked_on:
 		player.toggle_lock_on()
-	# Check immediate Z-Vanish Parry if an enemy is currently telegraphing or swinging!
 	_check_active_parry_against_enemies()
 
 func _drag_right_orb(pos: Vector2) -> void:
@@ -160,12 +181,14 @@ func _drag_right_orb(pos: Vector2) -> void:
 	var dist := right_touch_start.distance_to(pos)
 	if dist >= 32.0:
 		sonic_sway_holding = false
-		if player and player.state != PlayerController.MoveState.WINDUP and player.state != PlayerController.MoveState.HITSTUN:
-			player.state = PlayerController.MoveState.WINDUP
-			var d2 := (pos - right_touch_start).normalized()
-			var cf := -player.camera.global_transform.basis.z; cf.y = 0.0; cf = cf.normalized()
-			var cr := player.camera.global_transform.basis.x; cr.y = 0.0; cr = cr.normalized()
-			player.velocity += (cr * d2.x + cf * -d2.y).normalized() * 14.0
+		var d2 := (pos - right_touch_start).normalized()
+		if player:
+			player.trigger_weapon_windup(d2)
+			if player.state != PlayerController.MoveState.WINDUP and player.state != PlayerController.MoveState.HITSTUN:
+				player.state = PlayerController.MoveState.WINDUP
+				var cf := -player.camera.global_transform.basis.z; cf.y = 0.0; cf = cf.normalized()
+				var cr := player.camera.global_transform.basis.x; cr.y = 0.0; cr = cr.normalized()
+				player.velocity += (cr * d2.x + cf * -d2.y).normalized() * 14.0
 	else:
 		sonic_sway_holding = true
 
@@ -204,12 +227,12 @@ func _check_active_parry_against_enemies() -> bool:
 			var s: Dictionary = target_stats[td]
 			var st: String = s["ai_state"]
 			if (st == "TELEGRAPH" or st == "STRIKE_ACTIVE") and player.global_position.distance_to(td.global_position) <= 9.0:
-				# Execute Sparking Zero Z-Vanish Counter behind enemy!
 				player.global_position = td.global_position + td.global_transform.basis.z * 2.2
 				player.cam_rot_y += 180.0
 				player.whip_lag_timer = player.camera_whip_lag
 				player.trigger_air_hang(0.55)
 				player.mana = minf(player.max_mana, player.mana + 22.0)
+				player.trigger_weapon_swing(15.0, Color(1.0, 0.9, 0.25))
 				if player.dash_vfx:
 					player.dash_vfx.spawn_step_sigil(player.global_position + Vector3(0, 1.0, 0), Color(1.0, 0.95, 0.3), 1.9)
 				s["ai_state"] = "STAGGERED"
@@ -295,6 +318,7 @@ func _cast_matched_spell(seq_key: String) -> void:
 	active_infusion = chosen_key
 	player.velocity.y = float(sp_data.get("vertical_hop", 5.0))
 	player.trigger_air_hang(0.55)
+	player.trigger_weapon_swing(0.0, col)
 	if player.dash_vfx:
 		player.dash_vfx.spawn_step_sigil(player.global_position, col, 1.6)
 
@@ -340,8 +364,10 @@ func _trigger_super_parry() -> void:
 		player.hitstun_timer = 0.0
 		player.state = PlayerController.MoveState.GROUND
 		player.mana = minf(player.max_mana, player.mana + 30.0)
+		player.trigger_weapon_swing(0.0, Color(0.95, 0.15, 0.25))
 		if player.dash_vfx:
 			player.dash_vfx.spawn_step_sigil(player.global_position + Vector3(0, 1.0, 0), Color(0.95, 0.15, 0.25), 2.4)
+			player.dash_vfx.check_destruction(player.global_position, 5.0, Vector3.UP, true)
 		for t in target_stats.keys():
 			if is_instance_valid(t) and player.global_position.distance_to((t as Node3D).global_position) <= 8.0:
 				target_stats[t]["ai_state"] = "STAGGERED"
@@ -377,7 +403,13 @@ func _commit_strike(dir: Vector2) -> void:
 	if player.is_locked_on and is_instance_valid(player.lock_target):
 		fwd = (player.lock_target.global_position - player.global_position).normalized()
 	var lift := float(data.get("vertical_lift", 0.0))
+	var roll_deg := float(data.get("roll_deg", 0.0))
 	player.velocity = fwd * float(data.get("lunge_force", 16.0)) + Vector3(0, lift, 0)
+	player.trigger_weapon_swing(roll_deg, Color(0.98, 0.96, 0.92))
+
+	if player.dash_vfx:
+		player.dash_vfx.check_destruction(player.global_position + fwd * 2.5, 4.2, fwd, slot_key == "Slot_2_Down" or slot_key == "Slot_7_Burst")
+
 	if lift > 4.0 or not player.is_on_floor():
 		player.state = PlayerController.MoveState.AIR
 		player.trigger_air_hang(0.45)
@@ -392,7 +424,6 @@ func _commit_strike(dir: Vector2) -> void:
 			var s: Dictionary = target_stats[td]
 			var st: String = s["ai_state"]
 
-			# Check Mid-Air or Ground CLASH if enemy is mid-swing or late telegraph!
 			if st == "STRIKE_ACTIVE" or (st == "TELEGRAPH" and s["state_timer"] < ai_telegraph_time * 0.5):
 				last_combat_action = "DBZ / ELDEN CLASH!!"
 				var push_dir := (player.global_position - td.global_position).normalized()
@@ -403,7 +434,9 @@ func _commit_strike(dir: Vector2) -> void:
 				s["state_timer"] = 0.65
 				s["combo_left"] = 0
 				if player.dash_vfx:
-					player.dash_vfx.spawn_step_sigil(player.global_position.lerp(td.global_position, 0.5) + Vector3(0, 1.0, 0), Color(1.0, 0.9, 0.3), 2.2)
+					var mid_pt := player.global_position.lerp(td.global_position, 0.5)
+					player.dash_vfx.spawn_step_sigil(mid_pt + Vector3(0, 1.0, 0), Color(1.0, 0.9, 0.3), 2.2)
+					player.dash_vfx.check_destruction(mid_pt, 5.5, push_dir, true)
 				simulate_clash(true)
 				return
 
@@ -432,6 +465,7 @@ func apply_damage(t: Node3D, dmg: float, post_dmg: float, launch_vec: Vector3 = 
 		s["combo_left"] = 0
 	if player and player.dash_vfx:
 		player.dash_vfx.spawn_step_sigil(t.global_position + Vector3(0, 1.0, 0), Color(1.0, 0.85, 0.2), 1.3)
+		player.dash_vfx.check_destruction(t.global_position, 4.5, launch_vec, launch_vec.y < -6.0)
 	if s["hp"] <= 0.0 or s["posture"] >= s["max_posture"]:
 		simulate_clash(true)
 		s["hp"] = s["max_hp"]
@@ -457,20 +491,25 @@ func _update_enemy_ai(td: Node3D, s: Dictionary, delta: float, is_active_duelist
 		td.rotation.y = lerp_angle(td.rotation.y, atan2(-to_p.x, -to_p.z), 12.0 * delta)
 
 	var dmat: StandardMaterial3D = s["mat"]
+	var wp: Node3D = s.get("weapon", null)
 	if s["hit_flash"] > 0.0:
 		dmat.albedo_color = Color(1.0, 1.0, 1.0)
 	elif s["ai_state"] == "TELEGRAPH":
 		dmat.albedo_color = Color(0.98, 0.12, 0.18)
-		td.rotation.x = deg_to_rad(20.0)
+		td.rotation.x = deg_to_rad(18.0)
+		if wp: wp.rotation_degrees = Vector3(75.0, -35.0, -65.0)
 	elif s["ai_state"] == "STRIKE_ACTIVE":
 		dmat.albedo_color = Color(1.0, 0.88, 0.25)
-		td.rotation.x = deg_to_rad(-28.0)
+		td.rotation.x = deg_to_rad(-24.0)
+		if wp: wp.rotation_degrees = Vector3(-85.0, 25.0, 40.0)
 	elif s["ai_state"] == "STAGGERED" or s["ai_state"] == "BAITED_WHIFF!":
 		dmat.albedo_color = Color(0.3, 0.85, 1.0)
 		td.rotation.x = deg_to_rad(14.0)
+		if wp: wp.rotation_degrees = Vector3(15.0, 0.0, -80.0)
 	else:
 		dmat.albedo_color = Color(0.22, 0.24, 0.30)
 		td.rotation.x = 0.0
+		if wp: wp.rotation_degrees = Vector3(35.0, 0.0, -20.0)
 
 	if ai_mode == AIMode.STATIC_BAG or not is_active_duelist:
 		return
@@ -484,7 +523,6 @@ func _update_enemy_ai(td: Node3D, s: Dictionary, delta: float, is_active_duelist
 				var spd := 15.0 if ai_mode == AIMode.ADAPTIVE_RIVAL else 11.0
 				td.global_position.x += move_dir.x * spd * delta
 				td.global_position.z += move_dir.z * spd * delta
-				# Aerial Pursuit if player is high in the air!
 				if player.global_position.y - td.global_position.y > 2.0:
 					s["vel"].y = 14.0
 			elif dist <= 4.5 and s["state_timer"] <= 0.0:
@@ -499,6 +537,8 @@ func _update_enemy_ai(td: Node3D, s: Dictionary, delta: float, is_active_duelist
 				s["strike_hit_done"] = false
 				var lunge_dir := to_p.normalized()
 				s["vel"] = lunge_dir * 22.0
+				if player.dash_vfx:
+					player.dash_vfx.spawn_slash_arc(td.global_position + Vector3(0, 1.1, 0) + lunge_dir * 0.7, lunge_dir, 25.0 * float(s["combo_left"]), Color(0.98, 0.18, 0.22))
 				if player.global_position.y > 1.8:
 					s["vel"].y = maxf(s["vel"].y, 4.5)
 		"STRIKE_ACTIVE":
@@ -524,7 +564,6 @@ func _update_enemy_ai(td: Node3D, s: Dictionary, delta: float, is_active_duelist
 
 func _resolve_enemy_strike_on_player(td: Node3D, s: Dictionary) -> void:
 	if not player: return
-	# 1. If Player is holding Sonic Sway (inside Right Orb) -> Auto-Weave Dodge!
 	if sonic_sway_holding or player.state == PlayerController.MoveState.GUARD:
 		_trigger_sonic_sway()
 		s["posture"] = minf(s["max_posture"], s["posture"] + 35.0)
@@ -536,17 +575,14 @@ func _resolve_enemy_strike_on_player(td: Node3D, s: Dictionary) -> void:
 			simulate_clash(true)
 		return
 
-	# 2. If Player tapped Parry right before impact -> Z-Vanish Counter!
 	if parry_window_timer > 0.0:
 		_check_active_parry_against_enemies()
 		return
 
-	# 3. If Player is mid-Dash -> I-Frame Evade!
 	if player.state == PlayerController.MoveState.DASH:
 		last_combat_action = "DASH EVADE!"
 		return
 
-	# 4. Unblocked Hit -> Apply Damage & Hitstun to Player
 	player.hp = maxf(100.0, player.hp - 55.0)
 	var knock := (player.global_position - td.global_position).normalized() * 14.0 + Vector3(0, 3.5, 0)
 	player.apply_hitstun(0.36, knock)
@@ -569,6 +605,8 @@ func _process(delta: float) -> void:
 			p["timer"] -= delta
 			var mi: MeshInstance3D = p["mesh"]
 			mi.global_position += p["vel"] * delta
+			if player and player.dash_vfx:
+				player.dash_vfx.check_destruction(mi.global_position, 2.8, p["vel"], false)
 			for t in target_stats.keys():
 				if is_instance_valid(t) and mi.global_position.distance_to((t as Node3D).global_position + Vector3(0, 1.0, 0)) <= 2.4:
 					apply_damage(t as Node3D, p["dmg"], p["posture"], p["vel"].normalized() * 8.0 + Vector3(0, 4.0, 0))
@@ -594,6 +632,8 @@ func _process(delta: float) -> void:
 			var v: Vector3 = s["vel"]
 			if v.length_squared() > 0.1 or td.global_position.y > 1.05:
 				td.global_position += v * delta
+				if player and player.dash_vfx and v.length_squared() > 25.0:
+					player.dash_vfx.check_destruction(td.global_position, 3.5, v, false)
 				v.x = lerpf(v.x, 0.0, 6.0 * delta)
 				v.z = lerpf(v.z, 0.0, 6.0 * delta)
 				if td.global_position.y > 1.0:
