@@ -298,9 +298,9 @@ func apply_race_by_name(r_name: String) -> void:
 	update_cel_shader(cel_cut_threshold, outline_width, rim_strength, Color(ac[0], ac[1], ac[2]))
 	if dash_vfx and not afterimage_enabled:
 		dash_vfx.clear_afterimages()
-	var m_path: String = str(r.get("model_path", ""))
-	if not m_path.is_empty():
-		swap_custom_model(m_path)
+	var m_path: String = str(r.get("model_path", "res://models/hero.glb"))
+	if m_path.is_empty(): m_path = "res://models/hero.glb"
+	swap_custom_model(m_path)
 
 func swap_custom_model(path: String) -> bool:
 	if path.is_empty(): return false
@@ -322,9 +322,53 @@ func swap_custom_model(path: String) -> bool:
 	custom_model_root.rotation.y = deg_to_rad(model_rot_offset)
 	if body_mesh: body_mesh.visible = false
 	if visor_mesh: visor_mesh.visible = false
+	if weapon_pivot: weapon_pivot.visible = false
+	if offhand_halo: offhand_halo.visible = false
+	_apply_seinen_shader_to_glb(custom_model_root)
 	active_anim_player = _find_anim_player(custom_model_root)
 	active_skeleton = _find_skeleton(custom_model_root)
+	play_character_anim("idle")
 	return true
+
+func _apply_seinen_shader_to_glb(n: Node) -> void:
+	if n is MeshInstance3D:
+		var mi := n as MeshInstance3D
+		if mi.mesh:
+			for s_idx in range(mi.mesh.get_surface_count()):
+				var smat := mi.mesh.surface_get_material(s_idx)
+				var mname := smat.resource_name if smat else ""
+				if "VoidFace" in mname:
+					var vmat := StandardMaterial3D.new()
+					vmat.shading_mode = StandardMaterial3D.SHADING_MODE_UNSHADED
+					vmat.albedo_color = Color(0.005, 0.005, 0.01)
+					mi.set_surface_override_material(s_idx, vmat)
+				elif "CrimsonEye" in mname:
+					var emat := StandardMaterial3D.new()
+					emat.shading_mode = StandardMaterial3D.SHADING_MODE_UNSHADED
+					emat.albedo_color = Color(1.0, 0.15, 0.22)
+					mi.set_surface_override_material(s_idx, emat)
+				elif "GildedFiligree" in mname:
+					var gmat := anime_mat.duplicate() as ShaderMaterial
+					gmat.set_shader_parameter("albedo", Color(0.95, 0.74, 0.22, 1.0))
+					gmat.set_shader_parameter("rim_color", Color(1.0, 0.92, 0.55, 1.0))
+					mi.set_surface_override_material(s_idx, gmat)
+				elif "CathedralVeil" in mname or "PorcelainLily" in mname or "AshVestment" in mname:
+					var wmat := anime_mat.duplicate() as ShaderMaterial
+					wmat.set_shader_parameter("albedo", Color(0.95, 0.92, 0.86, 1.0))
+					wmat.set_shader_parameter("rim_color", Color(1.0, 0.85, 0.45, 1.0))
+					mi.set_surface_override_material(s_idx, wmat)
+				else:
+					mi.set_surface_override_material(s_idx, anime_mat)
+	for c in n.get_children():
+		_apply_seinen_shader_to_glb(c)
+
+func play_character_anim(anim_name: String) -> void:
+	if not active_anim_player: return
+	for candidate in [anim_name, anim_name.to_lower()]:
+		if active_anim_player.has_animation(candidate):
+			active_anim_player.play(candidate)
+			active_anim_player.seek(0.0, true)
+			return
 
 func _find_anim_player(n: Node) -> AnimationPlayer:
 	if n is AnimationPlayer: return n as AnimationPlayer

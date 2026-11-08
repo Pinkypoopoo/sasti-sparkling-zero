@@ -83,6 +83,26 @@ func _find_mesh_instance(n: Node) -> MeshInstance3D:
 	return null
 
 func _attach_dummy_weapon(td: Node3D) -> Node3D:
+	var existing_boss := td.get_node_or_null("BossVeilModel")
+	if existing_boss: return existing_boss as Node3D
+	var boss_node: Node3D = null
+	var b_path := "res://models/boss_veil.glb"
+	if ResourceLoader.exists(b_path):
+		var res = ResourceLoader.load(b_path)
+		if res is PackedScene: boss_node = res.instantiate() as Node3D
+	if boss_node:
+		boss_node.name = "BossVeilModel"
+		boss_node.position = Vector3(0, -1.0, 0)
+		td.add_child(boss_node)
+		var orig_mi := _find_mesh_instance(td)
+		if orig_mi and orig_mi.get_parent() == td:
+			orig_mi.visible = false
+		if player:
+			player._apply_seinen_shader_to_glb(boss_node)
+		var ap := player._find_anim_player(boss_node) if player else null
+		if ap and ap.has_animation("idle"):
+			ap.play("idle")
+		return boss_node
 	var existing := td.get_node_or_null("DummyWeaponPivot")
 	if existing: return existing as Node3D
 	var wp := Node3D.new()

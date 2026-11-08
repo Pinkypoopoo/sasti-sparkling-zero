@@ -7,22 +7,22 @@ var profiles: Dictionary = {
 	"Profile_1": {
 		"max_hp": 1000.0, "hp_regen": 15.0, "max_mana": 100.0, "mana_regen": 14.0,
 		"physical_strength": 1.0, "base_power": 1.0, "step_mult": 1.15,
-		"dash_style": 0, "afterimage_on": false, "aura_color": [0.95, 0.12, 0.18], "model_path": ""
+		"dash_style": 0, "afterimage_on": false, "aura_color": [0.95, 0.12, 0.18], "model_path": "res://models/hero.glb"
 	},
 	"Profile_2": {
 		"max_hp": 1350.0, "hp_regen": 20.0, "max_mana": 90.0, "mana_regen": 10.0,
 		"physical_strength": 1.3, "base_power": 1.0, "step_mult": 1.0,
-		"dash_style": 4, "afterimage_on": false, "aura_color": [0.85, 0.15, 0.25], "model_path": ""
+		"dash_style": 4, "afterimage_on": false, "aura_color": [0.85, 0.15, 0.25], "model_path": "res://models/hero.glb"
 	},
 	"Profile_3": {
 		"max_hp": 1100.0, "hp_regen": 16.0, "max_mana": 120.0, "mana_regen": 15.0,
 		"physical_strength": 1.15, "base_power": 1.15, "step_mult": 1.35,
-		"dash_style": 2, "afterimage_on": true, "aura_color": [1.0, 0.78, 0.15], "model_path": ""
+		"dash_style": 2, "afterimage_on": true, "aura_color": [1.0, 0.78, 0.15], "model_path": "res://models/hero.glb"
 	},
 	"Profile_4": {
 		"max_hp": 900.0, "hp_regen": 12.0, "max_mana": 160.0, "mana_regen": 20.0,
 		"physical_strength": 0.95, "base_power": 1.45, "step_mult": 1.2,
-		"dash_style": 5, "afterimage_on": false, "aura_color": [0.2, 0.9, 0.75], "model_path": ""
+		"dash_style": 5, "afterimage_on": false, "aura_color": [0.2, 0.9, 0.75], "model_path": "res://models/hero.glb"
 	}
 }
 
