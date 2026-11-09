@@ -226,6 +226,8 @@ func _add_row(parent: Control, obj: Object, prop: String, min_v: float, max_v: f
 			player.update_cel_shader(player.cel_cut_threshold, player.outline_width, player.rim_strength)
 		elif prop in ["char_height", "char_width", "weapon_scale", "model_scale"] and player:
 			player.apply_character_proportions()
+		elif prop in ["eye_hue", "eye_pupil_scale", "eye_glow_strength"] and player:
+			player.update_eye_shader()
 	s.value_changed.connect(func(v: float):
 		if guard[0]: return
 		guard[0] = true; sp.value = v; apply_fn.call(v); guard[0] = false
@@ -413,11 +415,47 @@ func _build_tab_world_and_char() -> void:
 	_add_row(vb, player, "char_width", 0.65, 1.55, 0.02)
 	_add_row(vb, player, "weapon_scale", 0.5, 2.5, 0.05)
 
-	var lbl_j := Label.new(); lbl_j.text = "— SPRING-BONE VEIL & CLOAK JIGGLE PHYSICS —"
+	var lbl_eye := Label.new(); lbl_eye.text = "— 2D UV EYE SHAPE & COLOR CUSTOMIZER —"
+	vb.add_child(lbl_eye)
+	var erow := HBoxContainer.new(); vb.add_child(erow)
+	var elbl := Label.new(); elbl.text = "2D Eye Shape:"; elbl.custom_minimum_size = Vector2(160, 0); erow.add_child(elbl)
+	var eopt := OptionButton.new(); eopt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	for es in ["0: SLIT_DEMON", "1: HOLLOW_RING", "2: CROSS_STAR", "3: CRESCENT_ECLIPSE"]:
+		eopt.add_item(es)
+	if player: eopt.selected = clampi(player.eye_shape, 0, 3)
+	eopt.item_selected.connect(func(idx: int):
+		if player:
+			player.eye_shape = idx
+			player.update_eye_shader()
+	)
+	erow.add_child(eopt)
+	_add_row(vb, player, "eye_hue", 0.0, 1.0, 0.02)
+	_add_row(vb, player, "eye_pupil_scale", 0.4, 2.2, 0.05)
+	_add_row(vb, player, "eye_glow_strength", 0.2, 5.0, 0.1)
+
+	var lbl_j := Label.new(); lbl_j.text = "— SPRING-BONE JIGGLE & KNOCKOUT RAGDOLL PHYSICS —"
 	vb.add_child(lbl_j)
 	_add_row(vb, player, "jiggle_stiffness", 2.0, 45.0, 1.0)
 	_add_row(vb, player, "jiggle_damping", 0.5, 15.0, 0.5)
 	_add_row(vb, player, "jiggle_gravity", -1.5, 2.5, 0.1)
+	_add_row(vb, player, "ragdoll_bouncy", 0.1, 0.9, 0.05)
+
+	var rag_row := HBoxContainer.new(); vb.add_child(rag_row)
+	var b_rag_p := Button.new(); b_rag_p.text = " [ Test Player Ragdoll KO ] "
+	b_rag_p.pressed.connect(func():
+		if player: player.trigger_ragdoll_ko(1.25, Vector3(0, 12.0, 14.0))
+	)
+	rag_row.add_child(b_rag_p)
+
+	var b_rag_e := Button.new(); b_rag_e.text = " [ Trigger Boss Ragdoll KO ] "
+	b_rag_e.pressed.connect(func():
+		if combat:
+			for t in combat.target_stats.keys():
+				if is_instance_valid(t):
+					combat.target_stats[t]["posture"] = combat.target_stats[t]["max_posture"]
+					combat.apply_damage(t as Node3D, 250.0, 100.0, Vector3(0, 13.0, -16.0))
+	)
+	rag_row.add_child(b_rag_e)
 
 	var lbl_slots := Label.new(); lbl_slots.text = "— MODULAR CLOTHING SLOT SWITCHER (MIX & MATCH) —"
 	vb.add_child(lbl_slots)

@@ -542,8 +542,13 @@ func apply_damage(t: Node3D, dmg: float, post_dmg: float, launch_vec: Vector3 = 
 		simulate_clash(true)
 		s["hp"] = s["max_hp"]
 		s["posture"] = 0.0
-		s["ai_state"] = "STAGGERED"
-		s["state_timer"] = 1.4
+		s["ai_state"] = "RAGDOLL_KO"
+		s["state_timer"] = 1.65
+		var ko_dir := (t.global_position - player.global_position).normalized() if player else Vector3.BACK
+		s["vel"] = ko_dir * 18.0 + Vector3(0, 12.5, 0)
+		last_combat_action = "POSTURE BREAK — RAGDOLL KO!!"
+		if player and player.dash_vfx:
+			player.dash_vfx.play_sfx("shatter")
 
 func simulate_clash(is_super: bool) -> void:
 	clash_tension += 1
@@ -574,13 +579,19 @@ func _update_enemy_ai(td: Node3D, s: Dictionary, delta: float, is_active_duelist
 		dmat.albedo_color = Color(1.0, 0.88, 0.25)
 		td.rotation.x = deg_to_rad(-24.0)
 		if wp and wp.name == "DummyWeaponPivot": wp.rotation_degrees = Vector3(-85.0, 25.0, 40.0)
+	elif s["ai_state"] == "RAGDOLL_KO":
+		dmat.albedo_color = Color(1.0, 0.45, 0.15)
+		td.rotation.x += 11.0 * delta
+		td.rotation.z += 8.5 * delta
 	elif s["ai_state"] == "STAGGERED" or s["ai_state"] == "BAITED_WHIFF!":
 		dmat.albedo_color = Color(0.3, 0.85, 1.0)
 		td.rotation.x = deg_to_rad(14.0)
+		td.rotation.z = 0.0
 		if wp and wp.name == "DummyWeaponPivot": wp.rotation_degrees = Vector3(15.0, 0.0, -80.0)
 	else:
 		dmat.albedo_color = Color(0.22, 0.24, 0.30)
 		td.rotation.x = 0.0
+		td.rotation.z = 0.0
 		if wp and wp.name == "DummyWeaponPivot": wp.rotation_degrees = Vector3(35.0, 0.0, -20.0)
 
 	if ai_mode == AIMode.STATIC_BAG or not is_active_duelist:
@@ -625,7 +636,7 @@ func _update_enemy_ai(td: Node3D, s: Dictionary, delta: float, is_active_duelist
 				else:
 					s["ai_state"] = "IDLE"
 					s["state_timer"] = ai_attack_cooldown
-		"STAGGERED", "BAITED_WHIFF!", "LAUNCHED", "Z-VANISH COUNTER!":
+		"STAGGERED", "BAITED_WHIFF!", "LAUNCHED", "Z-VANISH COUNTER!", "RAGDOLL_KO":
 			if s["state_timer"] <= 0.0:
 				if s["ai_state"] == "Z-VANISH COUNTER!":
 					s["ai_state"] = "TELEGRAPH"
@@ -727,5 +738,11 @@ func _process(delta: float) -> void:
 					v.y -= 24.0 * g_mult * delta
 				else:
 					td.global_position.y = 1.0
-					v.y = 0.0
+					if s["ai_state"] == "RAGDOLL_KO" and v.y < -3.5:
+						var b_factor := player.ragdoll_bouncy if player else 0.48
+						v.y = absf(v.y) * b_factor
+						if player and player.dash_vfx:
+							player.dash_vfx.check_destruction(td.global_position, 4.0, Vector3.DOWN, true)
+					else:
+						v.y = 0.0
 				s["vel"] = v

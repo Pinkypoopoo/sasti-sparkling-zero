@@ -40,7 +40,16 @@ var active_race_name: String = "Profile_1"
 @export var char_height: float = 1.0
 @export var char_width: float = 1.0
 @export var weapon_scale: float = 1.0
-@export var eye_glow_strength: float = 1.0
+@export var eye_glow_strength: float = 1.8
+@export var eye_shape: int = 0
+@export var eye_hue: float = 0.98
+@export var eye_pupil_scale: float = 1.0
+@export var ragdoll_bouncy: float = 0.48
+
+var eye_mat: ShaderMaterial = null
+var phys_bone_sim: PhysicalBoneSimulator3D = null
+var ragdoll_timer: float = 0.0
+var ragdoll_ang_vel: Vector3 = Vector3.ZERO
 
 var jiggle_stiffness: float = 18.0
 var jiggle_damping: float = 4.5
@@ -199,6 +208,51 @@ void fragment() { ALBEDO = vec3(0.015, 0.0, 0.015); }
 	anime_mat.shader = Shader.new()
 	anime_mat.shader.code = base_code
 	anime_mat.next_pass = outline_mat
+	var eye_code := """
+shader_type spatial;
+render_mode unshaded, cull_disabled;
+uniform int eye_shape = 0;
+uniform float eye_hue : hint_range(0.0, 1.0) = 0.98;
+uniform float pupil_scale : hint_range(0.3, 2.5) = 1.0;
+uniform float glow_str : hint_range(0.2, 5.0) = 1.8;
+
+vec3 hsv2rgb(vec3 c) {
+	vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+	vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+	return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+void fragment() {
+	vec2 p = (UV - vec2(0.5)) * 2.0 / max(0.3, pupil_scale);
+	float mask = 0.0;
+	if (eye_shape == 0) {
+		float slit = 1.0 - smoothstep(0.18, 0.38, abs(p.y) + abs(p.x) * 0.25);
+		float core = 1.0 - smoothstep(0.08, 0.18, length(p * vec2(2.0, 0.7)));
+		mask = max(slit, core);
+	} else if (eye_shape == 1) {
+		float r = length(p);
+		float r1 = smoothstep(0.22, 0.30, r) * (1.0 - smoothstep(0.46, 0.54, r));
+		float r2 = smoothstep(0.68, 0.75, r) * (1.0 - smoothstep(0.88, 0.95, r));
+		float dc = 1.0 - smoothstep(0.12, 0.18, r);
+		mask = max(max(r1, r2), dc);
+	} else if (eye_shape == 2) {
+		float hb = 1.0 - smoothstep(0.12, 0.24, abs(p.y) + abs(p.x) * 0.14);
+		float vb = 1.0 - smoothstep(0.12, 0.24, abs(p.x) + abs(p.y) * 0.14);
+		mask = max(hb, vb);
+	} else {
+		float oc = 1.0 - smoothstep(0.65, 0.76, length(p));
+		float cc = smoothstep(0.45, 0.55, length(p - vec2(0.28, 0.16)));
+		mask = oc * cc;
+	}
+	vec3 base_col = hsv2rgb(vec3(eye_hue, 0.88, 1.0)) * glow_str;
+	vec3 hot_core = vec3(1.0, 0.98, 0.95) * (glow_str * 0.7);
+	ALBEDO = mix(vec3(0.005, 0.005, 0.01), mix(base_col, hot_core, mask * 0.45), mask);
+}
+"""
+	eye_mat = ShaderMaterial.new()
+	eye_mat.shader = Shader.new()
+	eye_mat.shader.code = eye_code
+	update_eye_shader()
 	update_cel_shader(cel_cut_threshold, outline_width, rim_strength)
 	if body_mesh: body_mesh.set_surface_override_material(0, anime_mat)
 	if visor_mesh: visor_mesh.set_surface_override_material(0, anime_mat)
@@ -371,6 +425,62 @@ func trigger_weapon_swing(roll_deg: float, core_col: Color = Color(0.98, 0.96, 0
 		var fwd := -visual_root.global_transform.basis.z if visual_root else -global_transform.basis.z
 		dash_vfx.spawn_slash_arc(global_position + Vector3(0, 1.2 * char_height, 0) + fwd * 0.8, fwd, roll_deg, core_col)
 
+func update_eye_shader() -> void:
+	if not eye_mat: return
+	eye_mat.set_shader_parameter("eye_shape", eye_shape)
+	eye_mat.set_shader_parameter("eye_hue", eye_hue)
+	eye_mat.set_shader_parameter("pupil_scale", eye_pupil_scale)
+	eye_mat.set_shader_parameter("glow_str", eye_glow_strength)
+
+func _setup_physical_ragdoll(skel: Skeleton3D) -> void:
+	if not skel: return
+	if phys_bone_sim and is_instance_valid(phys_bone_sim):
+		phys_bone_sim.queue_free()
+	phys_bone_sim = PhysicalBoneSimulator3D.new()
+	phys_bone_sim.name = "PhysicalBoneSimulator3D"
+	phys_bone_sim.active = false
+	skel.add_child(phys_bone_sim)
+	for b_name in ["Spine", "Head", "Arm_R", "Arm_L"]:
+		if skel.find_bone(b_name) == -1: continue
+		var pb := PhysicalBone3D.new()
+		pb.name = "PhysBone_" + b_name
+		pb.bone_name = b_name
+		pb.mass = 2.5
+		pb.friction = 0.6
+		pb.bounce = ragdoll_bouncy
+		var cs := CollisionShape3D.new()
+		var cap := CapsuleShape3D.new()
+		cap.radius = 0.16
+		cap.height = 0.48
+		cs.shape = cap
+		pb.add_child(cs)
+		phys_bone_sim.add_child(pb)
+
+func trigger_ragdoll_ko(duration: float = 1.15, impulse: Vector3 = Vector3(0, 11.0, 14.0)) -> void:
+	ragdoll_timer = maxf(ragdoll_timer, duration)
+	state = MoveState.HITSTUN
+	hitstun_timer = maxf(hitstun_timer, duration)
+	velocity = impulse
+	ragdoll_ang_vel = Vector3(randf_range(-10.0, 10.0), randf_range(-8.0, 8.0), randf_range(-10.0, 10.0))
+	trigger_hitstop(0.055, 0.65)
+	if phys_bone_sim and is_instance_valid(phys_bone_sim):
+		phys_bone_sim.active = true
+	if dash_vfx:
+		dash_vfx.play_sfx("shatter")
+
+func _update_ragdoll_bones(dt: float) -> void:
+	if not active_skeleton: return
+	for b_pair in [["Spine", 1.0], ["Head", 1.4], ["Arm_R", -1.8], ["Arm_L", 1.8], ["Veil_Back", 2.2]]:
+		var idx := active_skeleton.find_bone(b_pair[0])
+		if idx != -1:
+			var mult: float = b_pair[1]
+			var eul := Vector3(
+				sin(stepped_time * 9.0 * mult) * 0.85,
+				cos(stepped_time * 7.0 * mult) * 0.65,
+				sin(stepped_time * 11.0 * mult) * 0.95
+			)
+			active_skeleton.set_bone_pose_rotation(idx, Quaternion.from_euler(eul))
+
 func update_cel_shader(cel: float, out_w: float, rim_s: float, rim_col: Color = Color(0.95, 0.12, 0.18)) -> void:
 	cel_cut_threshold = cel
 	outline_width = out_w
@@ -466,7 +576,9 @@ func swap_custom_model(path: String) -> bool:
 	active_anim_player = _find_anim_player(custom_model_root)
 	active_skeleton = _find_skeleton(custom_model_root)
 	_attach_hitbox_to_skeleton(active_skeleton)
+	_setup_physical_ragdoll(active_skeleton)
 	apply_character_proportions()
+	update_eye_shader()
 	play_character_anim("idle")
 	return true
 
@@ -483,10 +595,7 @@ func _apply_seinen_shader_to_glb(n: Node) -> void:
 					vmat.albedo_color = Color(0.005, 0.005, 0.01)
 					mi.set_surface_override_material(s_idx, vmat)
 				elif "CrimsonEye" in mname:
-					var emat := StandardMaterial3D.new()
-					emat.shading_mode = StandardMaterial3D.SHADING_MODE_UNSHADED
-					emat.albedo_color = Color(1.0 * eye_glow_strength, 0.15, 0.22)
-					mi.set_surface_override_material(s_idx, emat)
+					mi.set_surface_override_material(s_idx, eye_mat)
 				elif "GildedFiligree" in mname:
 					var gmat := anime_mat.duplicate() as ShaderMaterial
 					gmat.set_shader_parameter("albedo", Color(0.95, 0.74, 0.22, 1.0))
@@ -707,12 +816,32 @@ func _physics_process(delta: float) -> void:
 	match state:
 		MoveState.HITSTUN:
 			hitstun_timer -= delta
-			velocity.x = lerpf(velocity.x, 0.0, 8.0 * delta)
-			velocity.z = lerpf(velocity.z, 0.0, 8.0 * delta)
-			if not is_on_floor():
+			if ragdoll_timer > 0.0:
+				ragdoll_timer -= delta
+				velocity.x = lerpf(velocity.x, 0.0, 2.5 * delta)
+				velocity.z = lerpf(velocity.z, 0.0, 2.5 * delta)
 				velocity.y += get_gravity().y * delta
+				if is_on_floor() and velocity.y < -2.0:
+					velocity.y = absf(velocity.y) * ragdoll_bouncy
+					if dash_vfx: dash_vfx.check_destruction(global_position, 3.2, Vector3.DOWN, true)
+				if visual_root:
+					visual_root.rotation += ragdoll_ang_vel * delta
+					ragdoll_ang_vel = ragdoll_ang_vel.lerp(Vector3.ZERO, 3.0 * delta)
+				_update_ragdoll_bones(delta)
+				if ragdoll_timer <= 0.0 and phys_bone_sim and is_instance_valid(phys_bone_sim):
+					phys_bone_sim.active = false
+					play_character_anim("idle")
+			else:
+				velocity.x = lerpf(velocity.x, 0.0, 8.0 * delta)
+				velocity.z = lerpf(velocity.z, 0.0, 8.0 * delta)
+				if not is_on_floor():
+					velocity.y += get_gravity().y * delta
 			if hitstun_timer <= 0.0:
+				ragdoll_timer = 0.0
+				if phys_bone_sim and is_instance_valid(phys_bone_sim):
+					phys_bone_sim.active = false
 				_reset_dash_visuals()
+				play_character_anim("idle")
 				state = MoveState.AIR if not is_on_floor() else MoveState.GROUND
 		MoveState.DASH:
 			dash_timer -= delta

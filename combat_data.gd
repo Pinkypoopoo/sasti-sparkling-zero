@@ -66,7 +66,7 @@ func save_to_disk(player: Node) -> void:
 			"jump_velocity", "air_combo_gravity_scale", "camera_distance", "camera_offset_x",
 			"camera_offset_y", "camera_pitch_bias", "base_fov", "anim_step_fps",
 			"cel_cut_threshold", "hatch_width", "outline_width", "rim_strength",
-			"afterimage_enabled", "char_height", "char_width", "weapon_scale", "jiggle_stiffness", "jiggle_damping", "jiggle_gravity", "slot_head", "slot_veil", "slot_upper", "slot_lower", "slot_weapon"
+			"afterimage_enabled", "char_height", "char_width", "weapon_scale", "jiggle_stiffness", "jiggle_damping", "jiggle_gravity", "slot_head", "slot_veil", "slot_upper", "slot_lower", "slot_weapon", "eye_shape", "eye_hue", "eye_pupil_scale", "eye_glow_strength", "ragdoll_bouncy"
 		]:
 			payload["player_tunables"][prop] = player.get(prop)
 	var f := FileAccess.open(SAVE_PATH, FileAccess.WRITE)
