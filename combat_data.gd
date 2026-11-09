@@ -7,22 +7,26 @@ var profiles: Dictionary = {
 	"Profile_1": {
 		"max_hp": 1000.0, "hp_regen": 15.0, "max_mana": 100.0, "mana_regen": 14.0,
 		"physical_strength": 1.0, "base_power": 1.0, "step_mult": 1.15,
-		"dash_style": 0, "afterimage_on": false, "aura_color": [0.95, 0.12, 0.18], "model_path": "res://models/hero.glb"
+		"dash_style": 0, "afterimage_on": false, "aura_color": [0.95, 0.12, 0.18],
+		"model_path": "res://models/hero.glb", "char_height": 1.0, "char_width": 1.0, "weapon_scale": 1.0
 	},
 	"Profile_2": {
 		"max_hp": 1350.0, "hp_regen": 20.0, "max_mana": 90.0, "mana_regen": 10.0,
 		"physical_strength": 1.3, "base_power": 1.0, "step_mult": 1.0,
-		"dash_style": 4, "afterimage_on": false, "aura_color": [0.85, 0.15, 0.25], "model_path": "res://models/hero.glb"
+		"dash_style": 4, "afterimage_on": false, "aura_color": [0.85, 0.15, 0.25],
+		"model_path": "res://models/boss_veil.glb", "char_height": 1.08, "char_width": 0.95, "weapon_scale": 1.15
 	},
 	"Profile_3": {
 		"max_hp": 1100.0, "hp_regen": 16.0, "max_mana": 120.0, "mana_regen": 15.0,
 		"physical_strength": 1.15, "base_power": 1.15, "step_mult": 1.35,
-		"dash_style": 2, "afterimage_on": true, "aura_color": [1.0, 0.78, 0.15], "model_path": "res://models/hero.glb"
+		"dash_style": 2, "afterimage_on": true, "aura_color": [1.0, 0.78, 0.15],
+		"model_path": "res://models/hero.glb", "char_height": 0.94, "char_width": 1.05, "weapon_scale": 1.25
 	},
 	"Profile_4": {
 		"max_hp": 900.0, "hp_regen": 12.0, "max_mana": 160.0, "mana_regen": 20.0,
 		"physical_strength": 0.95, "base_power": 1.45, "step_mult": 1.2,
-		"dash_style": 5, "afterimage_on": false, "aura_color": [0.2, 0.9, 0.75], "model_path": "res://models/hero.glb"
+		"dash_style": 5, "afterimage_on": false, "aura_color": [0.2, 0.9, 0.75],
+		"model_path": "res://models/boss_veil.glb", "char_height": 1.04, "char_width": 0.92, "weapon_scale": 1.0
 	}
 }
 
@@ -46,11 +50,14 @@ var spell_slots: Dictionary = {
 	"Spell_Slot_6": {"sequence": "DOWN,LEFT,UP", "step_force": 22.0, "vertical_hop": 9.0, "dmg": 220.0, "posture": 110.0, "proj_speed": 52.0, "color": [0.95, 0.92, 0.88]}
 }
 
+var placed_blocks: Array = []
+
 func save_to_disk(player: Node) -> void:
 	var payload := {
 		"profiles": profiles,
 		"move_slots": move_slots,
 		"spell_slots": spell_slots,
+		"placed_blocks": placed_blocks,
 		"player_tunables": {}
 	}
 	if player:
@@ -58,7 +65,8 @@ func save_to_disk(player: Node) -> void:
 			"run_speed", "sprint_speed", "dash_speed", "dash_duration", "dash_cooldown",
 			"jump_velocity", "air_combo_gravity_scale", "camera_distance", "camera_offset_x",
 			"camera_offset_y", "camera_pitch_bias", "base_fov", "anim_step_fps",
-			"cel_cut_threshold", "hatch_width", "outline_width", "rim_strength", "afterimage_enabled"
+			"cel_cut_threshold", "hatch_width", "outline_width", "rim_strength",
+			"afterimage_enabled", "char_height", "char_width", "weapon_scale"
 		]:
 			payload["player_tunables"][prop] = player.get(prop)
 	var f := FileAccess.open(SAVE_PATH, FileAccess.WRITE)
@@ -74,6 +82,7 @@ func load_from_disk(player: Node) -> void:
 	if parsed.has("profiles"): profiles = parsed["profiles"]
 	if parsed.has("move_slots"): move_slots = parsed["move_slots"]
 	if parsed.has("spell_slots"): spell_slots = parsed["spell_slots"]
+	if parsed.has("placed_blocks"): placed_blocks = parsed["placed_blocks"]
 	if player and parsed.has("player_tunables"):
 		var pt: Dictionary = parsed["player_tunables"]
 		for k in pt.keys():

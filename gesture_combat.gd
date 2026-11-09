@@ -32,6 +32,17 @@ var swipe_chain_timer: float = 0.0
 var active_infusion: String = "READY"
 var last_combat_action: String = "READY"
 
+# --- 0.22s Input Buffer Queue (Fires immediately on Hitstun/Recovery exit) ---
+var buffered_action_type: String = ""
+var buffered_action_vec: Vector2 = Vector2.ZERO
+var input_buffer_timer: float = 0.0
+
+# --- Minecraft-Style In-Game Level Builder State ---
+var build_mode_active: bool = false
+var selected_block_kind: String = "GOTHIC_PILLAR"
+var build_rot_deg: float = 0.0
+var delete_mode_active: bool = false
+
 var projectiles: Array[Dictionary] = []
 
 var target_stats: Dictionary = {}
@@ -53,6 +64,29 @@ func _ready() -> void:
 	get_viewport().size_changed.connect(_update_dot_positions)
 	_init_targets()
 	_setup_projectile_pool()
+
+func queue_buffered_action(act_type: String, vec: Vector2) -> void:
+	buffered_action_type = act_type
+	buffered_action_vec = vec
+	input_buffer_timer = 0.24
+	last_combat_action = "BUFFERED: " + act_type
+
+func handle_build_tap(screen_pos: Vector2) -> void:
+	if not player or not player.camera or not player.dash_vfx: return
+	var ray_origin := player.camera.project_ray_origin(screen_pos)
+	var ray_dir := player.camera.project_ray_normal(screen_pos)
+	if absf(ray_dir.y) < 0.01: return
+	var t := (0.5 - ray_origin.y) / ray_dir.y
+	if t <= 0.0 or t > 85.0: return
+	var hit_pt := ray_origin + ray_dir * t
+	if delete_mode_active:
+		if player.dash_vfx.remove_nearest_block(hit_pt, 5.0):
+			last_combat_action = "DELETED BLOCK"
+	else:
+		player.dash_vfx.spawn_arena_block(selected_block_kind, hit_pt, build_rot_deg, true)
+		last_combat_action = "PLACED: " + selected_block_kind
+	if player.data_store:
+		player.data_store.placed_blocks = player.dash_vfx.serialize_user_blocks()
 
 func _setup_projectile_pool() -> void:
 	var sphere := SphereMesh.new()
@@ -103,24 +137,13 @@ func _attach_dummy_weapon(td: Node3D) -> Node3D:
 		if ap and ap.has_animation("idle"):
 			ap.play("idle")
 		return boss_node
+
 	var existing := td.get_node_or_null("DummyWeaponPivot")
 	if existing: return existing as Node3D
 	var wp := Node3D.new()
 	wp.name = "DummyWeaponPivot"
 	wp.position = Vector3(0.55, 0.4, -0.2)
 	td.add_child(wp)
-
-	var blade := MeshInstance3D.new()
-	var box := BoxMesh.new()
-	box.size = Vector3(0.1, 2.3, 0.3)
-	blade.mesh = box
-	blade.position = Vector3(0, 1.1, 0)
-	var bmat := StandardMaterial3D.new()
-	bmat.shading_mode = StandardMaterial3D.SHADING_MODE_UNSHADED
-	bmat.albedo_color = Color(0.95, 0.15, 0.22)
-	blade.material_override = bmat
-	wp.add_child(blade)
-	wp.rotation_degrees = Vector3(35.0, 0.0, -20.0)
 	return wp
 
 func _init_targets() -> void:
@@ -232,7 +255,11 @@ func _release_right_orb(pos: Vector2) -> void:
 	if dist < feint_r:
 		_trigger_feint()
 	else:
-		_commit_strike((pos - right_touch_start).normalized())
+		var strike_dir := (pos - right_touch_start).normalized()
+		if player and player.state == PlayerController.MoveState.HITSTUN:
+			queue_buffered_action("STRIKE", strike_dir)
+		else:
+			_commit_strike(strike_dir)
 	if player and player.state != PlayerController.MoveState.HITSTUN and player.state != PlayerController.MoveState.AIR:
 		player.state = PlayerController.MoveState.GROUND
 
@@ -253,7 +280,9 @@ func _check_active_parry_against_enemies() -> bool:
 				player.trigger_air_hang(0.55)
 				player.mana = minf(player.max_mana, player.mana + 22.0)
 				player.trigger_weapon_swing(15.0, Color(1.0, 0.9, 0.25))
+				player.trigger_hitstop(0.055, 0.55)
 				if player.dash_vfx:
+					player.dash_vfx.play_sfx("clash")
 					player.dash_vfx.spawn_step_sigil(player.global_position + Vector3(0, 1.0, 0), Color(1.0, 0.95, 0.3), 1.9)
 				s["ai_state"] = "STAGGERED"
 				s["state_timer"] = 1.15
@@ -304,6 +333,7 @@ func _execute_swipe_step(dir_str: String) -> void:
 	player.velocity = step_dir * 24.0 + Vector3(0.0, 5.5, 0.0)
 	player.trigger_air_hang(0.45)
 	if player.dash_vfx:
+		player.dash_vfx.play_sfx("vanish")
 		player.dash_vfx.spawn_step_sigil(player.global_position, Color(0.95, 0.15, 0.25), 1.25)
 
 func _release_left_orb(pos: Vector2) -> void:
@@ -351,7 +381,7 @@ func _spawn_spell_projectile(col: Color, spd: float, dmg: float, post: float) ->
 		if p["timer"] <= 0.0:
 			var mi: MeshInstance3D = p["mesh"]
 			var mat: StandardMaterial3D = p["mat"]
-			mi.global_position = player.global_position + Vector3(0, 1.2, 0)
+			mi.global_position = player.global_position + Vector3(0, 1.2 * player.char_height, 0)
 			var aim_dir := -player.camera.global_transform.basis.z
 			if player.is_locked_on and is_instance_valid(player.lock_target):
 				aim_dir = ((player.lock_target.global_position + Vector3(0, 1.0, 0)) - mi.global_position).normalized()
@@ -376,6 +406,7 @@ func _trigger_sonic_sway() -> void:
 		player.trigger_sonic_sway_pose(0.32)
 		player.mana = minf(player.max_mana, player.mana + 14.0)
 		if player.dash_vfx:
+			player.dash_vfx.play_sfx("vanish")
 			player.dash_vfx.spawn_step_sigil(player.global_position + Vector3(0, 1.0, 0), Color(0.3, 0.9, 1.0), 1.5)
 
 func _trigger_super_parry() -> void:
@@ -385,7 +416,9 @@ func _trigger_super_parry() -> void:
 		player.state = PlayerController.MoveState.GROUND
 		player.mana = minf(player.max_mana, player.mana + 30.0)
 		player.trigger_weapon_swing(0.0, Color(0.95, 0.15, 0.25))
+		player.trigger_hitstop(0.06, 0.65)
 		if player.dash_vfx:
+			player.dash_vfx.play_sfx("clash")
 			player.dash_vfx.spawn_step_sigil(player.global_position + Vector3(0, 1.0, 0), Color(0.95, 0.15, 0.25), 2.4)
 			player.dash_vfx.check_destruction(player.global_position, 5.0, Vector3.UP, true)
 		for t in target_stats.keys():
@@ -419,9 +452,12 @@ func _commit_strike(dir: Vector2) -> void:
 	var data: Dictionary = moves[slot_key]
 	last_combat_action = slot_key
 
-	var fwd := -player.global_transform.basis.z
+	var fwd := -player.visual_root.global_transform.basis.z if player.visual_root else -player.global_transform.basis.z
 	if player.is_locked_on and is_instance_valid(player.lock_target):
 		fwd = (player.lock_target.global_position - player.global_position).normalized()
+		if player.visual_root:
+			player.visual_root.rotation.y = atan2(-fwd.x, -fwd.z)
+
 	var lift := float(data.get("vertical_lift", 0.0))
 	var roll_deg := float(data.get("roll_deg", 0.0))
 	player.velocity = fwd * float(data.get("lunge_force", 16.0)) + Vector3(0, lift, 0)
@@ -438,9 +474,14 @@ func _commit_strike(dir: Vector2) -> void:
 	for k in player_habits.keys():
 		if k != slot_key: player_habits[k] = maxf(0.0, player_habits[k] - 0.1)
 
+	var hit_any := false
 	for t in target_stats.keys():
-		if is_instance_valid(t) and player.global_position.distance_to(t.global_position) <= 8.0:
+		if is_instance_valid(t) and t is Node3D:
 			var td := t as Node3D
+			# True Bone-Attached & Directional Blade Arc Check (Fixes hitting enemies behind back!)
+			if not player.is_target_in_blade_arc(td):
+				continue
+			hit_any = true
 			var s: Dictionary = target_stats[td]
 			var st: String = s["ai_state"]
 
@@ -449,11 +490,13 @@ func _commit_strike(dir: Vector2) -> void:
 				var push_dir := (player.global_position - td.global_position).normalized()
 				player.velocity = push_dir * 12.0 + Vector3(0, 6.5, 0)
 				player.trigger_air_hang(0.65)
+				player.trigger_hitstop(0.065, 0.72)
 				s["vel"] = -push_dir * 12.0 + Vector3(0, 6.5, 0)
 				s["ai_state"] = "STAGGERED"
 				s["state_timer"] = 0.65
 				s["combo_left"] = 0
 				if player.dash_vfx:
+					player.dash_vfx.play_sfx("clash")
 					var mid_pt := player.global_position.lerp(td.global_position, 0.5)
 					player.dash_vfx.spawn_step_sigil(mid_pt + Vector3(0, 1.0, 0), Color(1.0, 0.9, 0.3), 2.2)
 					player.dash_vfx.check_destruction(mid_pt, 5.5, push_dir, true)
@@ -465,12 +508,16 @@ func _commit_strike(dir: Vector2) -> void:
 				td.global_position = player.global_position + player.global_transform.basis.z * 2.2
 				s["state_timer"] = 0.35
 				s["combo_left"] = 2
+				if player.dash_vfx: player.dash_vfx.play_sfx("vanish")
 				simulate_clash(false)
 				player_habits[slot_key] = 0.0
 				return
 
 			var mult := 1.5 if (s["whiff_timer"] > 0.0 or st == "STAGGERED") else 1.0
 			apply_damage(td, float(data.get("dmg", 90.0)) * player.physical_strength * mult, float(data.get("posture", 40.0)), fwd * float(data.get("knockback", 6.0)) + Vector3(0, float(data.get("launch_y", 0.0)), 0))
+
+	if not hit_any:
+		last_combat_action = slot_key + " (WHIFF)"
 
 func apply_damage(t: Node3D, dmg: float, post_dmg: float, launch_vec: Vector3 = Vector3.ZERO) -> void:
 	if not target_stats.has(t): return
@@ -479,11 +526,14 @@ func apply_damage(t: Node3D, dmg: float, post_dmg: float, launch_vec: Vector3 = 
 	s["posture"] = minf(s["max_posture"], s["posture"] + post_dmg)
 	s["hit_flash"] = 0.16
 	s["vel"] = launch_vec
+	if player:
+		player.trigger_hitstop(0.045, 0.40)
 	if launch_vec.y > 6.0 or launch_vec.length() > 14.0:
 		s["ai_state"] = "LAUNCHED"
 		s["state_timer"] = 0.75
 		s["combo_left"] = 0
 	if player and player.dash_vfx:
+		player.dash_vfx.play_sfx("hit")
 		player.dash_vfx.spawn_step_sigil(t.global_position + Vector3(0, 1.0, 0), Color(1.0, 0.85, 0.2), 1.3)
 		player.dash_vfx.check_destruction(t.global_position, 4.5, launch_vec, launch_vec.y < -6.0)
 	if s["hp"] <= 0.0 or s["posture"] >= s["max_posture"]:
@@ -502,7 +552,7 @@ func simulate_clash(is_super: bool) -> void:
 			impact_frame_cooldown = 1.5
 
 func _update_enemy_ai(td: Node3D, s: Dictionary, delta: float, is_active_duelist: bool) -> void:
-	if not player: return
+	if not player or player.hitstop_timer > 0.0: return
 	var to_p := player.global_position - td.global_position
 	var flat_to_p := Vector2(to_p.x, to_p.z)
 	var dist := to_p.length()
@@ -517,19 +567,19 @@ func _update_enemy_ai(td: Node3D, s: Dictionary, delta: float, is_active_duelist
 	elif s["ai_state"] == "TELEGRAPH":
 		dmat.albedo_color = Color(0.98, 0.12, 0.18)
 		td.rotation.x = deg_to_rad(18.0)
-		if wp: wp.rotation_degrees = Vector3(75.0, -35.0, -65.0)
+		if wp and wp.name == "DummyWeaponPivot": wp.rotation_degrees = Vector3(75.0, -35.0, -65.0)
 	elif s["ai_state"] == "STRIKE_ACTIVE":
 		dmat.albedo_color = Color(1.0, 0.88, 0.25)
 		td.rotation.x = deg_to_rad(-24.0)
-		if wp: wp.rotation_degrees = Vector3(-85.0, 25.0, 40.0)
+		if wp and wp.name == "DummyWeaponPivot": wp.rotation_degrees = Vector3(-85.0, 25.0, 40.0)
 	elif s["ai_state"] == "STAGGERED" or s["ai_state"] == "BAITED_WHIFF!":
 		dmat.albedo_color = Color(0.3, 0.85, 1.0)
 		td.rotation.x = deg_to_rad(14.0)
-		if wp: wp.rotation_degrees = Vector3(15.0, 0.0, -80.0)
+		if wp and wp.name == "DummyWeaponPivot": wp.rotation_degrees = Vector3(15.0, 0.0, -80.0)
 	else:
 		dmat.albedo_color = Color(0.22, 0.24, 0.30)
 		td.rotation.x = 0.0
-		if wp: wp.rotation_degrees = Vector3(35.0, 0.0, -20.0)
+		if wp and wp.name == "DummyWeaponPivot": wp.rotation_degrees = Vector3(35.0, 0.0, -20.0)
 
 	if ai_mode == AIMode.STATIC_BAG or not is_active_duelist:
 		return
@@ -606,6 +656,7 @@ func _resolve_enemy_strike_on_player(td: Node3D, s: Dictionary) -> void:
 	player.hp = maxf(100.0, player.hp - 55.0)
 	var knock := (player.global_position - td.global_position).normalized() * 14.0 + Vector3(0, 3.5, 0)
 	player.apply_hitstun(0.36, knock)
+	if player.dash_vfx: player.dash_vfx.play_sfx("hit")
 	last_combat_action = "HIT BY ENEMY! (TAP BOTH ORBS TO BREAK)"
 
 func _process(delta: float) -> void:
@@ -616,6 +667,19 @@ func _process(delta: float) -> void:
 		swipe_chain_timer -= delta
 		if swipe_chain_timer <= 0.0 and not is_left_dot_active:
 			current_swipe_chain.clear()
+
+	# Execute Buffered Input on First Frame of Recovery!
+	if input_buffer_timer > 0.0:
+		input_buffer_timer -= delta
+		if player and player.state != PlayerController.MoveState.HITSTUN and player.hitstop_timer <= 0.0:
+			var act := buffered_action_type
+			var vec := buffered_action_vec
+			input_buffer_timer = 0.0
+			buffered_action_type = ""
+			if act == "STRIKE":
+				_commit_strike(vec)
+			elif act == "DASH":
+				player.trigger_dash(Vector3(vec.x, 0.0, vec.y))
 
 	if sonic_sway_holding and player:
 		player.trigger_sonic_sway_pose(0.15)
@@ -650,7 +714,7 @@ func _process(delta: float) -> void:
 			_update_enemy_ai(td, s, delta, td == primary_duelist)
 
 			var v: Vector3 = s["vel"]
-			if v.length_squared() > 0.1 or td.global_position.y > 1.05:
+			if (v.length_squared() > 0.1 or td.global_position.y > 1.05) and (not player or player.hitstop_timer <= 0.0):
 				td.global_position += v * delta
 				if player and player.dash_vfx and v.length_squared() > 25.0:
 					player.dash_vfx.check_destruction(td.global_position, 3.5, v, false)

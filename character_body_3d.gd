@@ -36,6 +36,12 @@ var active_race_name: String = "Profile_1"
 @export var model_rot_offset: float = 0.0
 @export var afterimage_enabled: bool = false
 
+# --- Character Customizer Proportions ---
+@export var char_height: float = 1.0
+@export var char_width: float = 1.0
+@export var weapon_scale: float = 1.0
+@export var eye_glow_strength: float = 1.0
+
 var jiggle_stiffness: float = 18.0
 var jiggle_damping: float = 4.5
 var jiggle_gravity: float = 0.6
@@ -64,6 +70,11 @@ var hitstun_timer: float = 0.0
 var sway_timer: float = 0.0
 var swing_anim_timer: float = 0.0
 var swing_target_rot: Vector3 = Vector3.ZERO
+
+# --- Hitstop & Camera Trauma Shake ---
+var hitstop_timer: float = 0.0
+var cam_shake_trauma: float = 0.0
+
 var jump_count: int = 0
 var max_jumps: int = 2
 var is_locked_on: bool = false
@@ -96,10 +107,13 @@ var offhand_halo: MeshInstance3D = null
 var custom_model_root: Node3D = null
 var active_anim_player: AnimationPlayer = null
 var active_skeleton: Skeleton3D = null
+var sword_bone_attachment: BoneAttachment3D = null
+var sword_hitbox_area: Area3D = null
 
 func _ready() -> void:
 	DirAccess.make_dir_recursive_absolute("user://models")
 	DirAccess.make_dir_recursive_absolute("user://vfx")
+	DirAccess.make_dir_recursive_absolute("user://assets")
 	data_store = CombatDataScript.new()
 	data_store.name = "CombatData"
 	add_child(data_store)
@@ -112,6 +126,8 @@ func _ready() -> void:
 	_setup_weapon_rig()
 	_register_input_actions()
 	data_store.load_from_disk(self)
+	if not data_store.placed_blocks.is_empty():
+		dash_vfx.load_serialized_blocks(data_store.placed_blocks)
 	apply_race_by_name(active_race_name)
 
 	if not DisplayServer.is_touchscreen_available():
@@ -205,18 +221,8 @@ func _setup_weapon_rig() -> void:
 	blade_edge.material_override = white_edge
 	weapon_pivot.add_child(blade_edge)
 
-	var guard_mi := MeshInstance3D.new()
-	var g_box := BoxMesh.new()
-	g_box.size = Vector3(0.24, 0.12, 0.75)
-	guard_mi.mesh = g_box
-	guard_mi.position = Vector3(0, 0.0, 0)
-	guard_mi.material_override = white_edge
-	weapon_pivot.add_child(guard_mi)
-
-	# Rest greatsword over shoulder in default Seinen stance
 	weapon_pivot.rotation_degrees = Vector3(38.0, 0.0, -22.0)
 
-	# Offhand floating occult catalyst ring
 	offhand_halo = MeshInstance3D.new()
 	var t_mesh := TorusMesh.new()
 	t_mesh.inner_radius = 0.28
@@ -230,18 +236,77 @@ func _setup_weapon_rig() -> void:
 	offhand_halo.material_override = h_mat
 	visual_root.add_child(offhand_halo)
 
+func _attach_hitbox_to_skeleton(skel: Skeleton3D) -> void:
+	if not skel: return
+	if sword_bone_attachment and is_instance_valid(sword_bone_attachment):
+		sword_bone_attachment.queue_free()
+	sword_bone_attachment = BoneAttachment3D.new()
+	sword_bone_attachment.name = "SwordBoneAttachment"
+	var b_idx := skel.find_bone("Arm_R")
+	if b_idx != -1:
+		sword_bone_attachment.bone_name = "Arm_R"
+	skel.add_child(sword_bone_attachment)
+
+	sword_hitbox_area = Area3D.new()
+	sword_hitbox_area.name = "SwordHitboxArea"
+	var col_shape := CollisionShape3D.new()
+	var box := BoxShape3D.new()
+	box.size = Vector3(1.8, 2.8, 3.2) * weapon_scale
+	col_shape.shape = box
+	col_shape.position = Vector3(0, 0, -1.4)
+	sword_hitbox_area.add_child(col_shape)
+	sword_bone_attachment.add_child(sword_hitbox_area)
+
+func is_target_in_blade_arc(target: Node3D) -> bool:
+	if not is_instance_valid(target): return false
+	# 1. Check physical Area3D overlap on BoneAttachment3D first
+	if sword_hitbox_area:
+		for b in sword_hitbox_area.get_overlapping_bodies():
+			if b == target or b.is_ancestor_of(target) or target.is_ancestor_of(b):
+				return true
+	# 2. Continuous directional blade-arc cone check (Prevents hitting behind back & prevents 12-FPS tunneling)
+	var reach := 4.8 * weapon_scale * char_height
+	var to_t := target.global_position - global_position
+	var dist := to_t.length()
+	if dist > reach: return false
+	var fwd := -visual_root.global_transform.basis.z if visual_root else -global_transform.basis.z
+	var flat_fwd := Vector2(fwd.x, fwd.z).normalized()
+	var flat_to := Vector2(to_t.x, to_t.z).normalized()
+	if flat_to.length_squared() < 0.001: return true
+	return flat_fwd.dot(flat_to) >= 0.22
+
+func trigger_hitstop(duration: float = 0.048, shake: float = 0.42) -> void:
+	hitstop_timer = maxf(hitstop_timer, duration)
+	cam_shake_trauma = minf(1.0, cam_shake_trauma + shake)
+
+func apply_character_proportions() -> void:
+	if custom_model_root and is_instance_valid(custom_model_root):
+		custom_model_root.scale = Vector3(char_width, char_height, char_width) * model_scale
+	elif visual_root:
+		visual_root.scale = Vector3(char_width, char_height, char_width)
+	if active_skeleton:
+		var arm_idx := active_skeleton.find_bone("Arm_R")
+		if arm_idx != -1:
+			active_skeleton.set_bone_pose_scale(arm_idx, Vector3.ONE * weapon_scale)
+
 func trigger_weapon_windup(dir: Vector2) -> void:
-	if not weapon_pivot: return
-	weapon_pivot.rotation_degrees = Vector3(65.0 + dir.y * 35.0, dir.x * 45.0, -55.0 * signf(dir.x if absf(dir.x) > 0.1 else 1.0))
+	if weapon_pivot:
+		weapon_pivot.rotation_degrees = Vector3(65.0 + dir.y * 35.0, dir.x * 45.0, -55.0 * signf(dir.x if absf(dir.x) > 0.1 else 1.0))
 
 func trigger_weapon_swing(roll_deg: float, core_col: Color = Color(0.98, 0.96, 0.92)) -> void:
+	if absf(roll_deg - 90.0) < 25.0:
+		play_character_anim("slash_up")
+	elif absf(roll_deg + 90.0) < 25.0:
+		play_character_anim("slash_down")
+	else:
+		play_character_anim("slash_side")
 	swing_anim_timer = 0.24
 	swing_target_rot = Vector3(-95.0, deg_to_rad(roll_deg) * 25.0, roll_deg * 0.65)
 	if weapon_pivot:
 		weapon_pivot.rotation_degrees = swing_target_rot
 	if dash_vfx:
 		var fwd := -visual_root.global_transform.basis.z if visual_root else -global_transform.basis.z
-		dash_vfx.spawn_slash_arc(global_position + Vector3(0, 1.2, 0) + fwd * 0.8, fwd, roll_deg, core_col)
+		dash_vfx.spawn_slash_arc(global_position + Vector3(0, 1.2 * char_height, 0) + fwd * 0.8, fwd, roll_deg, core_col)
 
 func update_cel_shader(cel: float, out_w: float, rim_s: float, rim_col: Color = Color(0.95, 0.12, 0.18)) -> void:
 	cel_cut_threshold = cel
@@ -262,6 +327,7 @@ func _reset_dash_visuals() -> void:
 		visual_root.rotation.x = 0.0
 		visual_root.rotation.z = 0.0
 		visual_root.position = Vector3.ZERO
+	apply_character_proportions()
 
 func trigger_air_hang(duration: float = 0.42) -> void:
 	air_hang_timer = maxf(air_hang_timer, duration)
@@ -273,11 +339,13 @@ func apply_hitstun(duration: float, knock_vec: Vector3) -> void:
 	state = MoveState.HITSTUN
 	hitstun_timer = duration
 	velocity = knock_vec
+	trigger_hitstop(0.04, 0.35)
 	if visual_root:
 		visual_root.rotation.x = deg_to_rad(24.0)
 
 func trigger_sonic_sway_pose(duration: float = 0.28) -> void:
 	sway_timer = maxf(sway_timer, duration)
+	play_character_anim("guard_sway")
 
 func apply_race_by_name(r_name: String) -> void:
 	if not data_store or not data_store.profiles.has(r_name): return
@@ -294,6 +362,9 @@ func apply_race_by_name(r_name: String) -> void:
 	step_mult = float(r.get("step_mult", 1.15))
 	dash_style = int(r.get("dash_style", 0)) as DashStyle
 	afterimage_enabled = bool(r.get("afterimage_on", false))
+	char_height = float(r.get("char_height", 1.0))
+	char_width = float(r.get("char_width", 1.0))
+	weapon_scale = float(r.get("weapon_scale", 1.0))
 	var ac: Array = r.get("aura_color", [0.95, 0.12, 0.18])
 	update_cel_shader(cel_cut_threshold, outline_width, rim_strength, Color(ac[0], ac[1], ac[2]))
 	if dash_vfx and not afterimage_enabled:
@@ -318,7 +389,6 @@ func swap_custom_model(path: String) -> bool:
 		custom_model_root.queue_free()
 	custom_model_root = new_node
 	visual_root.add_child(custom_model_root)
-	custom_model_root.scale = Vector3.ONE * model_scale
 	custom_model_root.rotation.y = deg_to_rad(model_rot_offset)
 	if body_mesh: body_mesh.visible = false
 	if visor_mesh: visor_mesh.visible = false
@@ -327,6 +397,8 @@ func swap_custom_model(path: String) -> bool:
 	_apply_seinen_shader_to_glb(custom_model_root)
 	active_anim_player = _find_anim_player(custom_model_root)
 	active_skeleton = _find_skeleton(custom_model_root)
+	_attach_hitbox_to_skeleton(active_skeleton)
+	apply_character_proportions()
 	play_character_anim("idle")
 	return true
 
@@ -345,14 +417,20 @@ func _apply_seinen_shader_to_glb(n: Node) -> void:
 				elif "CrimsonEye" in mname:
 					var emat := StandardMaterial3D.new()
 					emat.shading_mode = StandardMaterial3D.SHADING_MODE_UNSHADED
-					emat.albedo_color = Color(1.0, 0.15, 0.22)
+					emat.albedo_color = Color(1.0 * eye_glow_strength, 0.15, 0.22)
 					mi.set_surface_override_material(s_idx, emat)
 				elif "GildedFiligree" in mname:
 					var gmat := anime_mat.duplicate() as ShaderMaterial
 					gmat.set_shader_parameter("albedo", Color(0.95, 0.74, 0.22, 1.0))
 					gmat.set_shader_parameter("rim_color", Color(1.0, 0.92, 0.55, 1.0))
 					mi.set_surface_override_material(s_idx, gmat)
-				elif "CathedralVeil" in mname or "PorcelainLily" in mname or "AshVestment" in mname:
+				elif "CathedralVeil" in mname:
+					var veil_mat := StandardMaterial3D.new()
+					veil_mat.shading_mode = StandardMaterial3D.SHADING_MODE_UNSHADED
+					veil_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_HASH
+					veil_mat.albedo_color = Color(0.96, 0.93, 0.86, 0.78)
+					mi.set_surface_override_material(s_idx, veil_mat)
+				elif "PorcelainLily" in mname or "AshVestment" in mname:
 					var wmat := anime_mat.duplicate() as ShaderMaterial
 					wmat.set_shader_parameter("albedo", Color(0.95, 0.92, 0.86, 1.0))
 					wmat.set_shader_parameter("rim_color", Color(1.0, 0.85, 0.45, 1.0))
@@ -432,6 +510,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		if event.pressed:
 			if combat and (combat.is_point_in_right_dot(event.position) or combat.is_point_in_left_dot(event.position)):
 				return
+			if combat and combat.build_mode_active and event.position.y > 68.0:
+				combat.handle_build_tap(event.position)
+				return
 			if event.position.x < vp_size.x * 0.5:
 				if left_touch_id == -1:
 					left_touch_id = event.index
@@ -495,7 +576,10 @@ func _trigger_jump() -> void:
 			dash_vfx.spawn_step_sigil(global_position, Color(0.95, 0.95, 1.0), 1.1)
 
 func trigger_dash(dir: Vector3) -> void:
-	if dash_cd_timer > 0.0 or state == MoveState.HITSTUN: return
+	if state == MoveState.HITSTUN:
+		if combat: combat.queue_buffered_action("DASH", Vector2(dir.x, dir.z))
+		return
+	if dash_cd_timer > 0.0: return
 	if combat and combat.try_vanish_counter_on_dash():
 		return
 	_reset_dash_visuals()
@@ -535,6 +619,11 @@ func _physics_process(delta: float) -> void:
 	if air_hang_timer > 0.0: air_hang_timer -= delta
 	if sway_timer > 0.0: sway_timer -= delta
 	if swing_anim_timer > 0.0: swing_anim_timer -= delta
+
+	# Freeze physics & pose advance during Hitstop frames for anime impact weight!
+	if hitstop_timer > 0.0:
+		hitstop_timer -= delta
+		return
 
 	var mv_vec := Vector2.ZERO
 	var is_sprint_drag := false
@@ -604,7 +693,8 @@ func _physics_process(delta: float) -> void:
 			state = MoveState.GROUND
 
 	if dash_vfx:
-		dash_vfx.update_vfx(delta, state == MoveState.DASH, dash_style, visual_root, afterimage_enabled)
+		var cam_p := camera.global_position if camera else Vector3.ZERO
+		dash_vfx.update_vfx(delta, state == MoveState.DASH, dash_style, visual_root, afterimage_enabled, cam_p, global_position)
 	_update_stepped_animation(delta)
 
 func _update_stepped_animation(delta: float) -> void:
@@ -626,6 +716,7 @@ func _update_stepped_animation(delta: float) -> void:
 		if active_anim_player:
 			active_anim_player.callback_mode_process = AnimationMixer.ANIMATION_CALLBACK_MODE_PROCESS_MANUAL
 			active_anim_player.advance(advance_time)
+			apply_character_proportions()
 		elif state != MoveState.DASH and visual_root:
 			if sway_timer > 0.0:
 				visual_root.position.x = sin(stepped_time * 42.0) * 0.42
@@ -642,15 +733,19 @@ func _update_stepped_animation(delta: float) -> void:
 					visual_root.rotation.x = 0.0
 
 func _process(delta: float) -> void:
-	# Elevated Over-the-Shoulder Camera Framing (Fixes Floor-Scrape & Capsule Eclipse)
+	if cam_shake_trauma > 0.0:
+		cam_shake_trauma = maxf(0.0, cam_shake_trauma - delta * 3.2)
+	var shake_mag := cam_shake_trauma * cam_shake_trauma * 0.48
+	var shake_offset := Vector3(randf_range(-shake_mag, shake_mag), randf_range(-shake_mag, shake_mag), 0.0)
+
 	if camera_pivot:
-		camera_pivot.position = camera_pivot.position.lerp(Vector3(0.0, camera_offset_y, 0.0), 14.0 * delta)
+		camera_pivot.position = camera_pivot.position.lerp(Vector3(0.0, camera_offset_y * char_height, 0.0) + shake_offset, 18.0 * delta)
 	if spring_arm:
 		spring_arm.position = spring_arm.position.lerp(Vector3(camera_offset_x, 0.0, 0.0), 14.0 * delta)
 		spring_arm.spring_length = lerpf(spring_arm.spring_length, camera_distance, 10.0 * delta)
 
 	if is_locked_on and is_instance_valid(lock_target):
-		var cam_eye := global_position + Vector3(0.0, camera_offset_y, 0.0)
+		var cam_eye := global_position + Vector3(0.0, camera_offset_y * char_height, 0.0)
 		var target_focus := lock_target.global_position + Vector3(0.0, 1.0, 0.0)
 		var diff := target_focus - cam_eye
 		var flat := Vector2(diff.x, diff.z)

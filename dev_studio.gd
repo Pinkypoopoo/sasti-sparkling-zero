@@ -16,6 +16,7 @@ var btn_fps: Button
 var btn_lock: Button
 var btn_ai: Button
 var btn_region: Button
+var btn_build: Button
 
 const REGION_NAMES: Array[String] = ["INK_CATHEDRAL", "BLAME_MEGASTRUC", "GOTHIC_ECLIPSE"]
 
@@ -53,16 +54,22 @@ func _build_ui() -> void:
 	action_bar = HBoxContainer.new()
 	action_bar.anchor_left = 1.0
 	action_bar.anchor_right = 1.0
-	action_bar.offset_left = -880
+	action_bar.offset_left = -980
 	action_bar.offset_top = 12
 	action_bar.offset_right = -16
 	action_bar.offset_bottom = 52
 	action_bar.alignment = BoxContainer.ALIGNMENT_END
-	action_bar.add_theme_constant_override("separation", 5)
+	action_bar.add_theme_constant_override("separation", 4)
 	add_child(action_bar)
 
 	btn_lock = _add_quick_btn("[ LOCK (Q) ]", func(): if player: player.toggle_lock_on())
 	_add_quick_btn("[ SWITCH ]", func(): if player: player.cycle_lock_target())
+	btn_build = _add_quick_btn("[ BUILD: OFF ]", func():
+		if combat:
+			combat.build_mode_active = not combat.build_mode_active
+			btn_build.text = "[ BUILD: ON ]" if combat.build_mode_active else "[ BUILD: OFF ]"
+			btn_build.modulate = Color(1.0, 0.85, 0.25) if combat.build_mode_active else Color.WHITE
+	)
 	btn_region = _add_quick_btn("[ REG: INK_CATHEDRAL ]", _cycle_region)
 	btn_ai = _add_quick_btn("[ AI: ADAPTIVE_RIVAL ]", func():
 		if combat:
@@ -72,6 +79,8 @@ func _build_ui() -> void:
 	btn_fps = _add_quick_btn("[ FPS: NATIVE ]", _cycle_fps)
 	_add_quick_btn("[ SAVE JSON ]", func():
 		if player and player.data_store:
+			if player.dash_vfx:
+				player.data_store.placed_blocks = player.dash_vfx.serialize_user_blocks()
 			player.data_store.save_to_disk(player)
 			if combat: combat.last_combat_action = "SAVED TO JSON!"
 	)
@@ -83,10 +92,10 @@ func _build_ui() -> void:
 	dev_panel.anchor_top = 0.5
 	dev_panel.anchor_right = 0.5
 	dev_panel.anchor_bottom = 0.5
-	dev_panel.offset_left = -380
-	dev_panel.offset_top = -240
-	dev_panel.offset_right = 380
-	dev_panel.offset_bottom = 240
+	dev_panel.offset_left = -410
+	dev_panel.offset_top = -250
+	dev_panel.offset_right = 410
+	dev_panel.offset_bottom = 250
 	add_child(dev_panel)
 
 	var root_vbox := VBoxContainer.new()
@@ -112,6 +121,7 @@ func _build_ui() -> void:
 	_build_tab_moves()
 	_build_tab_spells()
 	_build_tab_visuals()
+	_build_tab_world_and_char()
 
 func _add_quick_btn(txt: String, cb: Callable) -> Button:
 	var b := Button.new()
@@ -129,21 +139,21 @@ func _cycle_region() -> void:
 	var fmat := StandardMaterial3D.new()
 	fmat.roughness = 0.92
 	match region_idx:
-		0: # INK_CATHEDRAL (Monochrome Lithograph)
+		0:
 			if env:
 				env.background_color = Color(0.06, 0.06, 0.08)
 				env.fog_light_color = Color(0.12, 0.12, 0.14)
 			fmat.albedo_color = Color(0.78, 0.77, 0.75)
 			if player and player.dash_vfx and player.dash_vfx.stone_mat:
 				player.dash_vfx.stone_mat.albedo_color = Color(0.76, 0.75, 0.73)
-		1: # BLAME_MEGASTRUC (Obsidian & Abyssal Cyan)
+		1:
 			if env:
 				env.background_color = Color(0.02, 0.05, 0.09)
 				env.fog_light_color = Color(0.05, 0.16, 0.25)
 			fmat.albedo_color = Color(0.14, 0.18, 0.24)
 			if player and player.dash_vfx and player.dash_vfx.stone_mat:
 				player.dash_vfx.stone_mat.albedo_color = Color(0.22, 0.28, 0.36)
-		2: # GOTHIC_ECLIPSE (Dark Souls Crimson/Gold Dusk)
+		2:
 			if env:
 				env.background_color = Color(0.18, 0.05, 0.06)
 				env.fog_light_color = Color(0.35, 0.12, 0.10)
@@ -210,23 +220,19 @@ func _add_row(parent: Control, obj: Object, prop: String, min_v: float, max_v: f
 	sp.value = init_val
 
 	var guard: Array[bool] = [false]
-	s.value_changed.connect(func(v: float):
-		if guard[0]: return
-		guard[0] = true
-		sp.value = v
+	var apply_fn := func(v: float):
 		obj.set(prop, v)
 		if prop in ["cel_cut_threshold", "outline_width", "rim_strength", "hatch_width"] and player:
 			player.update_cel_shader(player.cel_cut_threshold, player.outline_width, player.rim_strength)
-		guard[0] = false
+		elif prop in ["char_height", "char_width", "weapon_scale", "model_scale"] and player:
+			player.apply_character_proportions()
+	s.value_changed.connect(func(v: float):
+		if guard[0]: return
+		guard[0] = true; sp.value = v; apply_fn.call(v); guard[0] = false
 	)
 	sp.value_changed.connect(func(v: float):
 		if guard[0]: return
-		guard[0] = true
-		s.value = v
-		obj.set(prop, v)
-		if prop in ["cel_cut_threshold", "outline_width", "rim_strength", "hatch_width"] and player:
-			player.update_cel_shader(player.cel_cut_threshold, player.outline_width, player.rim_strength)
-		guard[0] = false
+		guard[0] = true; s.value = v; apply_fn.call(v); guard[0] = false
 	)
 	h.add_child(s)
 	h.add_child(sp)
@@ -293,7 +299,7 @@ func _build_tab_races() -> void:
 		_add_row(vb, player, d[0], d[1], d[2], d[3])
 
 func _build_tab_moves() -> void:
-	var vb := _make_scroll_tab("3. Physical Move Slots")
+	var vb := _make_scroll_tab("3. Move Slots")
 	var top := HBoxContainer.new(); vb.add_child(top)
 	var m_opt := OptionButton.new(); m_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	var slot_keys := ["Slot_1_Up", "Slot_2_Down", "Slot_3_Left", "Slot_4_Right", "Slot_5_Diag_UL", "Slot_6_Diag_UR", "Slot_7_Burst", "Slot_8_Counter"]
@@ -332,7 +338,7 @@ func _deferred_init_moves(cb: Callable) -> void:
 	cb.call("Slot_1_Up")
 
 func _build_tab_spells() -> void:
-	var vb := _make_scroll_tab("4. Riptide Spell Maker")
+	var vb := _make_scroll_tab("4. Spell Maker")
 	var top := HBoxContainer.new(); vb.add_child(top)
 	var sp_opt := OptionButton.new(); sp_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	for k in ["Spell_Slot_1", "Spell_Slot_2", "Spell_Slot_3", "Spell_Slot_4", "Spell_Slot_5", "Spell_Slot_6"]:
@@ -378,11 +384,7 @@ func _deferred_init_spells(cb: Callable) -> void:
 	cb.call("Spell_Slot_1")
 
 func _build_tab_visuals() -> void:
-	var vb := _make_scroll_tab("5. Shaders, Region & AI")
-	var m_row := HBoxContainer.new(); vb.add_child(m_row)
-	var p_edit := LineEdit.new(); p_edit.placeholder_text = "res://models/hero.glb or user://models/hero.glb"; p_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL; m_row.add_child(p_edit)
-	var b_load := Button.new(); b_load.text = " Load .GLB "; b_load.pressed.connect(func(): if player: player.swap_custom_model(p_edit.text)); m_row.add_child(b_load)
-
+	var vb := _make_scroll_tab("5. Shaders & AI")
 	_add_row(vb, player, "anim_step_fps", 6.0, 60.0, 1.0)
 	_add_row(vb, player, "cel_cut_threshold", 0.05, 0.95, 0.02)
 	_add_row(vb, player, "hatch_width", 0.0, 0.25, 0.01)
@@ -402,6 +404,49 @@ func _build_tab_visuals() -> void:
 	)
 	vb.add_child(rst)
 
+func _build_tab_world_and_char() -> void:
+	var vb := _make_scroll_tab("6. World & Char Maker")
+
+	var lbl_c := Label.new(); lbl_c.text = "— CHARACTER PROPORTIONS & OUTFIT LOADER —"
+	vb.add_child(lbl_c)
+	_add_row(vb, player, "char_height", 0.65, 1.65, 0.02)
+	_add_row(vb, player, "char_width", 0.65, 1.55, 0.02)
+	_add_row(vb, player, "weapon_scale", 0.5, 2.5, 0.05)
+
+	var m_row := HBoxContainer.new(); vb.add_child(m_row)
+	var b_hero := Button.new(); b_hero.text = "Equip Dark Seinen Hero"; b_hero.pressed.connect(func(): if player: player.swap_custom_model("res://models/hero.glb")); m_row.add_child(b_hero)
+	var b_boss := Button.new(); b_boss.text = "Equip Gilded Veil Boss"; b_boss.pressed.connect(func(): if player: player.swap_custom_model("res://models/boss_veil.glb")); m_row.add_child(b_boss)
+
+	var p_edit := LineEdit.new(); p_edit.placeholder_text = "user://assets/custom.glb or res://models/hero.glb"; p_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL; m_row.add_child(p_edit)
+	var b_load := Button.new(); b_load.text = " Load .GLB "; b_load.pressed.connect(func(): if player: player.swap_custom_model(p_edit.text)); m_row.add_child(b_load)
+
+	var lbl_w := Label.new(); lbl_w.text = "— MINECRAFT-STYLE ARENA BLOCK & FLORA BUILDER —"
+	vb.add_child(lbl_w)
+
+	var b_row := HBoxContainer.new(); vb.add_child(b_row)
+	var chk_build := CheckBox.new(); chk_build.text = "Enable Tap-to-Place Build Mode"
+	chk_build.toggled.connect(func(on: bool):
+		if combat:
+			combat.build_mode_active = on
+			btn_build.text = "[ BUILD: ON ]" if on else "[ BUILD: OFF ]"
+			btn_build.modulate = Color(1.0, 0.85, 0.25) if on else Color.WHITE
+	)
+	b_row.add_child(chk_build)
+
+	var chk_del := CheckBox.new(); chk_del.text = "Delete Mode (Tap Block to Remove)"
+	chk_del.toggled.connect(func(on: bool): if combat: combat.delete_mode_active = on)
+	b_row.add_child(chk_del)
+
+	var kind_row := HBoxContainer.new(); vb.add_child(kind_row)
+	var k_lbl := Label.new(); k_lbl.text = "Block / Tile Type:"; k_lbl.custom_minimum_size = Vector2(160, 0); kind_row.add_child(k_lbl)
+	var k_opt := OptionButton.new(); k_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	for bk in ["GOTHIC_PILLAR", "BLAME_MONOLITH", "RUINED_ARCH", "ANIME_FLORA_PATCH"]:
+		k_opt.add_item(bk)
+	k_opt.item_selected.connect(func(idx: int): if combat: combat.selected_block_kind = k_opt.get_item_text(idx))
+	kind_row.add_child(k_opt)
+
+	_add_row(vb, combat, "build_rot_deg", 0.0, 270.0, 45.0)
+
 func _process(_delta: float) -> void:
 	if not player or not combat: return
 	var fps := Engine.get_frames_per_second()
@@ -411,8 +456,9 @@ func _process(_delta: float) -> void:
 	var st_name: String = PlayerController.MoveState.keys()[player.state]
 	var dash_name: String = PlayerController.DashStyle.keys()[player.dash_style]
 	var seq_txt := " -> ".join(combat.current_swipe_chain) if not combat.current_swipe_chain.is_empty() else combat.active_infusion
-	telemetry.text = "FPS: %d | Panel Hz: %d (OS Cap) | GPU: %.2f ms | CPU: %.2f ms\nProfile: %s | Dash: %s | State: %s | Weave: [%s] | Action: %s" % [
-		fps, panel_hz, gpu_ms, cpu_ms, player.active_race_name, dash_name, st_name, seq_txt, combat.last_combat_action
+	var b_tag := " | [BUILD: %s]" % combat.selected_block_kind if combat.build_mode_active else ""
+	telemetry.text = "FPS: %d | Panel Hz: %d (OS Cap) | GPU: %.2f ms | CPU: %.2f ms%s\nProfile: %s | Dash: %s | State: %s | Weave: [%s] | Action: %s" % [
+		fps, panel_hz, gpu_ms, cpu_ms, b_tag, player.active_race_name, dash_name, st_name, seq_txt, combat.last_combat_action
 	]
 	btn_lock.modulate = Color(0.3, 1.0, 0.5) if player.is_locked_on else Color.WHITE
 	queue_redraw()
