@@ -614,6 +614,8 @@ func _draw() -> void:
 				st_txt = ">> STRIKE! <<"
 				st_col = Color(1.0, 0.95, 0.3)
 			draw_string(ThemeDB.fallback_font, sp + Vector2(-52, -14), st_txt, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, st_col)
+			var b_title := str(s.get("boss_name", "RIVAL DUELIST"))
+			draw_string(ThemeDB.fallback_font, sp + Vector2(-58, -28), b_title, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(1.0, 0.92, 0.55))
 
 	if combat.impact_flash_timer > 0.0:
 		draw_rect(get_viewport_rect(), Color(1, 1, 1, 0.92))
@@ -624,8 +626,33 @@ func _build_tab_world_map() -> void:
 	story_mgr.name = "WorldStoryManager"
 	add_child(story_mgr)
 
+	var orig_lbl := Label.new()
+	orig_lbl.text = "— 1. CHOOSE STARTING CHARACTER ORIGIN (INTERTWINED PATHS) —"
+	vb.add_child(orig_lbl)
+
+	var orig_row := HBoxContainer.new()
+	vb.add_child(orig_row)
+	for p_key in ["Profile_1", "Profile_2", "Profile_3", "Profile_4"]:
+		var ob := Button.new()
+		var o_info: Dictionary = story_mgr.origins[p_key]
+		ob.text = str(o_info.get("title", p_key)).split(" (")[0]
+		ob.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var pk: String = str(p_key)
+		ob.pressed.connect(func():
+			var nd: Dictionary = story_mgr.select_origin(pk)
+			if player:
+				player.apply_race_by_name(pk)
+				player.eye_shape = int(story_mgr.origins[pk].get("eye_shape", 0))
+				player.eye_hue = float(story_mgr.origins[pk].get("eye_hue", 0.98))
+				player.update_eye_shader()
+			if combat:
+				combat.spawn_story_rival(nd)
+			_refresh_story_ui()
+		)
+		orig_row.add_child(ob)
+
 	var title_lbl := Label.new()
-	title_lbl.text = "— INTERTWINED REGIONAL STORY NODES & RIVAL BOSSES —"
+	title_lbl.text = "— 2. ACTIVE STORY NODE & RIVAL BOSS ENCOUNTER —"
 	vb.add_child(title_lbl)
 
 	story_node_title = Label.new()
@@ -635,6 +662,15 @@ func _build_tab_world_map() -> void:
 	story_node_desc = Label.new()
 	story_node_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vb.add_child(story_node_desc)
+
+	var spawn_btn := Button.new()
+	spawn_btn.text = " [ Summon This Node's Rival Boss Into Arena Now ] "
+	spawn_btn.pressed.connect(func():
+		if combat and story_mgr:
+			combat.spawn_story_rival(story_mgr.get_current_node())
+			_toggle_dev_panel()
+	)
+	vb.add_child(spawn_btn)
 
 	story_choices_box = VBoxContainer.new()
 	vb.add_child(story_choices_box)
@@ -646,7 +682,7 @@ func _refresh_story_ui() -> void:
 	for c in story_choices_box.get_children():
 		c.queue_free()
 	var nd: Dictionary = story_mgr.get_current_node()
-	story_node_title.text = str(nd.get("title", ""))
+	story_node_title.text = "%s  |  RIVAL: %s" % [str(nd.get("title", "")), str(nd.get("rival_name", ""))]
 	story_node_desc.text = str(nd.get("desc", ""))
 
 	var target_reg: String = str(nd.get("region", ""))
@@ -659,12 +695,12 @@ func _refresh_story_ui() -> void:
 	for i in range(choices.size()):
 		var ch: Dictionary = choices[i]
 		var b := Button.new()
-		b.text = str(ch.get("text", ""))
+		b.text = ">> " + str(ch.get("text", ""))
 		var choice_idx := i
 		b.pressed.connect(func():
-			story_mgr.make_choice(choice_idx)
+			var next_nd: Dictionary = story_mgr.make_choice(choice_idx)
 			if combat:
-				combat.last_combat_action = "STORY: " + str(story_mgr.get_current_node().get("title", ""))
+				combat.spawn_story_rival(next_nd)
 			_refresh_story_ui()
 		)
 		story_choices_box.add_child(b)

@@ -167,7 +167,7 @@ func _init_targets() -> void:
 				"state_timer": 1.0, "whiff_timer": 0.0,
 				"combo_left": 0, "strike_hit_done": false,
 				"vel": Vector3.ZERO, "home_pos": td.global_position,
-				"mat": dmat, "weapon": wp
+				"mat": dmat, "weapon": wp, "boss_name": "LADY OF THE GILDED VEIL"
 			}
 
 func is_point_in_right_dot(pos: Vector2) -> bool:
@@ -746,3 +746,39 @@ func _process(delta: float) -> void:
 					else:
 						v.y = 0.0
 				s["vel"] = v
+
+func spawn_story_rival(nd: Dictionary) -> void:
+	if target_stats.is_empty() or not player: return
+	var primary_td: Node3D = null
+	if player.is_locked_on and is_instance_valid(player.lock_target) and target_stats.has(player.lock_target):
+		primary_td = player.lock_target
+	else:
+		primary_td = target_stats.keys()[0] as Node3D
+	if not is_instance_valid(primary_td): return
+
+	var s: Dictionary = target_stats[primary_td]
+	var max_h := float(nd.get("rival_hp", 1800.0))
+	s["max_hp"] = max_h
+	s["hp"] = max_h
+	s["posture"] = 0.0
+	s["ai_state"] = "TELEGRAPH"
+	s["state_timer"] = 0.65
+	s["boss_name"] = str(nd.get("rival_name", "RIVAL BOSS"))
+
+	var r_scale := float(nd.get("rival_scale", 1.08))
+	primary_td.scale = Vector3.ONE * r_scale
+	var fwd := -player.visual_root.global_transform.basis.z if player.visual_root else -player.global_transform.basis.z
+	primary_td.global_position = player.global_position + Vector3(fwd.x, 0.0, fwd.z).normalized() * 7.5
+	primary_td.global_position.y = 1.0
+
+	var boss_model := primary_td.get_node_or_null("BossVeilModel")
+	var slots: Dictionary = nd.get("rival_slots", {})
+	if boss_model and not slots.is_empty():
+		player._set_slot_visibility_recursive(boss_model, slots)
+
+	player.lock_target = primary_td
+	player.is_locked_on = true
+	if player.dash_vfx:
+		player.dash_vfx.play_sfx("clash")
+		player.dash_vfx.spawn_step_sigil(primary_td.global_position + Vector3(0, 1.0, 0), Color(1.0, 0.85, 0.2), 2.5)
+	last_combat_action = "RIVAL CHALLENGE: " + s["boss_name"]
