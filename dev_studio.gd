@@ -1,6 +1,8 @@
 class_name DevStudio
 extends Control
 
+const WorldStoryScript = preload("res://world_story.gd")
+
 @onready var player: PlayerController = get_node_or_null("../Player") as PlayerController
 @onready var combat: GestureCombat = get_node_or_null("../CombatManager") as GestureCombat
 @onready var world_env: WorldEnvironment = get_node_or_null("../WorldEnvironment") as WorldEnvironment
@@ -17,6 +19,10 @@ var btn_lock: Button
 var btn_ai: Button
 var btn_region: Button
 var btn_build: Button
+var story_mgr: Node = null
+var story_node_title: Label = null
+var story_node_desc: Label = null
+var story_choices_box: VBoxContainer = null
 
 const REGION_NAMES: Array[String] = ["INK_CATHEDRAL", "BLAME_MEGASTRUC", "GOTHIC_ECLIPSE"]
 
@@ -122,6 +128,7 @@ func _build_ui() -> void:
 	_build_tab_spells()
 	_build_tab_visuals()
 	_build_tab_world_and_char()
+	_build_tab_world_map()
 
 func _add_quick_btn(txt: String, cb: Callable) -> Button:
 	var b := Button.new()
@@ -610,3 +617,54 @@ func _draw() -> void:
 
 	if combat.impact_flash_timer > 0.0:
 		draw_rect(get_viewport_rect(), Color(1, 1, 1, 0.92))
+
+func _build_tab_world_map() -> void:
+	var vb := _make_scroll_tab("7. World Map & Story")
+	story_mgr = WorldStoryScript.new()
+	story_mgr.name = "WorldStoryManager"
+	add_child(story_mgr)
+
+	var title_lbl := Label.new()
+	title_lbl.text = "— INTERTWINED REGIONAL STORY NODES & RIVAL BOSSES —"
+	vb.add_child(title_lbl)
+
+	story_node_title = Label.new()
+	story_node_title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.25))
+	vb.add_child(story_node_title)
+
+	story_node_desc = Label.new()
+	story_node_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vb.add_child(story_node_desc)
+
+	story_choices_box = VBoxContainer.new()
+	vb.add_child(story_choices_box)
+
+	_refresh_story_ui()
+
+func _refresh_story_ui() -> void:
+	if not story_mgr or not story_choices_box: return
+	for c in story_choices_box.get_children():
+		c.queue_free()
+	var nd: Dictionary = story_mgr.get_current_node()
+	story_node_title.text = str(nd.get("title", ""))
+	story_node_desc.text = str(nd.get("desc", ""))
+
+	var target_reg: String = str(nd.get("region", ""))
+	var reg_i := REGION_NAMES.find(target_reg)
+	if reg_i != -1 and region_idx != reg_i:
+		region_idx = (reg_i + 2) % 3
+		_cycle_region()
+
+	var choices: Array = nd.get("choices", [])
+	for i in range(choices.size()):
+		var ch: Dictionary = choices[i]
+		var b := Button.new()
+		b.text = str(ch.get("text", ""))
+		var choice_idx := i
+		b.pressed.connect(func():
+			story_mgr.make_choice(choice_idx)
+			if combat:
+				combat.last_combat_action = "STORY: " + str(story_mgr.get_current_node().get("title", ""))
+			_refresh_story_ui()
+		)
+		story_choices_box.add_child(b)
