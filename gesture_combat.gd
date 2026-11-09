@@ -133,6 +133,8 @@ func _attach_dummy_weapon(td: Node3D) -> Node3D:
 			orig_mi.visible = false
 		if player:
 			player._apply_seinen_shader_to_glb(boss_node)
+			var boss_slots := {"Slot_HeadMask_": "VEIL", "Slot_VeilCloak_": "VEIL", "Slot_UpperGarb_": "VEIL", "Slot_LowerSkirt_": "VEIL", "Slot_Weapon_": "VEIL"}
+			player._set_slot_visibility_recursive(boss_node, boss_slots)
 		var ap := player._find_anim_player(boss_node) if player else null
 		if ap and ap.has_animation("idle"):
 			ap.play("idle")

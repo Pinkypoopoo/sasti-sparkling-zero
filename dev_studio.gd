@@ -413,6 +413,42 @@ func _build_tab_world_and_char() -> void:
 	_add_row(vb, player, "char_width", 0.65, 1.55, 0.02)
 	_add_row(vb, player, "weapon_scale", 0.5, 2.5, 0.05)
 
+	var lbl_j := Label.new(); lbl_j.text = "— SPRING-BONE VEIL & CLOAK JIGGLE PHYSICS —"
+	vb.add_child(lbl_j)
+	_add_row(vb, player, "jiggle_stiffness", 2.0, 45.0, 1.0)
+	_add_row(vb, player, "jiggle_damping", 0.5, 15.0, 0.5)
+	_add_row(vb, player, "jiggle_gravity", -1.5, 2.5, 0.1)
+
+	var lbl_slots := Label.new(); lbl_slots.text = "— MODULAR CLOTHING SLOT SWITCHER (MIX & MATCH) —"
+	vb.add_child(lbl_slots)
+	var slot_defs := [
+		["Head / Mask:", "slot_head"],
+		["Veil / Cloak:", "slot_veil"],
+		["Upper Armor:", "slot_upper"],
+		["Lower Garb:", "slot_lower"],
+		["Weapon Kit:", "slot_weapon"]
+	]
+	for sd in slot_defs:
+		var srow := HBoxContainer.new(); vb.add_child(srow)
+		var slbl := Label.new(); slbl.text = sd[0]; slbl.custom_minimum_size = Vector2(160, 0); srow.add_child(slbl)
+		var sopt := OptionButton.new(); sopt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var styles := ["HERO", "VEIL", "NONE"]
+		for st in styles: sopt.add_item(st)
+		var prop_name: String = sd[1]
+		if player:
+			var cur_val := str(player.get(prop_name))
+			var idx := styles.find(cur_val)
+			if idx != -1: sopt.selected = idx
+		sopt.item_selected.connect(func(i: int):
+			if player:
+				var chosen := sopt.get_item_text(i)
+				player.set(prop_name, chosen)
+				if player.data_store and player.data_store.profiles.has(player.active_race_name):
+					player.data_store.profiles[player.active_race_name][prop_name] = chosen
+				player.apply_modular_clothing_slots()
+		)
+		srow.add_child(sopt)
+
 	var m_row := HBoxContainer.new(); vb.add_child(m_row)
 	var b_hero := Button.new(); b_hero.text = "Equip Dark Seinen Hero"; b_hero.pressed.connect(func(): if player: player.swap_custom_model("res://models/hero.glb")); m_row.add_child(b_hero)
 	var b_boss := Button.new(); b_boss.text = "Equip Gilded Veil Boss"; b_boss.pressed.connect(func(): if player: player.swap_custom_model("res://models/boss_veil.glb")); m_row.add_child(b_boss)

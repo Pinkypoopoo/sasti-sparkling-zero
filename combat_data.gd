@@ -8,25 +8,25 @@ var profiles: Dictionary = {
 		"max_hp": 1000.0, "hp_regen": 15.0, "max_mana": 100.0, "mana_regen": 14.0,
 		"physical_strength": 1.0, "base_power": 1.0, "step_mult": 1.15,
 		"dash_style": 0, "afterimage_on": false, "aura_color": [0.95, 0.12, 0.18],
-		"model_path": "res://models/hero.glb", "char_height": 1.0, "char_width": 1.0, "weapon_scale": 1.0
+		"model_path": "res://models/hero.glb", "char_height": 1.0, "char_width": 1.0, "weapon_scale": 1.0, "slot_head": "HERO", "slot_veil": "HERO", "slot_upper": "HERO", "slot_lower": "HERO", "slot_weapon": "HERO"
 	},
 	"Profile_2": {
 		"max_hp": 1350.0, "hp_regen": 20.0, "max_mana": 90.0, "mana_regen": 10.0,
 		"physical_strength": 1.3, "base_power": 1.0, "step_mult": 1.0,
 		"dash_style": 4, "afterimage_on": false, "aura_color": [0.85, 0.15, 0.25],
-		"model_path": "res://models/boss_veil.glb", "char_height": 1.08, "char_width": 0.95, "weapon_scale": 1.15
+		"model_path": "res://models/boss_veil.glb", "char_height": 1.08, "char_width": 0.95, "weapon_scale": 1.15, "slot_head": "VEIL", "slot_veil": "VEIL", "slot_upper": "VEIL", "slot_lower": "VEIL", "slot_weapon": "VEIL"
 	},
 	"Profile_3": {
 		"max_hp": 1100.0, "hp_regen": 16.0, "max_mana": 120.0, "mana_regen": 15.0,
 		"physical_strength": 1.15, "base_power": 1.15, "step_mult": 1.35,
 		"dash_style": 2, "afterimage_on": true, "aura_color": [1.0, 0.78, 0.15],
-		"model_path": "res://models/hero.glb", "char_height": 0.94, "char_width": 1.05, "weapon_scale": 1.25
+		"model_path": "res://models/hero.glb", "char_height": 0.94, "char_width": 1.05, "weapon_scale": 1.25, "slot_head": "VEIL", "slot_veil": "HERO", "slot_upper": "HERO", "slot_lower": "VEIL", "slot_weapon": "HERO"
 	},
 	"Profile_4": {
 		"max_hp": 900.0, "hp_regen": 12.0, "max_mana": 160.0, "mana_regen": 20.0,
 		"physical_strength": 0.95, "base_power": 1.45, "step_mult": 1.2,
 		"dash_style": 5, "afterimage_on": false, "aura_color": [0.2, 0.9, 0.75],
-		"model_path": "res://models/boss_veil.glb", "char_height": 1.04, "char_width": 0.92, "weapon_scale": 1.0
+		"model_path": "res://models/boss_veil.glb", "char_height": 1.04, "char_width": 0.92, "weapon_scale": 1.0, "slot_head": "HERO", "slot_veil": "VEIL", "slot_upper": "VEIL", "slot_lower": "HERO", "slot_weapon": "VEIL"
 	}
 }
 
@@ -66,7 +66,7 @@ func save_to_disk(player: Node) -> void:
 			"jump_velocity", "air_combo_gravity_scale", "camera_distance", "camera_offset_x",
 			"camera_offset_y", "camera_pitch_bias", "base_fov", "anim_step_fps",
 			"cel_cut_threshold", "hatch_width", "outline_width", "rim_strength",
-			"afterimage_enabled", "char_height", "char_width", "weapon_scale"
+			"afterimage_enabled", "char_height", "char_width", "weapon_scale", "jiggle_stiffness", "jiggle_damping", "jiggle_gravity", "slot_head", "slot_veil", "slot_upper", "slot_lower", "slot_weapon"
 		]:
 			payload["player_tunables"][prop] = player.get(prop)
 	var f := FileAccess.open(SAVE_PATH, FileAccess.WRITE)

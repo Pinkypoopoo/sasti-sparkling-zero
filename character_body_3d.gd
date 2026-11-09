@@ -46,6 +46,19 @@ var jiggle_stiffness: float = 18.0
 var jiggle_damping: float = 4.5
 var jiggle_gravity: float = 0.6
 
+# --- Modular Clothing Slot State ("HERO", "VEIL", "NONE") ---
+var slot_head: String = "HERO"
+var slot_veil: String = "HERO"
+var slot_upper: String = "HERO"
+var slot_lower: String = "HERO"
+var slot_weapon: String = "HERO"
+
+# --- Spring-Bone Veil/Cloak Jiggle Physics State ---
+var veil_bone_idx: int = -1
+var veil_spring_rot: Vector3 = Vector3.ZERO
+var veil_spring_vel: Vector3 = Vector3.ZERO
+var prev_player_vel: Vector3 = Vector3.ZERO
+
 var hp: float = 1000.0
 var max_hp: float = 1000.0
 var mana: float = 100.0
@@ -285,9 +298,59 @@ func apply_character_proportions() -> void:
 	elif visual_root:
 		visual_root.scale = Vector3(char_width, char_height, char_width)
 	if active_skeleton:
+		veil_bone_idx = active_skeleton.find_bone("Veil_Back")
 		var arm_idx := active_skeleton.find_bone("Arm_R")
 		if arm_idx != -1:
 			active_skeleton.set_bone_pose_scale(arm_idx, Vector3.ONE * weapon_scale)
+	apply_modular_clothing_slots()
+
+func apply_modular_clothing_slots(root_node: Node = null) -> void:
+	var target_root := root_node if root_node != null else custom_model_root
+	if not target_root or not is_instance_valid(target_root): return
+	var slot_map := {
+		"Slot_HeadMask_": slot_head,
+		"Slot_VeilCloak_": slot_veil,
+		"Slot_UpperGarb_": slot_upper,
+		"Slot_LowerSkirt_": slot_lower,
+		"Slot_Weapon_": slot_weapon
+	}
+	_set_slot_visibility_recursive(target_root, slot_map)
+
+func _set_slot_visibility_recursive(n: Node, slot_map: Dictionary) -> void:
+	if n is MeshInstance3D:
+		for prefix in slot_map.keys():
+			if n.name.begins_with(prefix):
+				var active_style: String = str(slot_map[prefix])
+				n.visible = (n.name == prefix + active_style)
+	for c in n.get_children():
+		_set_slot_visibility_recursive(c, slot_map)
+
+func _update_spring_bone_jiggle(dt: float) -> void:
+	if not active_skeleton: return
+	if veil_bone_idx == -1:
+		veil_bone_idx = active_skeleton.find_bone("Veil_Back")
+	if veil_bone_idx == -1: return
+
+	# Convert world acceleration and movement into local cape/veil whip
+	var accel := (velocity - prev_player_vel) / maxf(0.004, dt)
+	prev_player_vel = velocity
+	var fwd := -visual_root.global_transform.basis.z if visual_root else -global_transform.basis.z
+	var right := visual_root.global_transform.basis.x if visual_root else global_transform.basis.x
+	var fwd_speed := velocity.dot(fwd)
+	var side_speed := velocity.dot(right)
+	var swing_impulse := 28.0 if swing_anim_timer > 0.0 else 0.0
+
+	# Target angle in degrees: billow back on forward run/dash, lift on fall, whip on slash
+	var target_pitch := clampf(12.0 + fwd_speed * 1.45 - velocity.y * 1.8 + jiggle_gravity * 18.0 + swing_impulse, -35.0, 78.0)
+	var target_roll := clampf(-side_speed * 1.35 - accel.dot(right) * 0.12, -48.0, 48.0)
+	var target_vec := Vector3(target_pitch, 0.0, target_roll)
+
+	var spring_force := (target_vec - veil_spring_rot) * jiggle_stiffness
+	veil_spring_vel = (veil_spring_vel + spring_force * dt) * maxf(0.0, 1.0 - jiggle_damping * dt)
+	veil_spring_rot += veil_spring_vel * dt
+
+	var q := Quaternion.from_euler(Vector3(deg_to_rad(veil_spring_rot.x), deg_to_rad(veil_spring_rot.y), deg_to_rad(veil_spring_rot.z)))
+	active_skeleton.set_bone_pose_rotation(veil_bone_idx, q)
 
 func trigger_weapon_windup(dir: Vector2) -> void:
 	if weapon_pivot:
@@ -365,6 +428,11 @@ func apply_race_by_name(r_name: String) -> void:
 	char_height = float(r.get("char_height", 1.0))
 	char_width = float(r.get("char_width", 1.0))
 	weapon_scale = float(r.get("weapon_scale", 1.0))
+	slot_head = str(r.get("slot_head", "HERO"))
+	slot_veil = str(r.get("slot_veil", "HERO"))
+	slot_upper = str(r.get("slot_upper", "HERO"))
+	slot_lower = str(r.get("slot_lower", "HERO"))
+	slot_weapon = str(r.get("slot_weapon", "HERO"))
 	var ac: Array = r.get("aura_color", [0.95, 0.12, 0.18])
 	update_cel_shader(cel_cut_threshold, outline_width, rim_strength, Color(ac[0], ac[1], ac[2]))
 	if dash_vfx and not afterimage_enabled:
@@ -717,6 +785,7 @@ func _update_stepped_animation(delta: float) -> void:
 			active_anim_player.callback_mode_process = AnimationMixer.ANIMATION_CALLBACK_MODE_PROCESS_MANUAL
 			active_anim_player.advance(advance_time)
 			apply_character_proportions()
+			_update_spring_bone_jiggle(advance_time)
 		elif state != MoveState.DASH and visual_root:
 			if sway_timer > 0.0:
 				visual_root.position.x = sin(stepped_time * 42.0) * 0.42
