@@ -172,7 +172,7 @@ func _cycle_region() -> void:
 
 func _cycle_fps() -> void:
 	fps_mode_idx = (fps_mode_idx + 1) % 3
-	var is_android := DisplayServer.get_name() == "Android"
+	var is_android: bool = DisplayServer.get_name() in ["Android", "iOS", "Web"]
 	match fps_mode_idx:
 		0:
 			if not is_android: DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_ENABLED)

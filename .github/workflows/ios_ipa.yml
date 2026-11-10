@@ -1,0 +1,38 @@
+name: Build iOS Unsigned IPA (macOS Cloud)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download Godot 4.3 Stable & Export Templates for macOS
+        run: |
+          curl -sL https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_macos.universal.zip -o godot.zip
+          unzip -q godot.zip
+          mkdir -p ~/Library/Application\ Support/Godot/export_templates/4.3.stable
+          curl -sL https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_export_templates.tpz -o templates.tpz
+          unzip -q templates.tpz
+          mv templates/* ~/Library/Application\ Support/Godot/export_templates/4.3.stable/
+
+      - name: Export Xcode Project & Package Unsigned IPA
+        run: |
+          mkdir -p build/ios
+          ./Godot.app/Contents/MacOS/Godot --headless --path . --export-debug "iOS 120Hz ProMotion" build/ios/sasti_sparkling_zero.xcodeproj || true
+          cd build/ios
+          if [ -d "sasti_sparkling_zero.xcodeproj" ]; then
+            xcodebuild -project sasti_sparkling_zero.xcodeproj -scheme sasti_sparkling_zero -configuration Debug -sdk iphoneos CONFIGURATION_BUILD_DIR="$PWD/Payload_Build" CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
+            mkdir -p Payload
+            cp -r Payload_Build/sasti_sparkling_zero.app Payload/
+            zip -r9 sasti_sparkling_zero_unsigned.ipa Payload
+          fi
+
+      - name: Upload Unsigned IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sasti-sparkling-zero-ios-ipa
+          path: build/ios/*.ipa
