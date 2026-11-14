@@ -35,22 +35,24 @@ const POSE_PRESETS: Array = [
 	[2.3, -0.58, 1.48, -8.0, 172.0, -9.0]
 ]
 
-# --- 3. Custom Room Code + Optional Password Lock PvP ---
-var enet_peer: ENetMultiplayerPeer = null
+# --- 3. Direct UDP Port 7778 Custom Room + Password Lock PvP ---
 var udp_beacon: PacketPeerUDP = null
 var is_p2p_connected: bool = false
 var is_p2p_host: bool = false
-var is_authenticated: bool = false
+var is_joining: bool = false
+var join_retry_timer: float = 0.0
+var join_timeout_timer: float = 0.0
 var local_ip: String = "127.0.0.1"
+var peer_ip: String = ""
 var default_room_code: String = "SZ100"
 var active_room_code: String = "SZ100"
 var active_room_pass: String = ""
-var room_use_password: bool = false
 var pending_join_code: String = ""
 var pending_join_pass: String = ""
 var discovered_rooms: Dictionary = {}
 var p2p_status: String = "Enter a Room Code to Create or Join"
 var beacon_timer: float = 0.0
+var last_sent_swing: bool = false
 
 var player_ref: Node3D = null
 var combat_ref: Node = null
@@ -74,12 +76,18 @@ func setup_module(p: Node3D, c: Node, s: Control) -> void:
 	_build_custom_room_pvp_modal()
 
 func _detect_local_ip() -> void:
+	# Prefer standard Wi-Fi / Hotspot / USB-tether subnets (192.168.x.x or 172.20.10.x) over cellular
+	var best_ip: String = "127.0.0.1"
 	for a in IP.get_local_addresses():
 		var ip_s: String = str(a)
-		if ip_s.begins_with("192.168.") or ip_s.begins_with("172.20.10.") or ip_s.begins_with("10."):
-			local_ip = ip_s
-			if ip_s.begins_with("192.168.42.") or ip_s.begins_with("192.168.43."):
-				break
+		if ip_s.begins_with("192.168.42.") or ip_s.begins_with("192.168.43.") or ip_s.begins_with("172.20.10."):
+			best_ip = ip_s
+			break
+		elif ip_s.begins_with("192.168."):
+			best_ip = ip_s
+		elif ip_s.begins_with("10.") and best_ip == "127.0.0.1":
+			best_ip = ip_s
+	local_ip = best_ip
 	var parts: PackedStringArray = local_ip.split(".")
 	if parts.size() == 4:
 		default_room_code = "SZ" + parts[3]
@@ -235,7 +243,6 @@ func _build_custom_room_pvp_modal() -> void:
 	pvp_status_lbl.add_theme_color_override("font_color", Color(0.3, 0.95, 1.0))
 	vb.add_child(pvp_status_lbl)
 
-	# Row 1: Room Code Input
 	var code_row: HBoxContainer = HBoxContainer.new()
 	vb.add_child(code_row)
 	var code_lbl: Label = Label.new()
@@ -245,11 +252,10 @@ func _build_custom_room_pvp_modal() -> void:
 
 	room_code_edit = LineEdit.new()
 	room_code_edit.text = default_room_code
-	room_code_edit.placeholder_text = "Enter Room Code (e.g. SZ224 or KUSH)"
+	room_code_edit.placeholder_text = "Enter Room Code (e.g. SZ148 or KUSH)"
 	room_code_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	code_row.add_child(room_code_edit)
 
-	# Row 2: Optional Password Lock Checkbox + Password Field
 	var pass_row: HBoxContainer = HBoxContainer.new()
 	vb.add_child(pass_row)
 	pass_lock_chk = CheckBox.new()
@@ -265,7 +271,6 @@ func _build_custom_room_pvp_modal() -> void:
 	pass_row.add_child(room_pass_edit)
 
 	pass_lock_chk.toggled.connect(func(on: bool):
-		room_use_password = on
 		room_pass_edit.editable = on
 		if not on:
 			room_pass_edit.text = ""
@@ -275,7 +280,6 @@ func _build_custom_room_pvp_modal() -> void:
 			room_pass_edit.grab_focus()
 	)
 
-	# Row 3: [ CREATE ROOM ] and [ JOIN ] Side-by-Side
 	var act_row: HBoxContainer = HBoxContainer.new()
 	act_row.add_theme_constant_override("separation", 10)
 	vb.add_child(act_row)
@@ -289,7 +293,7 @@ func _build_custom_room_pvp_modal() -> void:
 		var r_code: String = room_code_edit.text.strip_edges().to_upper()
 		if r_code.is_empty(): r_code = default_room_code
 		var r_pass: String = room_pass_edit.text.strip_edges() if pass_lock_chk.button_pressed else ""
-		host_custom_room(r_code, r_pass, 7777)
+		host_custom_room(r_code, r_pass)
 	)
 	act_row.add_child(b_host)
 
@@ -301,11 +305,10 @@ func _build_custom_room_pvp_modal() -> void:
 	b_join.pressed.connect(func():
 		var r_code: String = room_code_edit.text.strip_edges().to_upper()
 		var r_pass: String = room_pass_edit.text.strip_edges() if pass_lock_chk.button_pressed else ""
-		join_custom_room(r_code, r_pass, 7777)
+		join_custom_room(r_code, r_pass)
 	)
 	act_row.add_child(b_join)
 
-	# Row 4: Disconnect & Close
 	var h_bot: HBoxContainer = HBoxContainer.new()
 	vb.add_child(h_bot)
 	var b_disc: Button = Button.new(); b_disc.text = "[ Disconnect ]"; b_disc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -313,26 +316,19 @@ func _build_custom_room_pvp_modal() -> void:
 	var b_close: Button = Button.new(); b_close.text = "[ Close ]"; b_close.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	b_close.pressed.connect(func(): pvp_modal.visible = false); h_bot.add_child(b_close)
 
-func host_custom_room(r_code: String, r_pass: String, port: int = 7777) -> void:
+func host_custom_room(r_code: String, r_pass: String) -> void:
 	disconnect_p2p()
 	_detect_local_ip()
 	active_room_code = r_code
 	active_room_pass = r_pass
 	room_code_edit.text = active_room_code
-
-	enet_peer = ENetMultiplayerPeer.new()
-	if enet_peer.create_server(port, 2) != OK:
-		p2p_status = "ERROR: Could not open room port"
-		return
-	multiplayer.multiplayer_peer = enet_peer
 	is_p2p_host = true
-	is_authenticated = true
+	is_joining = false
+	is_p2p_connected = false
 	var lock_tag: String = " [LOCKED]" if not active_room_pass.is_empty() else " [OPEN]"
 	p2p_status = "HOSTING ROOM '%s'%s — Waiting for Challenger..." % [active_room_code, lock_tag]
-	if not multiplayer.peer_connected.is_connected(_on_peer_conn):
-		multiplayer.peer_connected.connect(_on_peer_conn)
 
-func join_custom_room(r_code: String, r_pass: String, port: int = 7777) -> void:
+func join_custom_room(r_code: String, r_pass: String) -> void:
 	var clean_code: String = r_code.strip_edges().to_upper()
 	if clean_code.is_empty() and not discovered_rooms.is_empty():
 		clean_code = str(discovered_rooms.keys()[0])
@@ -353,7 +349,7 @@ func join_custom_room(r_code: String, r_pass: String, port: int = 7777) -> void:
 			p2p_status = "Room '%s' is Password Locked! Enter password & tap [ JOIN ]." % clean_code
 			return
 	else:
-		# Smart Subnet Octet Fallback (e.g. SZ224 -> 192.168.0.224) if router blocks UDP broadcast
+		# Subnet Octet Fallback (e.g. SZ148 -> 192.168.0.148)
 		var digits: String = ""
 		for i in range(clean_code.length()):
 			var ch: String = clean_code.substr(i, 1)
@@ -364,61 +360,53 @@ func join_custom_room(r_code: String, r_pass: String, port: int = 7777) -> void:
 		if oct_val >= 1 and oct_val <= 254 and my_parts.size() == 4:
 			target_ip = "%s.%s.%s.%d" % [my_parts[0], my_parts[1], my_parts[2], oct_val]
 
-	if target_ip.is_empty() or target_ip == local_ip or target_ip == "127.0.0.1":
-		p2p_status = "Room '%s' not found on Wi-Fi/Hotspot yet!" % clean_code
-		return
-
-	disconnect_p2p()
+	is_p2p_host = false
+	is_p2p_connected = false
+	is_joining = true
+	join_retry_timer = 0.0
+	join_timeout_timer = 5.0
 	pending_join_code = clean_code
 	pending_join_pass = r_pass
-	enet_peer = ENetMultiplayerPeer.new()
-	if enet_peer.create_client(target_ip, port) != OK:
-		p2p_status = "ERROR: Could not join Room " + clean_code
-		return
-	multiplayer.multiplayer_peer = enet_peer
-	is_p2p_host = false
-	is_authenticated = false
-	p2p_status = "JOINING ROOM '%s'..." % clean_code
-	if not multiplayer.peer_connected.is_connected(_on_peer_conn):
-		multiplayer.peer_connected.connect(_on_peer_conn)
+	peer_ip = target_ip
+	active_room_code = clean_code
+	p2p_status = "CONNECTING TO ROOM '%s'..." % clean_code
+	_send_join_packet()
+
+func _send_join_packet() -> void:
+	if not udp_beacon: return
+	var pkt: PackedByteArray = ("P2PJOIN:%s:%s" % [pending_join_code, pending_join_pass]).to_utf8_buffer()
+	if not peer_ip.is_empty() and peer_ip != "127.0.0.1":
+		udp_beacon.set_dest_address(peer_ip, 7778)
+		udp_beacon.put_packet(pkt)
+	# Also send via broadcast so it reaches the Host even across multi-interface subnets
+	udp_beacon.set_dest_address("255.255.255.255", 7778)
+	udp_beacon.put_packet(pkt)
 
 func disconnect_p2p() -> void:
-	if enet_peer: enet_peer.close(); enet_peer = null
-	multiplayer.multiplayer_peer = null
-	is_p2p_host = false; is_p2p_connected = false; is_authenticated = false
+	is_p2p_host = false
+	is_p2p_connected = false
+	is_joining = false
+	peer_ip = ""
 	p2p_status = "SOLO MODE (Disconnected)"
 
-func _on_peer_conn(id: int) -> void:
-	if id == 1 and not is_p2p_host:
-		# Client connected to Host -> send Room Code & Password handshake
-		rpc_id(1, "_rpc_verify_room_join", pending_join_code, pending_join_pass)
-
-@rpc("any_peer", "reliable")
-func _rpc_verify_room_join(c_code: String, c_pass: String) -> void:
-	if not is_p2p_host: return
-	var sender_id: int = multiplayer.get_remote_sender_id()
-	if c_code.to_upper() != active_room_code.to_upper():
-		rpc_id(sender_id, "_rpc_join_result", false, "WRONG ROOM CODE!")
-		return
-	if not active_room_pass.is_empty() and c_pass != active_room_pass:
-		rpc_id(sender_id, "_rpc_join_result", false, "ACCESS DENIED: WRONG PASSWORD!")
-		return
+func _on_link_established(remote_ip: String, r_code: String) -> void:
+	peer_ip = remote_ip
+	active_room_code = r_code
+	is_joining = false
 	is_p2p_connected = true
-	is_authenticated = true
-	p2p_status = "ROOM '%s' CONNECTED! 120Hz PVP DUEL ACTIVE" % active_room_code
-	rpc_id(sender_id, "_rpc_join_result", true, "ROOM '%s' CONNECTED! 120Hz PVP DUEL ACTIVE" % active_room_code)
-
-@rpc("any_peer", "reliable")
-func _rpc_join_result(ok: bool, msg: String) -> void:
-	p2p_status = msg
-	if ok:
-		is_p2p_connected = true
-		is_authenticated = true
-	else:
-		if enet_peer: enet_peer.close(); enet_peer = null
-		multiplayer.multiplayer_peer = null
-		is_p2p_connected = false
-		is_authenticated = false
+	p2p_status = "CONNECTED TO ROOM '%s'! LIVE 120Hz PVP ACTIVE" % active_room_code
+	if player_ref:
+		if not bool(player_ref.get("is_locked_on")):
+			player_ref.call("toggle_lock_on")
+		if player_ref.get("dash_vfx"):
+			player_ref.get("dash_vfx").call("play_sfx", "clash")
+	if combat_ref:
+		combat_ref.set("last_combat_action", "PVP ROOM '%s' LINKED!" % active_room_code)
+	# Auto-close modal after 0.6s so both players can fight immediately
+	get_tree().create_timer(0.6).timeout.connect(func():
+		if is_p2p_connected and pvp_modal:
+			pvp_modal.visible = false
+	)
 
 func _process(delta: float) -> void:
 	if pvp_status_lbl: pvp_status_lbl.text = "Status: " + p2p_status
@@ -439,33 +427,113 @@ func _process(delta: float) -> void:
 			flame_embers[i].position = Vector3(cos(ang) * rad, y_c, sin(ang) * rad)
 
 	if udp_beacon:
+		# 1. Host broadcasts room availability
 		beacon_timer += delta
-		if is_p2p_host and not is_p2p_connected and beacon_timer >= 0.45:
+		if is_p2p_host and not is_p2p_connected and beacon_timer >= 0.40:
 			beacon_timer = 0.0
 			var lock_flag: String = "1" if not active_room_pass.is_empty() else "0"
 			var payload: String = "P2PROOM:%s:%s:%s" % [active_room_code, lock_flag, local_ip]
 			udp_beacon.set_dest_address("255.255.255.255", 7778)
 			udp_beacon.put_packet(payload.to_utf8_buffer())
 
+		# 2. Client retries join handshake every 0.25s while connecting
+		if is_joining and not is_p2p_connected:
+			join_retry_timer += delta
+			join_timeout_timer -= delta
+			if join_retry_timer >= 0.25:
+				join_retry_timer = 0.0
+				_send_join_packet()
+			if join_timeout_timer <= 0.0:
+				is_joining = false
+				p2p_status = "Connection timed out for Room '%s'. Tap [ JOIN ] to retry." % pending_join_code
+
+		# 3. Poll incoming UDP packets on Port 7778
 		while udp_beacon.get_available_packet_count() > 0:
-			var m: String = udp_beacon.get_packet().get_string_from_utf8()
+			var raw_pkt: PackedByteArray = udp_beacon.get_packet()
+			var sender_ip: String = udp_beacon.get_packet_ip()
+			var m: String = raw_pkt.get_string_from_utf8()
+
 			if m.begins_with("P2PROOM:"):
 				var sp: PackedStringArray = m.split(":")
 				if sp.size() >= 4:
 					var r_code: String = sp[1]
 					var is_lck: bool = (sp[2] == "1")
-					var r_ip: String = sp[3]
-					if r_ip != local_ip and r_ip != "127.0.0.1":
+					var r_ip: String = sender_ip if not sender_ip.is_empty() else sp[3]
+					if r_ip != local_ip and r_ip != "127.0.0.1" and not (is_p2p_host and r_code == active_room_code):
 						discovered_rooms[r_code] = {"ip": r_ip, "locked": is_lck}
-						if not is_p2p_host and not is_p2p_connected:
+						if is_joining and r_code.to_upper() == pending_join_code.to_upper():
+							peer_ip = r_ip
+							_send_join_packet()
+						elif not is_p2p_host and not is_p2p_connected and not is_joining:
 							if room_code_edit and (room_code_edit.text == default_room_code or room_code_edit.text.is_empty()):
 								room_code_edit.text = r_code
 							var l_txt: String = " [PASSWORD LOCKED]" if is_lck else " [OPEN]"
 							p2p_status = "FOUND ROOM '%s'%s! Tap [ JOIN ]" % [r_code, l_txt]
 
-		if is_p2p_connected and is_authenticated and player_ref:
+			elif m.begins_with("P2PJOIN:") and is_p2p_host:
+				var sp_j: PackedStringArray = m.split(":")
+				if sp_j.size() >= 3:
+					var req_code: String = sp_j[1].to_upper()
+					var req_pass: String = sp_j[2]
+					if req_code == active_room_code.to_upper():
+						if not active_room_pass.is_empty() and req_pass != active_room_pass:
+							udp_beacon.set_dest_address(sender_ip, 7778)
+							udp_beacon.put_packet(("P2PDENY:" + active_room_code + ":ACCESS DENIED — WRONG PASSWORD!").to_utf8_buffer())
+						else:
+							udp_beacon.set_dest_address(sender_ip, 7778)
+							udp_beacon.put_packet(("P2PACCEPT:" + active_room_code).to_utf8_buffer())
+							if not is_p2p_connected:
+								_on_link_established(sender_ip, active_room_code)
+
+			elif m.begins_with("P2PACCEPT:") and (is_joining or not is_p2p_connected) and not is_p2p_host:
+				var acc_code: String = m.split(":")[1]
+				if acc_code.to_upper() == pending_join_code.to_upper():
+					_on_link_established(sender_ip, acc_code)
+
+			elif m.begins_with("P2PDENY:") and is_joining and not is_p2p_host:
+				var sp_d: PackedStringArray = m.split(":")
+				if sp_d.size() >= 3 and sp_d[1].to_upper() == pending_join_code.to_upper():
+					is_joining = false
+					is_p2p_connected = false
+					p2p_status = sp_d[2]
+
+			elif m.begins_with("P2PSYNC:") and is_p2p_connected and sender_ip == peer_ip:
+				var sp_s: PackedStringArray = m.split(":")
+				if sp_s.size() >= 7 and combat_ref:
+					var rx: float = float(sp_s[1])
+					var ry: float = float(sp_s[2])
+					var rz: float = float(sp_s[3])
+					var ryaw: float = float(sp_s[4])
+					var rhp: float = float(sp_s[5])
+					var ratk: int = int(sp_s[6])
+					var ts: Dictionary = combat_ref.get("target_stats")
+					if not ts.is_empty():
+						var td: Node3D = ts.keys()[0] as Node3D
+						if is_instance_valid(td):
+							td.global_position = td.global_position.lerp(Vector3(rx, ry, rz), 0.65)
+							td.rotation.y = ryaw
+							ts[td]["hp"] = rhp
+							ts[td]["boss_name"] = "PVP CHALLENGER [%s]" % active_room_code
+							if ratk == 1 and player_ref:
+								if player_ref.get("dash_vfx"):
+									var fwd: Vector3 = -td.global_transform.basis.z
+									player_ref.get("dash_vfx").call("spawn_slash_arc", td.global_position + Vector3(0, 1.1, 0), fwd, 25.0, Color(1.0, 0.25, 0.15))
+								if player_ref.global_position.distance_to(td.global_position) <= 5.2 and int(player_ref.get("state")) != 6:
+									player_ref.set("hp", maxf(100.0, float(player_ref.get("hp")) - 65.0))
+									var knock: Vector3 = (player_ref.global_position - td.global_position).normalized() * 12.0 + Vector3(0, 3.0, 0)
+									player_ref.call("apply_hitstun", 0.28, knock)
+
+		# 4. Send 120Hz Direct UDP State + Attack Sync to Connected Challenger
+		if is_p2p_connected and not peer_ip.is_empty() and player_ref:
 			var vis: Node3D = player_ref.get("visual_root") as Node3D
-			rpc("_sync_p2p", player_ref.global_position, vis.rotation.y if vis else 0.0)
+			var yaw: float = vis.rotation.y if vis else 0.0
+			var is_swinging: bool = float(player_ref.get("swing_anim_timer")) > 0.15
+			var atk_pulse: int = 1 if (is_swinging and not last_sent_swing) else 0
+			last_sent_swing = is_swinging
+			var pos: Vector3 = player_ref.global_position
+			var sync_str: String = "P2PSYNC:%.2f:%.2f:%.2f:%.2f:%.0f:%d" % [pos.x, pos.y, pos.z, yaw, float(player_ref.get("hp")), atk_pulse]
+			udp_beacon.set_dest_address(peer_ip, 7778)
+			udp_beacon.put_packet(sync_str.to_utf8_buffer())
 
 	if p5_pause_active and player_ref:
 		p5_anim_t += delta
@@ -484,14 +552,3 @@ func _process(delta: float) -> void:
 			cp.rotation_degrees.x = lerpf(cp.rotation_degrees.x, float(pr[3]), 14.0 * delta)
 			cm.rotation_degrees.z = lerpf(cm.rotation_degrees.z, float(pr[5]), 14.0 * delta)
 			cm.fov = lerpf(cm.fov, 60.0, 14.0 * delta)
-
-@rpc("any_peer", "unreliable_ordered")
-func _sync_p2p(pos: Vector3, yaw: float) -> void:
-	if not combat_ref or not is_authenticated: return
-	var ts: Dictionary = combat_ref.get("target_stats")
-	if ts.is_empty(): return
-	var td: Node3D = ts.keys()[0] as Node3D
-	if is_instance_valid(td):
-		td.global_position = td.global_position.lerp(pos, 0.65)
-		td.rotation.y = yaw
-		ts[td]["boss_name"] = "CHALLENGER [%s]" % active_room_code
