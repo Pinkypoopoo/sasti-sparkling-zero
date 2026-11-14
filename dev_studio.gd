@@ -2,6 +2,8 @@ class_name DevStudio
 extends Control
 
 const WorldStoryScript = preload("res://world_story.gd")
+const FlameP5PvPScript = preload("res://flame_p5_pvp.gd")
+var fp_mod: Node = null
 
 @onready var player: PlayerController = get_node_or_null("../Player") as PlayerController
 @onready var combat: GestureCombat = get_node_or_null("../CombatManager") as GestureCombat
@@ -30,8 +32,15 @@ func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	RenderingServer.viewport_set_measure_render_time(get_viewport().get_viewport_rid(), true)
 	_build_ui()
+	fp_mod = FlameP5PvPScript.new()
+	fp_mod.name = "FlameP5PvPModule"
+	add_child(fp_mod)
+	fp_mod.call("setup_module", player, combat, self)
 
 func _input(event: InputEvent) -> void:
+	if event is InputEventScreenTouch and (event as InputEventScreenTouch).pressed and fp_mod and bool(fp_mod.get("p5_pause_active")):
+		_handle_p5_blade_tap((event as InputEventScreenTouch).position)
+		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_TAB:
 			_toggle_dev_panel()
@@ -60,7 +69,7 @@ func _build_ui() -> void:
 	action_bar = HBoxContainer.new()
 	action_bar.anchor_left = 1.0
 	action_bar.anchor_right = 1.0
-	action_bar.offset_left = -980
+	action_bar.offset_left = -1140
 	action_bar.offset_top = 12
 	action_bar.offset_right = -16
 	action_bar.offset_bottom = 52
@@ -69,6 +78,9 @@ func _build_ui() -> void:
 	add_child(action_bar)
 
 	btn_lock = _add_quick_btn("[ LOCK (Q) ]", func(): if player: player.toggle_lock_on())
+	_add_quick_btn("[ AWAKEN ]", func(): if fp_mod: fp_mod.call("toggle_flame_awakening"))
+	_add_quick_btn("[ PVP DUEL ]", func(): if fp_mod and fp_mod.get("pvp_modal"): fp_mod.get("pvp_modal").visible = not fp_mod.get("pvp_modal").visible)
+	_add_quick_btn("[ P5 MENU ]", func(): if fp_mod: fp_mod.call("toggle_p5_pause"))
 	_add_quick_btn("[ SWITCH ]", func(): if player: player.cycle_lock_target())
 	btn_build = _add_quick_btn("[ BUILD: OFF ]", func():
 		if combat:
@@ -617,6 +629,7 @@ func _draw() -> void:
 			var b_title := str(s.get("boss_name", "RIVAL DUELIST"))
 			draw_string(ThemeDB.fallback_font, sp + Vector2(-58, -28), b_title, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(1.0, 0.92, 0.55))
 
+	if fp_mod and bool(fp_mod.get("p5_pause_active")): _draw_p5_menu()
 	if combat.impact_flash_timer > 0.0:
 		draw_rect(get_viewport_rect(), Color(1, 1, 1, 0.92))
 
@@ -704,3 +717,55 @@ func _refresh_story_ui() -> void:
 			_refresh_story_ui()
 		)
 		story_choices_box.add_child(b)
+
+func _handle_p5_blade_tap(pos: Vector2) -> void:
+	if pos.y < 54.0 or not fp_mod: return
+	var vp: Vector2 = get_viewport_rect().size
+	var bx: float = vp.x * 0.54
+	for i in range(6):
+		var by: float = 128.0 + float(i) * 54.0
+		if Rect2(Vector2(bx - 12.0, by - 25.0), Vector2(360.0, 50.0)).has_point(pos):
+			fp_mod.set("p5_selected_idx", i)
+			match i:
+				0:
+					fp_mod.call("toggle_p5_pause")
+					fp_mod.call("toggle_flame_awakening")
+				1:
+					fp_mod.call("toggle_p5_pause")
+					dev_panel.visible = true
+					tab_container.current_tab = 5
+				2:
+					fp_mod.call("toggle_p5_pause")
+					dev_panel.visible = true
+					tab_container.current_tab = 6
+				3:
+					fp_mod.call("toggle_p5_pause")
+					if fp_mod.get("pvp_modal"): fp_mod.get("pvp_modal").visible = true
+				4:
+					fp_mod.call("roll_next_pose")
+				5:
+					fp_mod.call("toggle_p5_pause")
+			return
+	if pos.x < vp.x * 0.5:
+		fp_mod.call("roll_next_pose")
+
+func _draw_p5_menu() -> void:
+	var vp: Vector2 = get_viewport_rect().size
+	var pi: int = int(fp_mod.get("p5_pose_idx"))
+	var si: int = int(fp_mod.get("p5_selected_idx"))
+	var bg: PackedVector2Array = PackedVector2Array([Vector2(vp.x * 0.48, 0), Vector2(vp.x, 0), Vector2(vp.x, vp.y), Vector2(vp.x * 0.36, vp.y)])
+	draw_colored_polygon(bg, Color(0.02, 0.01, 0.03, 0.90))
+	var rw: PackedVector2Array = PackedVector2Array([Vector2(vp.x * 0.45, 0), Vector2(vp.x * 0.51, 0), Vector2(vp.x * 0.40, vp.y), Vector2(vp.x * 0.33, vp.y)])
+	draw_colored_polygon(rw, Color(0.92, 0.08, 0.14, 0.95))
+	var bx: float = vp.x * 0.54
+	var pnames: Array = fp_mod.get("POSE_NAMES")
+	draw_string(ThemeDB.fallback_font, Vector2(bx, 78), "MIND_EYE // " + str(pnames[pi]), HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color.WHITE)
+	var items: Array = fp_mod.get("MENU_ITEMS")
+	for i in range(items.size()):
+		var by: float = 128.0 + float(i) * 54.0
+		var sel: bool = (i == si)
+		var w: float = 335.0 if sel else 300.0
+		var bp: PackedVector2Array = PackedVector2Array([Vector2(bx, by - 20), Vector2(bx + w + 14, by - 24), Vector2(bx + w, by + 20), Vector2(bx - 8, by + 24)])
+		draw_colored_polygon(bp, Color(0.95, 0.12, 0.16, 1.0) if sel else Color(0.08, 0.08, 0.12, 0.96))
+		draw_string(ThemeDB.fallback_font, Vector2(bx + 16, by + 5), str(items[i]), HORIZONTAL_ALIGNMENT_LEFT, -1, 14 if sel else 12, Color.WHITE)
+	draw_string(ThemeDB.fallback_font, Vector2(bx, vp.y - 24.0), "Tap any blade once to open • Tap character on left for new pose", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(1.0, 0.85, 0.3))

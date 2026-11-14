@@ -95,6 +95,7 @@ var swing_target_rot: Vector3 = Vector3.ZERO
 
 # --- Hitstop & Camera Trauma Shake ---
 var hitstop_timer: float = 0.0
+var p5_camera_override: bool = false
 var cam_shake_trauma: float = 0.0
 
 var jump_count: int = 0
@@ -789,6 +790,7 @@ func trigger_dash(dir: Vector3) -> void:
 		dash_vfx.check_destruction(global_position, 3.2, dash_dir, false)
 
 func _physics_process(delta: float) -> void:
+	if p5_camera_override: return
 	hp = minf(max_hp, hp + hp_regen * delta)
 	mana = minf(max_mana, mana + mana_regen * delta)
 	if dash_cd_timer > 0.0: dash_cd_timer -= delta
@@ -931,6 +933,7 @@ func _update_stepped_animation(delta: float) -> void:
 					visual_root.rotation.x = 0.0
 
 func _process(delta: float) -> void:
+	if p5_camera_override: return
 	if cam_shake_trauma > 0.0:
 		cam_shake_trauma = maxf(0.0, cam_shake_trauma - delta * 3.2)
 	var shake_mag := cam_shake_trauma * cam_shake_trauma * 0.48
