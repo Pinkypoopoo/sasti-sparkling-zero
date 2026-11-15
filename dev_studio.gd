@@ -27,9 +27,18 @@ var story_choices_box: VBoxContainer = null
 
 const REGION_NAMES: Array[String] = ["INK_CATHEDRAL", "BLAME_MEGASTRUC", "GOTHIC_ECLIPSE"]
 
+var telemetry_accum: float = 0.0
+var panel_hz_cached: int = 60
+var combat_feel_vb: VBoxContainer = null
+var result_overlay: PanelContainer = null
+var result_title: Label = null
+var result_sub: Label = null
+var result_visible: bool = false
+
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	RenderingServer.viewport_set_measure_render_time(get_viewport().get_viewport_rid(), true)
+	panel_hz_cached = _screen_max_hz()
 	_build_ui()
 	_apply_display_mode()
 	fp_mod = FlameP5PvPScript.new()
@@ -80,6 +89,8 @@ func _build_ui() -> void:
 	btn_menu.pressed.connect(func(): if fp_mod: fp_mod.call("toggle_p5_pause"))
 	add_child(btn_menu)
 
+	_build_result_overlay()
+
 	dev_panel = PanelContainer.new()
 	dev_panel.visible = false
 	dev_panel.anchor_left = 0.5
@@ -117,6 +128,165 @@ func _build_ui() -> void:
 	_build_tab_visuals()
 	_build_tab_world_and_char()
 	_build_tab_world_map()
+	_build_tab_combat_feel()
+
+func _build_result_overlay() -> void:
+	result_overlay = PanelContainer.new()
+	result_overlay.visible = false
+	result_overlay.anchor_left = 0.5
+	result_overlay.anchor_top = 0.5
+	result_overlay.anchor_right = 0.5
+	result_overlay.anchor_bottom = 0.5
+	result_overlay.offset_left = -250
+	result_overlay.offset_top = -135
+	result_overlay.offset_right = 250
+	result_overlay.offset_bottom = 135
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.03, 0.02, 0.04, 0.96)
+	sb.border_color = Color(0.95, 0.15, 0.22, 0.95)
+	sb.set_border_width_all(2)
+	sb.set_content_margin_all(18)
+	result_overlay.add_theme_stylebox_override("panel", sb)
+	add_child(result_overlay)
+
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 12)
+	result_overlay.add_child(vb)
+
+	result_title = Label.new()
+	result_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	result_title.add_theme_font_size_override("font_size", 46)
+	vb.add_child(result_title)
+
+	result_sub = Label.new()
+	result_sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	result_sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vb.add_child(result_sub)
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 10)
+	vb.add_child(row)
+
+	var b_retry := Button.new()
+	b_retry.text = "[ RETRY DUEL ]"
+	b_retry.custom_minimum_size = Vector2(0, 52)
+	b_retry.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	b_retry.pressed.connect(_on_retry_pressed)
+	row.add_child(b_retry)
+
+	var b_tune := Button.new()
+	b_tune.text = "[ COMBAT FEEL ]"
+	b_tune.custom_minimum_size = Vector2(0, 52)
+	b_tune.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	b_tune.pressed.connect(_on_tune_pressed)
+	row.add_child(b_tune)
+
+func _on_retry_pressed() -> void:
+	if combat: combat.reset_duel()
+
+func _on_tune_pressed() -> void:
+	dev_panel.visible = true
+	tab_container.current_tab = 7
+
+func _sync_result_overlay() -> void:
+	if not result_overlay or not combat: return
+	var want: String = combat.result_state
+	if want != "" and not result_visible:
+		result_visible = true
+		result_overlay.visible = true
+		var immortal := bool(player and player.data_store and player.data_store.tuning_bool("immortal_mode", false))
+		if want == "VICTORY":
+			result_title.text = "VICTORY"
+			result_title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.25))
+			result_sub.text = "Rival down. Sandbox Immortal is %s." % ("ON" if immortal else "OFF")
+		else:
+			result_title.text = "DEFEAT"
+			result_title.add_theme_color_override("font_color", Color(1.0, 0.25, 0.3))
+			result_sub.text = "You reached 0 HP. Lower Enemy Hit Damage in Combat Feel, or turn Sandbox Immortal on to practise combos."
+	elif want == "" and result_visible:
+		result_visible = false
+		result_overlay.visible = false
+
+func _build_tab_combat_feel() -> void:
+	var vb := _make_scroll_tab("8. Combat Feel")
+	combat_feel_vb = vb
+	_fill_combat_feel(vb)
+
+func _fill_combat_feel(vb: VBoxContainer) -> void:
+	if not player or not player.data_store: return
+	var ds = player.data_store
+	var info := Label.new()
+	info.text = "Every combat number lives in one place. Add a line to TUNING_SPEC or TUNING_BOOLS in combat_data.gd and it becomes a live, saved slider or checkbox here — no UI code."
+	info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vb.add_child(info)
+
+	for k in ds.TUNING_SPEC.keys():
+		var spec: Array = ds.TUNING_SPEC[k]
+		var row := HBoxContainer.new()
+		vb.add_child(row)
+		var l := Label.new()
+		l.text = str(spec[3])
+		l.custom_minimum_size = Vector2(200, 0)
+		row.add_child(l)
+		var s := HSlider.new()
+		s.min_value = float(spec[0])
+		s.max_value = float(spec[1])
+		s.step = float(spec[2])
+		s.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var sp := SpinBox.new()
+		sp.min_value = float(spec[0])
+		sp.max_value = float(spec[1])
+		sp.step = float(spec[2])
+		sp.allow_greater = true
+		sp.allow_lesser = true
+		sp.custom_minimum_size = Vector2(95, 0)
+		var init_v: float = ds.tuning_get(str(k), float(spec[0]))
+		s.value = init_v
+		sp.value = init_v
+		var guard: Array[bool] = [false]
+		var key_name: String = str(k)
+		s.value_changed.connect(func(v: float):
+			if guard[0]: return
+			guard[0] = true
+			sp.value = v
+			ds.tuning[key_name] = v
+			guard[0] = false
+		)
+		sp.value_changed.connect(func(v: float):
+			if guard[0]: return
+			guard[0] = true
+			s.value = v
+			ds.tuning[key_name] = v
+			guard[0] = false
+		)
+		row.add_child(s)
+		row.add_child(sp)
+
+	for bk in ds.TUNING_BOOLS.keys():
+		var chk := CheckBox.new()
+		chk.text = str(ds.TUNING_BOOLS[bk])
+		chk.button_pressed = ds.tuning_bool(str(bk))
+		var bkey: String = str(bk)
+		chk.toggled.connect(func(on: bool): ds.tuning[bkey] = on)
+		vb.add_child(chk)
+
+	var b_reset := Button.new()
+	b_reset.text = " [ RESET ALL COMBAT FEEL ] "
+	b_reset.pressed.connect(_reset_combat_feel)
+	vb.add_child(b_reset)
+
+	var b_save := Button.new()
+	b_save.text = " [ SAVE LOADOUT + TUNING ] "
+	b_save.pressed.connect(_save_loadout)
+	vb.add_child(b_save)
+
+func _reset_combat_feel() -> void:
+	if not player or not player.data_store or not combat_feel_vb: return
+	player.data_store.reset_tuning()
+	for c in combat_feel_vb.get_children():
+		combat_feel_vb.remove_child(c)
+		c.queue_free()
+	_fill_combat_feel(combat_feel_vb)
 
 func _cycle_region() -> void:
 	region_idx = (region_idx + 1) % 3
@@ -156,12 +326,13 @@ func _screen_max_hz() -> int:
 
 func _apply_display_mode() -> int:
 	var target: int = FPS_CAPS[fps_mode_idx]
-	var cap: int = _screen_max_hz() if target == 0 else target
+	var cap: int = panel_hz_cached if target == 0 else target
 	Engine.max_fps = cap
 	# Render at the panel's native rate, simulate at a fixed 60 Hz: same feel, ~1/3 of the CPU.
+	# physics/common/physics_interpolation=true keeps 60 Hz movement smooth at 120-165 Hz.
 	Engine.physics_ticks_per_second = 60
 	if not (DisplayServer.get_name() in ["Android", "iOS", "Web"]):
-		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_ENABLED if cap >= _screen_max_hz() else DisplayServer.VSYNC_DISABLED)
+		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_ENABLED if cap >= panel_hz_cached else DisplayServer.VSYNC_DISABLED)
 	return cap
 
 func _cycle_fps() -> void:
@@ -185,7 +356,7 @@ func _save_loadout() -> void:
 	if player and player.data_store:
 		if player.dash_vfx:
 			player.data_store.placed_blocks = player.dash_vfx.serialize_user_blocks()
-		player.data_store.save_to_disk(player)
+		player.data_store.save_to_disk(player, combat)
 		if combat: combat.last_combat_action = "SAVED TO JSON!"
 
 func _make_scroll_tab(tab_name: String) -> VBoxContainer:
@@ -524,10 +695,22 @@ func _build_tab_world_and_char() -> void:
 
 	_add_row(vb, combat, "build_rot_deg", 0.0, 270.0, 45.0)
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
+	_sync_result_overlay()
 	if not player or not combat: return
+	# The overlay used to re-shape every string and redraw the whole HUD on EVERY
+	# rendered frame (165x/s). 10 Hz for text, instant redraw only while a short
+	# impact flash or hurt vignette is on screen.
+	telemetry_accum += delta
+	if telemetry_accum >= 0.1:
+		telemetry_accum = 0.0
+		_refresh_telemetry()
+		queue_redraw()
+	elif combat.impact_flash_timer > 0.0 or combat.hurt_vignette_timer > 0.0:
+		queue_redraw()
+
+func _refresh_telemetry() -> void:
 	var fps := Engine.get_frames_per_second()
-	var panel_hz := int(DisplayServer.screen_get_refresh_rate())
 	var gpu_ms := RenderingServer.viewport_get_measured_render_time_gpu(get_viewport().get_viewport_rid())
 	var cpu_ms := Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0
 	var st_name: String = PlayerController.MoveState.keys()[player.state]
@@ -535,9 +718,8 @@ func _process(_delta: float) -> void:
 	var seq_txt := " -> ".join(combat.current_swipe_chain) if not combat.current_swipe_chain.is_empty() else combat.active_infusion
 	var b_tag := " | [BUILD: %s]" % combat.selected_block_kind if combat.build_mode_active else ""
 	telemetry.text = "FPS: %d | Panel Hz: %d (OS Cap) | GPU: %.2f ms | CPU: %.2f ms%s\nProfile: %s | Dash: %s | State: %s | Weave: [%s] | Action: %s" % [
-		fps, panel_hz, gpu_ms, cpu_ms, b_tag, player.active_race_name, dash_name, st_name, seq_txt, combat.last_combat_action
+		fps, panel_hz_cached, gpu_ms, cpu_ms, b_tag, player.active_race_name, dash_name, st_name, seq_txt, combat.last_combat_action
 	]
-	queue_redraw()
 
 func _draw() -> void:
 	if not player or not combat: return
@@ -611,6 +793,32 @@ func _draw() -> void:
 			draw_string(ThemeDB.fallback_font, sp + Vector2(-52, -14), st_txt, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, st_col)
 			var b_title := str(s.get("boss_name", "RIVAL DUELIST"))
 			draw_string(ThemeDB.fallback_font, sp + Vector2(-58, -28), b_title, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(1.0, 0.92, 0.55))
+
+	# --- Floating damage numbers, combo counter and hurt vignette ---
+	if player.camera:
+		var dn_mult: float = combat.tune("dmg_number_size", 1.0)
+		for d in combat.dmg_numbers:
+			if float(d["timer"]) <= 0.0: continue
+			var wpos: Vector3 = d["pos"] + Vector3(0, float(d["rise"]) * 1.6, 0)
+			if player.camera.is_position_behind(wpos): continue
+			var dn_sp := player.camera.unproject_position(wpos)
+			var dn_a: float = clampf(float(d["timer"]) / 0.85, 0.0, 1.0)
+			var dn_fs: int = maxi(10, int((20.0 if bool(d["crit"]) else 14.0) * dn_mult))
+			var dn_col: Color = d["col"]
+			dn_col.a = dn_a
+			draw_string(ThemeDB.fallback_font, dn_sp + Vector2(-16, 0), str(d["text"]), HORIZONTAL_ALIGNMENT_LEFT, -1, dn_fs, dn_col)
+
+	if combat.tune_bool("show_combo_counter", true) and combat.combo_hits >= 2:
+		var c_size: int = 30 + mini(18, combat.combo_hits)
+		var c_col := Color(1.0, 0.86, 0.25).lerp(Color(1.0, 0.25, 0.2), clampf(float(combat.combo_hits) / 20.0, 0.0, 1.0))
+		var c_pos := Vector2(get_viewport_rect().size.x * 0.5 - 70.0, 132.0)
+		draw_string(ThemeDB.fallback_font, c_pos, "%d HIT" % combat.combo_hits, HORIZONTAL_ALIGNMENT_LEFT, -1, c_size, c_col)
+		var grace: float = maxf(0.1, combat.tune("combo_grace", 1.4))
+		draw_rect(Rect2(c_pos + Vector2(0, 8), Vector2(150.0 * clampf(combat.combo_timer / grace, 0.0, 1.0), 3)), c_col)
+
+	if combat.hurt_vignette_timer > 0.0:
+		var v_strength: float = combat.tune("hurt_vignette", 0.55) * clampf(combat.hurt_vignette_timer / 0.5, 0.0, 1.0)
+		draw_rect(get_viewport_rect(), Color(0.6, 0.02, 0.04, v_strength * 0.22))
 
 	if fp_mod and bool(fp_mod.get("p5_pause_active")): _draw_p5_menu()
 	if combat.impact_flash_timer > 0.0:
@@ -766,6 +974,16 @@ func _p5_menu_action(idx: int) -> void:
 			tab_container.current_tab = 6
 		13:
 			fp_mod.call("toggle_p5_pause")
+			dev_panel.visible = true
+			tab_container.current_tab = 7
+		14:
+			if player and player.data_store:
+				player.data_store.tuning["immortal_mode"] = not player.data_store.tuning_bool("immortal_mode", false)
+		15:
+			fp_mod.call("toggle_p5_pause")
+			if combat: combat.reset_duel()
+		16:
+			fp_mod.call("toggle_p5_pause")
 
 func _p5_value_text(idx: int) -> String:
 	match idx:
@@ -776,6 +994,8 @@ func _p5_value_text(idx: int) -> String:
 		6: return REGION_NAMES[region_idx]
 		7: return GestureCombat.AIMode.keys()[combat.ai_mode] if combat else "-"
 		8: return _fps_text()
+		14: return "ON" if player and player.data_store and player.data_store.tuning_bool("immortal_mode", false) else "OFF"
+		15: return "VICTORY" if combat and combat.result_state == "VICTORY" else ("DEFEAT" if combat and combat.result_state == "DEFEAT" else "")
 	return ""
 
 func _draw_p5_menu() -> void:

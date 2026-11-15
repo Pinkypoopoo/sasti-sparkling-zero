@@ -114,5 +114,77 @@ Verified: `bash verify.sh` passes all five gates; a throwaway harness tapped all
 headless with zero script errors and confirmed no row overflows the viewport. **Not** verified:
 visual layout, real 120/144/165 Hz behaviour, and touch feel — those need a device.
 
+### 2026-11-15 · reviewing agent (Buffy) — V3 combat feel + M2 stakes
+Branch `Pinkypoopoo-patch-1` (local commit; **not pushed** — this session had read-only GitHub access).
+Read `CODE_REVIEW.md` / `ROADMAP.md` first, then this.
+
+**Answers to §3 open questions**
+1. *Tuning layer* — AGREE, implemented in the cheap form that ships now: `combat_data.gd` has
+   `TUNING_SPEC` (min/max/step/label), `TUNING_BOOLS`, `TUNING_DEFAULTS` and `tuning: Dictionary`.
+   Dev Studio tab 8 builds its sliders/checkboxes by iterating those dicts. **Adding a knob is one
+   line in `TUNING_SPEC`** — no UI code, no new `@export`. This is the same idea as `balance.tres`
+   without a custom Resource class or registry, and it already covers hitstop, shake, damage,
+   posture, parry windows, combo grace, KO slow-mo, vignette, damage numbers and immortal mode.
+   The `_add_row()` helper is kept for the older hand-written tabs.
+2. *M2 before M3* — AGREE, and M2 is done below. Ranked arena is still the right M3.
+3. *Style lock* — AGREE on **Dark Seinen Ink**; nothing here changes the art. No new full-screen
+   pass was added (impact flash is one `draw_rect`, combo/damage numbers are 2D text).
+4. *Story pipeline* — still open. Recommend Notion → node JSON → `world_story.gd` loader + schema
+   check in `verify.sh`. Not started; `story_flags` are still collected and discarded.
+5. *RivalBrain* — PARTIAL. `ai_state` is still a string machine, but movement, animation and the
+   death state are now sane (see below). The enum refactor is still worth doing before 4-rival
+   content; don't do it in the same pass as a behaviour change.
+6. *PvP* — DEFER matchmaking; the LAN module is now throttled to 30 Hz and uses real damage.
+
+**What changed**
+| Area | Change |
+|---|---|
+| Stakes (M2) | `player.take_damage()` / `revive()` / `is_defeated`; rival HP 0 → `DEAD` + **VICTORY** (no more instant full heal); player HP 0 → **DEFEAT**; result card with `[ RETRY DUEL ]` / `[ COMBAT FEEL ]`; `GestureCombat.reset_duel()` |
+| Combat feel | damage-scaled hitstop, hitstop/shake tuning, floating damage numbers (crit variant), combo counter + grace bar, red hurt vignette, KO slow-motion, boss plays its baked `slash_*` animations, real damage from the rival |
+| Tuning | `combat_data.gd`: `TUNING_SPEC` / `TUNING_BOOLS` / `TUNING_DEFAULTS` / `tuning_get()` / `tuning_bool()` / `reset_tuning()`; saved in JSON; Dev Studio **tab 8** auto-generates the UI |
+| Menu | `[ MENU ]` rows 13 `COMBAT FEEL (TAB 8)`, 14 `SANDBOX IMMORTAL`, 15 `REMATCH DUEL`, 16 `RESUME` |
+| Perf | enemy AI + projectiles moved to `_physics_process` (they were **2.75× faster at 165 Hz** than 60 Hz); HUD redraw throttled to 10 Hz with instant redraw during flashes; `apply_character_proportions()` no longer walks the GLB 12×/s; `_screen_max_hz()` cached; PvP sync 30 Hz; build-mode blocks capped at 120 |
+| Engine errors | `PhysicalBoneSimulator3D` + 4 `PhysicalBone3D` per character **removed** (12 Jolt scale errors per swap, and they fought the procedural ragdoll) → one deterministic procedural ragdoll; GLB material overrides applied *before* `add_child` |
+| Correctness | save/load order fixed (`apply_race_by_name` → `load_from_disk` → re-apply shader/proportions), so SAVE JSON really restores; `project.godot` gets `physics/common/physics_interpolation=true` for 60 Hz physics on 120–165 Hz panels |
+| Gate | `verify.sh` now also asserts invariants (interpolation on, no `PhysicalBone3D.new(`, combat has `_physics_process`) and runs `combat_test.gd` as gate 6 |
+
+**Verified (Godot 4.7 headless, this sandbox)**
+`bash verify.sh` → `VERIFY_PASSED` twice in a row (idempotent): engine 4.7 assert, 8 core files,
+29 signatures, invariants, asset import, 120-frame boot, touch smoke test, and **25 combat asserts**
+in `combat_test.gd` (damage→combo→damage number, KO→VICTORY, retry resets, immortal survives 12
+lethal hits and clamps at 1 HP, mortal lethal→DEFEAT, tuning survives save→profile switch→load,
+`hitstop_scale` 0/1, 8 tabs, 17 menu rows all on screen).
+
+**Not verified** — needs a device: how the hitstop/slow-mo/impact feel, real 120/144/165 Hz with
+interpolation, the actual look of damage numbers/combo/vignette, the result card layout on a 20:9
+phone, and two-device PvP. Nothing was visually inspected.
+
+**Next, in order** — (1) push V3 and play it on the phone; (2) a per-device quality tier system
+(see below); (3) `story_flags` + Notion→JSON story loading; (4) `RivalBrain` enum refactor; (5)
+ranked arena shell (M3); (6) a real `data/*.tres` balance resource once the phone UI proves the
+dictionary approach.
+
+**Target devices (from the user, 2026-11-15)**
+| Device | Hardware | Realistic ceiling for this content |
+|---|---|---|
+| iPad Pro M4 | M4, 120 Hz ProMotion | 120 fps at 1.0 render scale, shadows on |
+| iQOO 12 | Snapdragon 8 Gen 3, 144 Hz panel | 120 fps at 1.0 scale, shadows on |
+| Redmi Note 10 Pro | Snapdragon 732G / Adreno 618, 120 Hz panel | **not 120** — ~45-60 fps at 0.65-0.75 scale, shadows off. The panel is 120 Hz; the GPU is not. |
+| Dell Precision 5550 | i7 + Quadro T2000 4 GB, 16 GB RAM | 60-90 fps at 1080p, 1.0 scale |
+
+The user asks for "120 on every device". Do not promise it on the 732G. The honest design is a
+4-tier quality profile chosen at boot and overridable in the menu:
+`ULTRA` (iPad M4, 8 Gen 3): panel rate, `scaling_3d_scale 1.0`, shadows on, afterimages on.
+`HIGH`: panel rate, 0.9 scale, shadows on.
+`MID`: 60-90 fps, 0.8 scale, shadows off.
+`LOW` (Adreno 618 class): 60 fps cap, 0.65-0.75 scale, shadows off, no afterimages, fog off.
+Detect with `RenderingServer.get_video_adapter_name()` (`Apple M`, `Adreno 7xx/8xx`, `Adreno 6xx`)
+plus `OS.get_name()`, and store the result in the same tuning dictionary so it appears in tab 8 and
+saves. Physics stays 60 Hz on every tier; rendering interpolates.
+
+**Delivery note** — this session had no git push credentials. V3 was delivered as
+`V3-min.patch` + `apply_v3.sh` committed onto `Pinkypoopoo-patch-1`, and `apply_v3.sh` removes both
+after committing. If you are reading this inside commit `V3`, the patch landed correctly.
+
 ### _next entry_
 _(date · agent · what you changed · what you verified · what is left open)_

@@ -47,9 +47,14 @@ var active_race_name: String = "Profile_1"
 @export var ragdoll_bouncy: float = 0.48
 
 var eye_mat: ShaderMaterial = null
-var phys_bone_sim: PhysicalBoneSimulator3D = null
+# Procedural ragdoll bone list: [{"idx": int, "m": float}]. No PhysicalBone3D bodies:
+# Jolt rejects every bone under a non-uniformly scaled model root (12 engine errors
+# per model swap) and they fought the procedural bone animation anyway.
+var ragdoll_bones: Array = []
 var ragdoll_timer: float = 0.0
 var ragdoll_ang_vel: Vector3 = Vector3.ZERO
+var is_defeated: bool = false
+var _slots_dirty: bool = true
 
 var jiggle_stiffness: float = 18.0
 var jiggle_damping: float = 4.5
@@ -148,10 +153,16 @@ func _ready() -> void:
 	_setup_materials()
 	_setup_weapon_rig()
 	_register_input_actions()
-	data_store.load_from_disk(self)
+	# Order matters: profile defaults first, saved values second, then push the saved
+	# values back into the shader and proportions. Reversing this silently discarded
+	# every saved tunable, because apply_race_by_name() overwrote them.
+	apply_race_by_name(active_race_name)
+	data_store.load_from_disk(self, combat)
 	if not data_store.placed_blocks.is_empty():
 		dash_vfx.load_serialized_blocks(data_store.placed_blocks)
-	apply_race_by_name(active_race_name)
+	apply_character_proportions()
+	update_cel_shader(cel_cut_threshold, outline_width, rim_strength)
+	update_eye_shader()
 
 	if not DisplayServer.is_touchscreen_available():
 		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
@@ -344,8 +355,45 @@ func is_target_in_blade_arc(target: Node3D) -> bool:
 	return flat_fwd.dot(flat_to) >= 0.22
 
 func trigger_hitstop(duration: float = 0.048, shake: float = 0.42) -> void:
-	hitstop_timer = maxf(hitstop_timer, duration)
-	cam_shake_trauma = minf(1.0, cam_shake_trauma + shake)
+	# Hitstop / shake are scaled in ONE place so every call site gets the tuning for free.
+	var hs := 1.0
+	var ss := 1.0
+	if data_store:
+		hs = data_store.tuning_get("hitstop_scale", 1.0)
+		ss = data_store.tuning_get("shake_scale", 1.0)
+	if duration > 0.0 and hs > 0.0:
+		hitstop_timer = maxf(hitstop_timer, duration * hs)
+	if ss > 0.0:
+		cam_shake_trauma = minf(1.0, cam_shake_trauma + shake * ss)
+
+func take_damage(amount: float) -> bool:
+	# Returns true when this hit killed the player. Sandbox immortal clamps at 1 HP.
+	if is_defeated: return false
+	var applied := maxf(0.0, amount)
+	if data_store and data_store.tuning_bool("immortal_mode", false):
+		hp = maxf(1.0, hp - applied)
+		return false
+	hp = maxf(0.0, hp - applied)
+	if hp <= 0.0:
+		is_defeated = true
+		return true
+	return false
+
+func revive(at_pos: Vector3 = Vector3.ZERO) -> void:
+	is_defeated = false
+	hp = max_hp
+	mana = max_mana
+	hitstun_timer = 0.0
+	ragdoll_timer = 0.0
+	hitstop_timer = 0.0
+	cam_shake_trauma = 0.0
+	is_locked_on = false
+	lock_target = null
+	state = MoveState.GROUND
+	velocity = Vector3.ZERO
+	global_position = at_pos
+	_reset_dash_visuals()
+	play_character_anim("idle")
 
 func apply_character_proportions() -> void:
 	if custom_model_root and is_instance_valid(custom_model_root):
@@ -357,7 +405,10 @@ func apply_character_proportions() -> void:
 		var arm_idx := active_skeleton.find_bone("Arm_R")
 		if arm_idx != -1:
 			active_skeleton.set_bone_pose_scale(arm_idx, Vector3.ONE * weapon_scale)
-	apply_modular_clothing_slots()
+	# Only walk the whole GLB hierarchy when a slot actually changed.
+	if _slots_dirty:
+		_slots_dirty = false
+		apply_modular_clothing_slots()
 
 func apply_modular_clothing_slots(root_node: Node = null) -> void:
 	var target_root := root_node if root_node != null else custom_model_root
@@ -434,28 +485,16 @@ func update_eye_shader() -> void:
 	eye_mat.set_shader_parameter("glow_str", eye_glow_strength)
 
 func _setup_physical_ragdoll(skel: Skeleton3D) -> void:
+	# Name kept (verify gate + save compatibility) but this now prepares a
+	# deterministic procedural ragdoll instead of rigid bodies. Removes 12 Jolt
+	# "Failed to correctly scale body" errors per profile/model swap and 4 physics
+	# bodies per character, and stops two systems fighting over the same bones.
 	if not skel: return
-	if phys_bone_sim and is_instance_valid(phys_bone_sim):
-		phys_bone_sim.queue_free()
-	phys_bone_sim = PhysicalBoneSimulator3D.new()
-	phys_bone_sim.name = "PhysicalBoneSimulator3D"
-	phys_bone_sim.active = false
-	skel.add_child(phys_bone_sim)
-	for b_name in ["Spine", "Head", "Arm_R", "Arm_L"]:
-		if skel.find_bone(b_name) == -1: continue
-		var pb := PhysicalBone3D.new()
-		pb.name = "PhysBone_" + b_name
-		pb.bone_name = b_name
-		pb.mass = 2.5
-		pb.friction = 0.6
-		pb.bounce = ragdoll_bouncy
-		var cs := CollisionShape3D.new()
-		var cap := CapsuleShape3D.new()
-		cap.radius = 0.16
-		cap.height = 0.48
-		cs.shape = cap
-		pb.add_child(cs)
-		phys_bone_sim.add_child(pb)
+	ragdoll_bones.clear()
+	for pair in [["Spine", 1.0], ["Head", 1.4], ["Arm_R", -1.8], ["Arm_L", 1.8], ["Veil_Back", 2.2]]:
+		var idx := skel.find_bone(pair[0])
+		if idx != -1:
+			ragdoll_bones.append({"idx": idx, "m": float(pair[1])})
 
 func trigger_ragdoll_ko(duration: float = 1.15, impulse: Vector3 = Vector3(0, 11.0, 14.0)) -> void:
 	ragdoll_timer = maxf(ragdoll_timer, duration)
@@ -464,23 +503,19 @@ func trigger_ragdoll_ko(duration: float = 1.15, impulse: Vector3 = Vector3(0, 11
 	velocity = impulse
 	ragdoll_ang_vel = Vector3(randf_range(-10.0, 10.0), randf_range(-8.0, 8.0), randf_range(-10.0, 10.0))
 	trigger_hitstop(0.055, 0.65)
-	if phys_bone_sim and is_instance_valid(phys_bone_sim):
-		phys_bone_sim.active = true
 	if dash_vfx:
 		dash_vfx.play_sfx("shatter")
 
 func _update_ragdoll_bones(dt: float) -> void:
-	if not active_skeleton: return
-	for b_pair in [["Spine", 1.0], ["Head", 1.4], ["Arm_R", -1.8], ["Arm_L", 1.8], ["Veil_Back", 2.2]]:
-		var idx := active_skeleton.find_bone(b_pair[0])
-		if idx != -1:
-			var mult: float = b_pair[1]
-			var eul := Vector3(
-				sin(stepped_time * 9.0 * mult) * 0.85,
-				cos(stepped_time * 7.0 * mult) * 0.65,
-				sin(stepped_time * 11.0 * mult) * 0.95
-			)
-			active_skeleton.set_bone_pose_rotation(idx, Quaternion.from_euler(eul))
+	if not active_skeleton or ragdoll_bones.is_empty(): return
+	for rb in ragdoll_bones:
+		var mult: float = rb["m"]
+		var eul := Vector3(
+			sin(stepped_time * 9.0 * mult) * 0.85,
+			cos(stepped_time * 7.0 * mult) * 0.65,
+			sin(stepped_time * 11.0 * mult) * 0.95
+		)
+		active_skeleton.set_bone_pose_rotation(int(rb["idx"]), Quaternion.from_euler(eul))
 
 func update_cel_shader(cel: float, out_w: float, rim_s: float, rim_col: Color = Color(0.95, 0.12, 0.18)) -> void:
 	cel_cut_threshold = cel
@@ -548,6 +583,7 @@ func apply_race_by_name(r_name: String) -> void:
 	update_cel_shader(cel_cut_threshold, outline_width, rim_strength, Color(ac[0], ac[1], ac[2]))
 	if dash_vfx and not afterimage_enabled:
 		dash_vfx.clear_afterimages()
+	_slots_dirty = true
 	var m_path: String = str(r.get("model_path", "res://models/hero.glb"))
 	if m_path.is_empty(): m_path = "res://models/hero.glb"
 	swap_custom_model(m_path)
@@ -567,17 +603,20 @@ func swap_custom_model(path: String) -> bool:
 	if custom_model_root and is_instance_valid(custom_model_root):
 		custom_model_root.queue_free()
 	custom_model_root = new_node
+	# Overrides BEFORE the model enters the tree: a GLB surface with no material makes
+	# the renderer log "Parameter material is null" for a frame otherwise.
+	_apply_seinen_shader_to_glb(custom_model_root)
 	visual_root.add_child(custom_model_root)
 	custom_model_root.rotation.y = deg_to_rad(model_rot_offset)
 	if body_mesh: body_mesh.visible = false
 	if visor_mesh: visor_mesh.visible = false
 	if weapon_pivot: weapon_pivot.visible = false
 	if offhand_halo: offhand_halo.visible = false
-	_apply_seinen_shader_to_glb(custom_model_root)
 	active_anim_player = _find_anim_player(custom_model_root)
 	active_skeleton = _find_skeleton(custom_model_root)
 	_attach_hitbox_to_skeleton(active_skeleton)
 	_setup_physical_ragdoll(active_skeleton)
+	_slots_dirty = true
 	apply_character_proportions()
 	update_eye_shader()
 	play_character_anim("idle")
@@ -791,7 +830,8 @@ func trigger_dash(dir: Vector3) -> void:
 
 func _physics_process(delta: float) -> void:
 	if p5_camera_override: return
-	hp = minf(max_hp, hp + hp_regen * delta)
+	if not is_defeated:
+		hp = minf(max_hp, hp + hp_regen * delta)
 	mana = minf(max_mana, mana + mana_regen * delta)
 	if dash_cd_timer > 0.0: dash_cd_timer -= delta
 	if whip_lag_timer > 0.0: whip_lag_timer -= delta
@@ -830,8 +870,7 @@ func _physics_process(delta: float) -> void:
 					visual_root.rotation += ragdoll_ang_vel * delta
 					ragdoll_ang_vel = ragdoll_ang_vel.lerp(Vector3.ZERO, 3.0 * delta)
 				_update_ragdoll_bones(delta)
-				if ragdoll_timer <= 0.0 and phys_bone_sim and is_instance_valid(phys_bone_sim):
-					phys_bone_sim.active = false
+				if ragdoll_timer <= 0.0:
 					play_character_anim("idle")
 			else:
 				velocity.x = lerpf(velocity.x, 0.0, 8.0 * delta)
@@ -840,8 +879,6 @@ func _physics_process(delta: float) -> void:
 					velocity.y += get_gravity().y * delta
 			if hitstun_timer <= 0.0:
 				ragdoll_timer = 0.0
-				if phys_bone_sim and is_instance_valid(phys_bone_sim):
-					phys_bone_sim.active = false
 				_reset_dash_visuals()
 				play_character_anim("idle")
 				state = MoveState.AIR if not is_on_floor() else MoveState.GROUND
@@ -915,7 +952,6 @@ func _update_stepped_animation(delta: float) -> void:
 		if active_anim_player:
 			active_anim_player.callback_mode_process = AnimationMixer.ANIMATION_CALLBACK_MODE_PROCESS_MANUAL
 			active_anim_player.advance(advance_time)
-			apply_character_proportions()
 			_update_spring_bone_jiggle(advance_time)
 		elif state != MoveState.DASH and visual_root:
 			if sway_timer > 0.0:

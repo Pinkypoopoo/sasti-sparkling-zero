@@ -43,6 +43,10 @@ var sfx_timer: float = 0.0
 var sfx_total_dur: float = 0.1
 var sfx_noise_mix: float = 0.0
 
+# Hard cap on player-placed blocks: each one allocates fresh meshes, so an
+# unbounded build session could tank a phone.
+const MAX_USER_BLOCKS: int = 120
+
 func _ready() -> void:
 	_setup_synth_audio()
 	_setup_afterimage_pool()
@@ -78,6 +82,12 @@ func play_sfx(kind: String) -> void:
 		"build":
 			sfx_freq = 440.0; sfx_end_freq = 660.0; sfx_total_dur = 0.07; sfx_noise_mix = 0.05
 	sfx_timer = sfx_total_dur
+
+func _process(delta: float) -> void:
+	# Audio is pumped on the render tick, NOT at the end of _physics_process:
+	# hitstop early-returns the physics tick, which used to starve the generator
+	# and underrun the synth exactly during the impact frames.
+	_pump_synth_audio(delta)
 
 func _pump_synth_audio(delta: float) -> void:
 	if not sfx_playback or sfx_timer <= 0.0: return
@@ -266,6 +276,8 @@ void fragment() {
 
 # --- Minecraft-Style Modular Block & MultiMesh Flora Spawner ---
 func spawn_arena_block(kind: String, pos: Vector3, rot_y_deg: float = 0.0, record_user: bool = true) -> void:
+	if record_user and custom_block_nodes.size() >= MAX_USER_BLOCKS:
+		return
 	var snapped := Vector3(snappedf(pos.x, 2.0), maxf(0.0, snappedf(pos.y, 2.0)), snappedf(pos.z, 2.0))
 	var b_root := Node3D.new()
 	b_root.top_level = true
@@ -479,8 +491,6 @@ func trigger_style_fx(style: int, start_pos: Vector3, end_pos: Vector3, visual_r
 			dash_fx_timer = 0.25
 
 func update_vfx(delta: float, is_dashing: bool, style: int, visual_root: Node3D, allow_afterimage: bool, cam_pos: Vector3 = Vector3.ZERO, player_pos: Vector3 = Vector3.ZERO) -> void:
-	_pump_synth_audio(delta)
-
 	# Camera-to-Player Wall Occlusion Dithering
 	if cam_pos.length_squared() > 0.01:
 		var cam_to_p := cam_pos.distance_to(player_pos)

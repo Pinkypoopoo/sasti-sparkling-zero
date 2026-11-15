@@ -29,7 +29,7 @@ scan() { # $1 = gate label, $2 = log file
 }
 
 # --- GUARDRAIL 0: engine version ---------------------------------------------
-echo "[0/5] engine"
+echo "[0/6] engine"
 command -v "$GODOT_BIN" >/dev/null 2>&1 \
     || fail "Godot not found. Install Godot ${REQUIRED_GODOT}.x or run: GODOT_BIN=/path/to/godot bash verify.sh"
 GODOT_VER="$("$GODOT_BIN" --version 2>/dev/null | head -n1)"
@@ -39,14 +39,14 @@ case "$GODOT_VER" in
 esac
 
 # --- GUARDRAIL 1: required files ---------------------------------------------
-echo "[1/5] required files"
+echo "[1/6] required files"
 for f in combat_data.gd dash_vfx.gd character_body_3d.gd gesture_combat.gd dev_studio.gd world_story.gd flame_p5_pvp.gd smoke_test.gd; do
     [ -f "$f" ] || fail "GUARDRAIL_VIOLATION: missing core file $f"
 done
 ok "8 core scripts present"
 
 # --- GUARDRAIL 2: feature presence (blocks silent AI deletions) ---------------
-echo "[2/5] features"
+echo "[2/6] features"
 REQUIRED_SIGNATURES=(
     "1. Camera & Physics:dev_studio.gd"
     "2. Profile & Dash:dev_studio.gd"
@@ -66,6 +66,17 @@ REQUIRED_SIGNATURES=(
     "toggle_flame_awakening:flame_p5_pvp.gd"
     "host_custom_room:flame_p5_pvp.gd"
     "make_choice:world_story.gd"
+    "8. Combat Feel:dev_studio.gd"
+    "TUNING_SPEC:combat_data.gd"
+    "tuning_get:combat_data.gd"
+    "take_damage:character_body_3d.gd"
+    "result_state:gesture_combat.gd"
+    "reset_duel:gesture_combat.gd"
+    "_pop_damage_number:gesture_combat.gd"
+    "_boss_anim:gesture_combat.gd"
+    "_move_body:gesture_combat.gd"
+    "MAX_USER_BLOCKS:dash_vfx.gd"
+    "COMBAT_TEST_PASS:combat_test.gd"
 )
 for item in "${REQUIRED_SIGNATURES[@]}"; do
     sig="${item%%:*}"
@@ -74,8 +85,23 @@ for item in "${REQUIRED_SIGNATURES[@]}"; do
 done
 ok "${#REQUIRED_SIGNATURES[@]} signatures intact"
 
+# --- GUARDRAIL 2b: project invariants ---------------------------------------
+echo "[2b/6] invariants"
+# 60 Hz physics is only smooth on a 120-165 Hz panel WITH interpolation enabled.
+grep -q "physics_interpolation=true" project.godot \
+    || fail "physics/common/physics_interpolation is OFF: 60 Hz physics will micro-stutter on a 120 Hz+ panel"
+# PhysicalBone3D under a non-uniformly scaled model root = 12 Jolt scale errors per swap.
+if grep -q "PhysicalBone3D.new(" character_body_3d.gd; then
+    fail "PhysicalBone3D reintroduced in character_body_3d.gd (Jolt rejects bones under a non-uniformly scaled model root)"
+fi
+# Enemy AI / projectiles must not run on the render tick (framerate-dependent speed).
+if ! grep -q "func _physics_process" gesture_combat.gd; then
+    fail "gesture_combat.gd lost its _physics_process: enemies and projectiles would run at render rate and speed up with refresh rate"
+fi
+ok "interpolation on, no physics bone bodies, combat on the physics tick"
+
 # --- GUARDRAIL 3: assets actually import -------------------------------------
-echo "[3/5] asset import"
+echo "[3/6] asset import"
 # A .blend anywhere in the import path aborts the whole import batch (verified on 4.7).
 STRAY_BLEND="$(find . -name '*.blend' -not -path './art/*' -not -path './.godot/*' 2>/dev/null | head -n1)"
 [ -z "$STRAY_BLEND" ] || fail "blender source inside the import path: $STRAY_BLEND - move it to art/ (it aborts headless asset import)"
@@ -98,13 +124,13 @@ else
 fi
 
 # --- GUARDRAIL 4: headless boot ----------------------------------------------
-echo "[4/5] headless boot (120 frames)"
+echo "[4/6] headless boot (120 frames)"
 "$GODOT_BIN" --headless --path . --quit-after 120 > "$TMP_DIR/boot.log" 2>&1
 scan "headless boot" "$TMP_DIR/boot.log"
 ok "booted clean"
 
 # --- GUARDRAIL 5: smoke test (touch input + dev panel) -----------------------
-echo "[5/5] smoke test"
+echo "[5/6] smoke test"
 "$GODOT_BIN" --headless --path . --script res://smoke_test.gd > "$TMP_DIR/smoke.log" 2>&1
 SMOKE_RC=$?
 scan "smoke test" "$TMP_DIR/smoke.log"
@@ -112,6 +138,20 @@ grep -q "SMOKE_TEST_PASS" "$TMP_DIR/smoke.log" \
     || fail "smoke test did not reach SMOKE_TEST_PASS (exit $SMOKE_RC)"
 ok "touch input + dev panel"
 
+# --- GUARDRAIL 6: combat loop (damage, KO, retry, tuning, save/load) ---------
+echo "[6/6] combat loop"
+"$GODOT_BIN" --headless --path . --script res://combat_test.gd > "$TMP_DIR/combat.log" 2>&1
+COMBAT_RC=$?
+# The dummy renderer (servers/rendering/dummy) logs a null theme/font material when
+# fontconfig is missing in CI. That file only exists in --headless builds, so the
+# message cannot occur on the mobile/Vulkan renderer. Drop only that exact pair of
+# lines; the same message from any other source still fails the gate below.
+sed -i '/^ERROR: Parameter "material" is null\.$/{N;/at: material_get_instance_shader_parameters (servers\/rendering\/dummy\//d}' "$TMP_DIR/combat.log"
+scan "combat loop" "$TMP_DIR/combat.log"
+grep -q "COMBAT_TEST_PASS" "$TMP_DIR/combat.log" \
+    || fail "combat loop test did not reach COMBAT_TEST_PASS (exit $COMBAT_RC)"
+ok "25 combat checks (hit, combo, KO, retry, immortal, defeat, tuning, menu)"
+
 echo
-echo "VERIFY_PASSED: 7 tabs, core systems, asset import, boot and smoke test all clean."
+echo "VERIFY_PASSED: 8 tabs, ${#REQUIRED_SIGNATURES[@]} signatures, invariants, asset import, boot, smoke and combat loop all clean."
 exit 0

@@ -57,13 +57,71 @@ var impact_flash_timer: float = 0.0
 var impact_frame_cooldown: float = 0.0
 var clash_tension: int = 0
 
+# --- Result / feel state ------------------------------------------------------
+var result_state: String = ""            # "" | "VICTORY" | "DEFEAT"
+var combo_hits: int = 0
+var combo_timer: float = 0.0
+var hurt_vignette_timer: float = 0.0
+var slowmo_until_ms: int = 0
+var dmg_numbers: Array[Dictionary] = []
+
 @onready var player: PlayerController = get_node_or_null("../Player") as PlayerController
 
 func _ready() -> void:
 	_update_dot_positions()
 	get_viewport().size_changed.connect(_update_dot_positions)
+	_setup_damage_numbers()
 	_init_targets()
 	_setup_projectile_pool()
+
+# =============================================================================
+#  Tuning access + feel helpers
+# =============================================================================
+func tune(key: String, fallback: float = 0.0) -> float:
+	if player and player.data_store:
+		return player.data_store.tuning_get(key, fallback)
+	return fallback
+
+func tune_bool(key: String, fallback: bool = false) -> bool:
+	if player and player.data_store:
+		return player.data_store.tuning_bool(key, fallback)
+	return fallback
+
+func _setup_damage_numbers() -> void:
+	dmg_numbers.clear()
+	for i in range(12):
+		dmg_numbers.append({"pos": Vector3.ZERO, "timer": 0.0, "text": "", "col": Color.WHITE, "crit": false, "rise": 0.0})
+
+func _pop_damage_number(world_pos: Vector3, amount: float, col: Color = Color(1.0, 0.9, 0.45), crit: bool = false) -> void:
+	if not tune_bool("show_damage_numbers", true): return
+	for d in dmg_numbers:
+		if d["timer"] <= 0.0:
+			d["pos"] = world_pos + Vector3(randf_range(-0.45, 0.45), 1.5, randf_range(-0.45, 0.45))
+			d["timer"] = 0.85
+			d["text"] = ("%d!" % int(round(amount))) if crit else str(int(round(amount)))
+			d["col"] = col
+			d["crit"] = crit
+			d["rise"] = 0.0
+			return
+
+func _bump_combo() -> void:
+	combo_hits += 1
+	combo_timer = tune("combo_grace", 1.4)
+
+func _start_slowmo() -> void:
+	var dur := tune("ko_slowmo_time", 0.55)
+	if dur <= 0.0: return
+	Engine.time_scale = clampf(tune("ko_slowmo_scale", 0.28), 0.05, 1.0)
+	slowmo_until_ms = Time.get_ticks_msec() + int(dur * 1000.0)
+
+func _maintain_slowmo() -> void:
+	if slowmo_until_ms > 0:
+		if Time.get_ticks_msec() >= slowmo_until_ms:
+			Engine.time_scale = 1.0
+			slowmo_until_ms = 0
+	elif not is_equal_approx(Engine.time_scale, 1.0):
+		# Safety net: never leave the game running in slow motion.
+		Engine.time_scale = 1.0
 
 func queue_buffered_action(act_type: String, vec: Vector2) -> void:
 	buffered_action_type = act_type
@@ -127,12 +185,15 @@ func _attach_dummy_weapon(td: Node3D) -> Node3D:
 	if boss_node:
 		boss_node.name = "BossVeilModel"
 		boss_node.position = Vector3(0, -1.0, 0)
+		# Material overrides BEFORE add_child: a GLB surface with no material makes the
+		# renderer log "Parameter material is null" for a frame otherwise.
+		if player:
+			player._apply_seinen_shader_to_glb(boss_node)
 		td.add_child(boss_node)
 		var orig_mi := _find_mesh_instance(td)
 		if orig_mi and orig_mi.get_parent() == td:
 			orig_mi.visible = false
 		if player:
-			player._apply_seinen_shader_to_glb(boss_node)
 			var boss_slots := {"Slot_HeadMask_": "VEIL", "Slot_VeilCloak_": "VEIL", "Slot_UpperGarb_": "VEIL", "Slot_LowerSkirt_": "VEIL", "Slot_Weapon_": "VEIL"}
 			player._set_slot_visibility_recursive(boss_node, boss_slots)
 		var ap := player._find_anim_player(boss_node) if player else null
@@ -160,6 +221,11 @@ func _init_targets() -> void:
 			if mi:
 				mi.material_override = dmat
 			var wp := _attach_dummy_weapon(td)
+			var anim: AnimationPlayer = null
+			if wp and player:
+				anim = player._find_anim_player(wp)
+				if anim and anim.has_animation("idle"):
+					anim.play("idle")
 			target_stats[td] = {
 				"hp": 1500.0, "max_hp": 1500.0,
 				"posture": 0.0, "max_posture": 300.0,
@@ -167,7 +233,8 @@ func _init_targets() -> void:
 				"state_timer": 1.0, "whiff_timer": 0.0,
 				"combo_left": 0, "strike_hit_done": false,
 				"vel": Vector3.ZERO, "home_pos": td.global_position,
-				"mat": dmat, "weapon": wp, "boss_name": "LADY OF THE GILDED VEIL"
+				"mat": dmat, "weapon": wp, "anim": anim,
+				"boss_name": "LADY OF THE GILDED VEIL"
 			}
 
 func is_point_in_right_dot(pos: Vector2) -> bool:
@@ -187,13 +254,13 @@ func _input(event: InputEvent) -> void:
 				right_touch_id = event.index
 				right_press_time = Time.get_ticks_msec() / 1000.0
 				_start_right_orb(event.position)
-				if absf(right_press_time - left_press_time) <= 0.09:
+				if absf(right_press_time - left_press_time) <= tune("super_parry_window", 0.09):
 					_trigger_super_parry()
 			elif is_point_in_left_dot(event.position) and left_weave_touch_id == -1:
 				left_weave_touch_id = event.index
 				left_press_time = Time.get_ticks_msec() / 1000.0
 				_start_left_orb(event.position)
-				if absf(right_press_time - left_press_time) <= 0.09:
+				if absf(right_press_time - left_press_time) <= tune("super_parry_window", 0.09):
 					_trigger_super_parry()
 		else:
 			if event.index == right_touch_id:
@@ -213,7 +280,7 @@ func _start_right_orb(pos: Vector2) -> void:
 	is_right_dot_active = true
 	right_touch_start = pos
 	right_touch_current = pos
-	parry_window_timer = 0.24
+	parry_window_timer = tune("parry_window", 0.24)
 	sonic_sway_holding = true
 	if player and player.state != PlayerController.MoveState.HITSTUN:
 		player.state = PlayerController.MoveState.GUARD
@@ -516,39 +583,93 @@ func _commit_strike(dir: Vector2) -> void:
 				return
 
 			var mult := 1.5 if (s["whiff_timer"] > 0.0 or st == "STAGGERED") else 1.0
-			apply_damage(td, float(data.get("dmg", 90.0)) * player.physical_strength * mult, float(data.get("posture", 40.0)), fwd * float(data.get("knockback", 6.0)) + Vector3(0, float(data.get("launch_y", 0.0)), 0))
+			var dmg_out: float = float(data.get("dmg", 90.0)) * player.physical_strength * mult * tune("player_damage_mult", 1.0)
+			apply_damage(td, dmg_out, float(data.get("posture", 40.0)), fwd * float(data.get("knockback", 6.0)) + Vector3(0, float(data.get("launch_y", 0.0)), 0), mult > 1.0)
 
 	if not hit_any:
 		last_combat_action = slot_key + " (WHIFF)"
 
-func apply_damage(t: Node3D, dmg: float, post_dmg: float, launch_vec: Vector3 = Vector3.ZERO) -> void:
+func apply_damage(t: Node3D, dmg: float, post_dmg: float, launch_vec: Vector3 = Vector3.ZERO, crit: bool = false) -> void:
 	if not target_stats.has(t): return
 	var s: Dictionary = target_stats[t]
+	if s.get("ai_state", "") == "DEAD": return
 	s["hp"] = maxf(0.0, s["hp"] - dmg)
-	s["posture"] = minf(s["max_posture"], s["posture"] + post_dmg)
+	s["posture"] = minf(s["max_posture"], s["posture"] + post_dmg * tune("posture_damage_mult", 1.0))
 	s["hit_flash"] = 0.16
 	s["vel"] = launch_vec
 	if player:
-		player.trigger_hitstop(0.045, 0.40)
+		# Damage-scaled hitstop: light hits snap, heavy hits hang.
+		player.trigger_hitstop(clampf(0.038 + dmg * 0.00016, 0.038, 0.11), 0.36 + minf(0.4, dmg * 0.0012))
+	_pop_damage_number(t.global_position + Vector3(0, 1.7, 0), dmg, Color(1.0, 0.92, 0.35) if crit else Color(1.0, 0.86, 0.45), crit)
+	_bump_combo()
 	if launch_vec.y > 6.0 or launch_vec.length() > 14.0:
 		s["ai_state"] = "LAUNCHED"
 		s["state_timer"] = 0.75
 		s["combo_left"] = 0
+		_boss_anim(s, "guard_sway")
 	if player and player.dash_vfx:
 		player.dash_vfx.play_sfx("hit")
 		player.dash_vfx.spawn_step_sigil(t.global_position + Vector3(0, 1.0, 0), Color(1.0, 0.85, 0.2), 1.3)
 		player.dash_vfx.check_destruction(t.global_position, 4.5, launch_vec, launch_vec.y < -6.0)
-	if s["hp"] <= 0.0 or s["posture"] >= s["max_posture"]:
-		simulate_clash(true)
-		s["hp"] = s["max_hp"]
+	if s["hp"] <= 0.0:
+		_kill_rival(t, s)
+	elif s["posture"] >= s["max_posture"]:
+		# Posture break is a reward window, NOT a full heal + reset (that made the
+		# boss effectively immortal and the fight unwinnable).
 		s["posture"] = 0.0
-		s["ai_state"] = "RAGDOLL_KO"
-		s["state_timer"] = 1.65
-		var ko_dir := (t.global_position - player.global_position).normalized() if player else Vector3.BACK
-		s["vel"] = ko_dir * 18.0 + Vector3(0, 12.5, 0)
-		last_combat_action = "POSTURE BREAK — RAGDOLL KO!!"
+		s["ai_state"] = "STAGGERED"
+		s["state_timer"] = 1.7
+		s["combo_left"] = 0
+		last_combat_action = "POSTURE BREAK — FREE HIT WINDOW!"
+		_boss_anim(s, "guard_sway")
+		simulate_clash(true)
 		if player and player.dash_vfx:
 			player.dash_vfx.play_sfx("shatter")
+
+func _kill_rival(t: Node3D, s: Dictionary) -> void:
+	s["hp"] = 0.0
+	s["posture"] = 0.0
+	s["ai_state"] = "DEAD"
+	s["state_timer"] = 999.0
+	s["combo_left"] = 0
+	var ko_dir := (t.global_position - player.global_position).normalized() if player else Vector3.BACK
+	s["vel"] = ko_dir * 16.0 + Vector3(0, 11.5, 0)
+	last_combat_action = "K.O. — %s IS DOWN!" % str(s.get("boss_name", "RIVAL"))
+	if player and player.dash_vfx:
+		player.dash_vfx.play_sfx("shatter")
+		player.dash_vfx.check_destruction(t.global_position, 6.0, Vector3.UP, true)
+		player.dash_vfx.spawn_step_sigil(t.global_position + Vector3(0, 1.0, 0), Color(1.0, 0.9, 0.3), 3.0)
+	simulate_clash(true)
+	result_state = "VICTORY"
+	_start_slowmo()
+
+func reset_duel() -> void:
+	result_state = ""
+	combo_hits = 0
+	combo_timer = 0.0
+	hurt_vignette_timer = 0.0
+	Engine.time_scale = 1.0
+	slowmo_until_ms = 0
+	for t in target_stats.keys():
+		if not is_instance_valid(t) or not (t is Node3D): continue
+		var td := t as Node3D
+		var s: Dictionary = target_stats[td]
+		s["hp"] = s["max_hp"]
+		s["posture"] = 0.0
+		s["ai_state"] = "IDLE"
+		s["state_timer"] = 1.0
+		s["vel"] = Vector3.ZERO
+		s["combo_left"] = 0
+		s["whiff_timer"] = 0.0
+		s["hit_flash"] = 0.0
+		td.global_position = s.get("home_pos", td.global_position)
+		td.rotation = Vector3.ZERO
+		_boss_anim(s, "idle")
+	if player:
+		player.revive(Vector3(0, 1, 0))
+		if not player.is_locked_on:
+			player.toggle_lock_on()
+	last_combat_action = "DUEL RESET — ROUND 2"
 
 func simulate_clash(is_super: bool) -> void:
 	clash_tension += 1
@@ -558,8 +679,24 @@ func simulate_clash(is_super: bool) -> void:
 			impact_flash_timer = 0.055
 			impact_frame_cooldown = 1.5
 
+func _boss_anim(s: Dictionary, anim_name: String) -> void:
+	var ap = s.get("anim", null)
+	if ap is AnimationPlayer and (ap as AnimationPlayer).has_animation(anim_name):
+		(ap as AnimationPlayer).play(anim_name)
+
+func _move_body(td: Node3D, vel: Vector3, delta: float) -> void:
+	# CharacterBody3D enemies must respect arena geometry (they used to walk through
+	# pillars because the code wrote global_position directly).
+	if td is CharacterBody3D:
+		var cb := td as CharacterBody3D
+		cb.velocity = vel
+		cb.move_and_slide()
+	else:
+		td.global_position += vel * delta
+
 func _update_enemy_ai(td: Node3D, s: Dictionary, delta: float, is_active_duelist: bool) -> void:
 	if not player or player.hitstop_timer > 0.0: return
+	if s["ai_state"] == "DEAD": return
 	var to_p := player.global_position - td.global_position
 	var flat_to_p := Vector2(to_p.x, to_p.z)
 	var dist := to_p.length()
@@ -579,7 +716,7 @@ func _update_enemy_ai(td: Node3D, s: Dictionary, delta: float, is_active_duelist
 		dmat.albedo_color = Color(1.0, 0.88, 0.25)
 		td.rotation.x = deg_to_rad(-24.0)
 		if wp and wp.name == "DummyWeaponPivot": wp.rotation_degrees = Vector3(-85.0, 25.0, 40.0)
-	elif s["ai_state"] == "RAGDOLL_KO":
+	elif s["ai_state"] == "RAGDOLL_KO" or s["ai_state"] == "DEAD":
 		dmat.albedo_color = Color(1.0, 0.45, 0.15)
 		td.rotation.x += 11.0 * delta
 		td.rotation.z += 8.5 * delta
@@ -604,8 +741,7 @@ func _update_enemy_ai(td: Node3D, s: Dictionary, delta: float, is_active_duelist
 				s["ai_state"] = "PURSUIT"
 				var move_dir := to_p.normalized()
 				var spd := 15.0 if ai_mode == AIMode.ADAPTIVE_RIVAL else 11.0
-				td.global_position.x += move_dir.x * spd * delta
-				td.global_position.z += move_dir.z * spd * delta
+				_move_body(td, Vector3(move_dir.x, 0.0, move_dir.z) * spd, delta)
 				if player.global_position.y - td.global_position.y > 2.0:
 					s["vel"].y = 14.0
 			elif dist <= 4.5 and s["state_timer"] <= 0.0:
@@ -613,6 +749,7 @@ func _update_enemy_ai(td: Node3D, s: Dictionary, delta: float, is_active_duelist
 				s["state_timer"] = ai_telegraph_time
 				s["combo_left"] = 3 if ai_mode == AIMode.ADAPTIVE_RIVAL else 2
 				s["strike_hit_done"] = false
+				_boss_anim(s, "slash_up")
 		"TELEGRAPH":
 			if s["state_timer"] <= 0.0:
 				s["ai_state"] = "STRIKE_ACTIVE"
@@ -620,6 +757,8 @@ func _update_enemy_ai(td: Node3D, s: Dictionary, delta: float, is_active_duelist
 				s["strike_hit_done"] = false
 				var lunge_dir := to_p.normalized()
 				s["vel"] = lunge_dir * 22.0
+				# The GLB boss now actually swings its baked slash animation.
+				_boss_anim(s, "slash_down" if (int(s["combo_left"]) % 2 == 0) else "slash_side")
 				if player.dash_vfx:
 					player.dash_vfx.spawn_slash_arc(td.global_position + Vector3(0, 1.1, 0) + lunge_dir * 0.7, lunge_dir, 25.0 * float(s["combo_left"]), Color(0.98, 0.18, 0.22))
 				if player.global_position.y > 1.8:
@@ -633,6 +772,7 @@ func _update_enemy_ai(td: Node3D, s: Dictionary, delta: float, is_active_duelist
 				if s["combo_left"] > 0 and dist <= 6.5:
 					s["ai_state"] = "TELEGRAPH"
 					s["state_timer"] = maxf(0.22, ai_telegraph_time * 0.65)
+					_boss_anim(s, "slash_up")
 				else:
 					s["ai_state"] = "IDLE"
 					s["state_timer"] = ai_attack_cooldown
@@ -666,11 +806,22 @@ func _resolve_enemy_strike_on_player(td: Node3D, s: Dictionary) -> void:
 		last_combat_action = "DASH EVADE!"
 		return
 
-	player.hp = maxf(100.0, player.hp - 55.0)
+	var dmg_in := tune("enemy_damage", 55.0)
+	var lethal := player.take_damage(dmg_in)
+	hurt_vignette_timer = 0.5
+	combo_hits = 0
+	combo_timer = 0.0
+	_pop_damage_number(player.global_position + Vector3(0, 1.9, 0), dmg_in, Color(1.0, 0.32, 0.28))
 	var knock := (player.global_position - td.global_position).normalized() * 14.0 + Vector3(0, 3.5, 0)
-	player.apply_hitstun(0.36, knock)
-	if player.dash_vfx: player.dash_vfx.play_sfx("hit")
-	last_combat_action = "HIT BY ENEMY! (TAP BOTH ORBS TO BREAK)"
+	if lethal:
+		player.trigger_ragdoll_ko(1.5, knock * 1.6 + Vector3(0, 6.0, 0))
+		result_state = "DEFEAT"
+		_start_slowmo()
+		last_combat_action = "K.O. — YOU WERE DEFEATED"
+	else:
+		player.apply_hitstun(0.36, knock)
+		if player.dash_vfx: player.dash_vfx.play_sfx("hit")
+		last_combat_action = "HIT BY ENEMY! (TAP BOTH ORBS TO BREAK)"
 
 func _process(delta: float) -> void:
 	if parry_window_timer > 0.0: parry_window_timer -= delta
@@ -696,6 +847,28 @@ func _process(delta: float) -> void:
 
 	if sonic_sway_holding and player:
 		player.trigger_sonic_sway_pose(0.15)
+
+	_maintain_slowmo()
+	if combo_timer > 0.0:
+		combo_timer -= delta
+		if combo_timer <= 0.0:
+			combo_hits = 0
+	if hurt_vignette_timer > 0.0:
+		hurt_vignette_timer = maxf(0.0, hurt_vignette_timer - delta * 2.2)
+	for d in dmg_numbers:
+		if d["timer"] > 0.0:
+			d["timer"] = maxf(0.0, float(d["timer"]) - delta)
+			d["rise"] = float(d["rise"]) + delta
+
+	# Defeat can also arrive from PvP damage, so poll it once per frame.
+	if player and player.is_defeated and result_state == "":
+		result_state = "DEFEAT"
+		_start_slowmo()
+
+func _physics_process(delta: float) -> void:
+	# Enemy AI, knockback and projectiles belong on the physics tick. Running them in
+	# _process made them 2.75x faster at a 165 Hz render rate than at 60 Hz.
+	if player and player.p5_camera_override: return
 
 	for p in projectiles:
 		if p["timer"] > 0.0:
@@ -728,7 +901,7 @@ func _process(delta: float) -> void:
 
 			var v: Vector3 = s["vel"]
 			if (v.length_squared() > 0.1 or td.global_position.y > 1.05) and (not player or player.hitstop_timer <= 0.0):
-				td.global_position += v * delta
+				_move_body(td, v, delta)
 				if player and player.dash_vfx and v.length_squared() > 25.0:
 					player.dash_vfx.check_destruction(td.global_position, 3.5, v, false)
 				v.x = lerpf(v.x, 0.0, 6.0 * delta)
@@ -738,7 +911,7 @@ func _process(delta: float) -> void:
 					v.y -= 24.0 * g_mult * delta
 				else:
 					td.global_position.y = 1.0
-					if s["ai_state"] == "RAGDOLL_KO" and v.y < -3.5:
+					if (s["ai_state"] == "RAGDOLL_KO" or s["ai_state"] == "DEAD") and v.y < -3.5:
 						var b_factor := player.ragdoll_bouncy if player else 0.48
 						v.y = absf(v.y) * b_factor
 						if player and player.dash_vfx:
@@ -764,6 +937,12 @@ func spawn_story_rival(nd: Dictionary) -> void:
 	s["ai_state"] = "TELEGRAPH"
 	s["state_timer"] = 0.65
 	s["boss_name"] = str(nd.get("rival_name", "RIVAL BOSS"))
+	s["anim"] = s.get("anim", null)
+	result_state = ""
+	combo_hits = 0
+	Engine.time_scale = 1.0
+	slowmo_until_ms = 0
+	_boss_anim(s, "slash_up")
 
 	var r_scale := float(nd.get("rival_scale", 1.08))
 	primary_td.scale = Vector3.ONE * r_scale

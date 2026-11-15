@@ -30,7 +30,10 @@ const MENU_ITEMS: Array[String] = [
 	"11 // DEV STUDIO",
 	"12 // WORLD & CHAR (TAB 6)",
 	"13 // STORY & RIVALS (TAB 7)",
-	"14 // RESUME COMBAT"
+	"13 // COMBAT FEEL (TAB 8)",
+	"14 // SANDBOX IMMORTAL",
+	"15 // REMATCH DUEL",
+	"16 // RESUME COMBAT"
 ]
 const POSE_NAMES: Array[String] = [
 	"CRIMSON IGNITION", "RITUAL BLADE POINT", "OVER-SHOULDER ECLIPSE", "SOVEREIGN LEAN", "ASH VANGUARD"
@@ -61,6 +64,10 @@ var discovered_rooms: Dictionary = {}
 var p2p_status: String = "Enter a Room Code to Create or Join"
 var beacon_timer: float = 0.0
 var last_sent_swing: bool = false
+# State sync is throttled: it used to send a formatted UDP string every rendered
+# frame (up to 165/s). 30 Hz is smooth for a background rival and 5x cheaper.
+const P2P_SEND_HZ: float = 30.0
+var p2p_send_accum: float = 0.0
 
 var player_ref: Node3D = null
 var combat_ref: Node = null
@@ -402,7 +409,7 @@ func _on_link_established(remote_ip: String, r_code: String) -> void:
 	active_room_code = r_code
 	is_joining = false
 	is_p2p_connected = true
-	p2p_status = "CONNECTED TO ROOM '%s'! LIVE 120Hz PVP ACTIVE" % active_room_code
+	p2p_status = "CONNECTED TO ROOM '%s'! LIVE PVP ACTIVE (30Hz SYNC)" % active_room_code
 	if player_ref:
 		if not bool(player_ref.get("is_locked_on")):
 			player_ref.call("toggle_lock_on")
@@ -527,12 +534,17 @@ func _process(delta: float) -> void:
 									var fwd: Vector3 = -td.global_transform.basis.z
 									player_ref.get("dash_vfx").call("spawn_slash_arc", td.global_position + Vector3(0, 1.1, 0), fwd, 25.0, Color(1.0, 0.25, 0.15))
 								if player_ref.global_position.distance_to(td.global_position) <= 5.2 and int(player_ref.get("state")) != 6:
-									player_ref.set("hp", maxf(100.0, float(player_ref.get("hp")) - 65.0))
+									var lethal: bool = bool(player_ref.call("take_damage", 65.0))
 									var knock: Vector3 = (player_ref.global_position - td.global_position).normalized() * 12.0 + Vector3(0, 3.0, 0)
-									player_ref.call("apply_hitstun", 0.28, knock)
+									if lethal:
+										player_ref.call("trigger_ragdoll_ko", 1.4, knock * 1.5)
+									else:
+										player_ref.call("apply_hitstun", 0.28, knock)
 
-		# 4. Send 120Hz Direct UDP State + Attack Sync to Connected Challenger
-		if is_p2p_connected and not peer_ip.is_empty() and player_ref:
+		# 4. Send throttled 30Hz Direct UDP State + Attack Sync to Connected Challenger
+		p2p_send_accum += delta
+		if is_p2p_connected and not peer_ip.is_empty() and player_ref and p2p_send_accum >= (1.0 / P2P_SEND_HZ):
+			p2p_send_accum = 0.0
 			var vis: Node3D = player_ref.get("visual_root") as Node3D
 			var yaw: float = vis.rotation.y if vis else 0.0
 			var is_swinging: bool = float(player_ref.get("swing_anim_timer")) > 0.15

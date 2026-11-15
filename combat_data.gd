@@ -3,6 +3,67 @@ extends Node
 
 const SAVE_PATH: String = "user://dev_profile.json"
 
+# =============================================================================
+#  COMBAT FEEL TUNING
+#  One place for every feel number. Dev Studio tab 8 builds its sliders by
+#  reflecting over these three dictionaries: add a line here and a live slider
+#  appears, saves to disk and loads again. No UI code, no new @export.
+#  Read at runtime with tuning_get() / tuning_bool().
+# =============================================================================
+const TUNING_SPEC: Dictionary = {
+	# key: [min, max, step, label]
+	"enemy_damage":        [5.0,  300.0, 1.0,  "Enemy Hit Damage"],
+	"player_damage_mult":  [0.1,  5.0,   0.05, "Your Damage x"],
+	"posture_damage_mult": [0.1,  5.0,   0.05, "Posture Damage x"],
+	"hitstop_scale":       [0.0,  3.0,   0.05, "Hitstop Length x"],
+	"shake_scale":         [0.0,  3.0,   0.05, "Camera Shake x"],
+	"parry_window":        [0.05, 1.0,   0.01, "Parry Window (s)"],
+	"super_parry_window":  [0.02, 0.5,   0.01, "Super-Parry Window (s)"],
+	"combo_grace":         [0.3,  5.0,   0.1,  "Combo Grace (s)"],
+	"ko_slowmo_scale":     [0.05, 1.0,   0.05, "KO Slow-Mo Speed"],
+	"ko_slowmo_time":      [0.0,  2.0,   0.05, "KO Slow-Mo (s)"],
+	"hurt_vignette":       [0.0,  1.0,   0.05, "Hurt Vignette"],
+	"dmg_number_size":     [0.5,  2.0,   0.1,  "Damage Number Size"],
+}
+
+const TUNING_BOOLS: Dictionary = {
+	"immortal_mode":       "Sandbox Immortal (cannot die)",
+	"show_damage_numbers": "Floating Damage Numbers",
+	"show_combo_counter":  "Combo Counter",
+	"auto_lock_on":        "Auto Lock-On Near Rival",
+}
+
+const TUNING_DEFAULTS: Dictionary = {
+	"enemy_damage": 55.0, "player_damage_mult": 1.0, "posture_damage_mult": 1.0,
+	"hitstop_scale": 1.0, "shake_scale": 1.0,
+	"parry_window": 0.24, "super_parry_window": 0.09, "combo_grace": 1.4,
+	"ko_slowmo_scale": 0.28, "ko_slowmo_time": 0.55, "hurt_vignette": 0.55,
+	"dmg_number_size": 1.0,
+	"immortal_mode": false, "show_damage_numbers": true,
+	"show_combo_counter": true, "auto_lock_on": true,
+}
+
+var tuning: Dictionary = TUNING_DEFAULTS.duplicate(true)
+
+func tuning_get(key: String, fallback: float = 0.0) -> float:
+	var v = tuning.get(key, TUNING_DEFAULTS.get(key, fallback))
+	if typeof(v) == TYPE_BOOL:
+		return 1.0 if v else 0.0
+	if typeof(v) == TYPE_INT or typeof(v) == TYPE_FLOAT:
+		return float(v)
+	return fallback
+
+func tuning_bool(key: String, fallback: bool = false) -> bool:
+	var v = tuning.get(key, TUNING_DEFAULTS.get(key, fallback))
+	if typeof(v) == TYPE_BOOL:
+		return v
+	if typeof(v) == TYPE_INT or typeof(v) == TYPE_FLOAT:
+		return float(v) > 0.5
+	return fallback
+
+func reset_tuning() -> void:
+	tuning = TUNING_DEFAULTS.duplicate(true)
+
 var profiles: Dictionary = {
 	"Profile_1": {
 		"max_hp": 1000.0, "hp_regen": 15.0, "max_mana": 100.0, "mana_regen": 14.0,
@@ -52,14 +113,19 @@ var spell_slots: Dictionary = {
 
 var placed_blocks: Array = []
 
-func save_to_disk(player: Node) -> void:
+func save_to_disk(player: Node, combat: Node = null) -> void:
 	var payload := {
 		"profiles": profiles,
 		"move_slots": move_slots,
 		"spell_slots": spell_slots,
 		"placed_blocks": placed_blocks,
-		"player_tunables": {}
+		"tuning": tuning,
+		"player_tunables": {},
+		"combat_tunables": {}
 	}
+	if combat:
+		for prop in ["ai_telegraph_time", "ai_attack_cooldown", "ai_adaptation_rate", "auto_lock_enabled"]:
+			payload["combat_tunables"][prop] = combat.get(prop)
 	if player:
 		for prop in [
 			"run_speed", "sprint_speed", "dash_speed", "dash_duration", "dash_cooldown",
@@ -73,7 +139,7 @@ func save_to_disk(player: Node) -> void:
 	if f:
 		f.store_string(JSON.stringify(payload, "\t"))
 
-func load_from_disk(player: Node) -> void:
+func load_from_disk(player: Node, combat: Node = null) -> void:
 	if not FileAccess.file_exists(SAVE_PATH): return
 	var f := FileAccess.open(SAVE_PATH, FileAccess.READ)
 	if not f: return
@@ -83,6 +149,15 @@ func load_from_disk(player: Node) -> void:
 	if parsed.has("move_slots"): move_slots = parsed["move_slots"]
 	if parsed.has("spell_slots"): spell_slots = parsed["spell_slots"]
 	if parsed.has("placed_blocks"): placed_blocks = parsed["placed_blocks"]
+	if parsed.has("tuning") and typeof(parsed["tuning"]) == TYPE_DICTIONARY:
+		# Merge over defaults so a key added after an old save still exists.
+		for k in TUNING_DEFAULTS.keys():
+			if parsed["tuning"].has(k):
+				tuning[k] = parsed["tuning"][k]
+	if combat and parsed.has("combat_tunables"):
+		var ct: Dictionary = parsed["combat_tunables"]
+		for k in ct.keys():
+			combat.set(k, ct[k])
 	if player and parsed.has("player_tunables"):
 		var pt: Dictionary = parsed["player_tunables"]
 		for k in pt.keys():
