@@ -11,16 +11,15 @@ var fp_mod: Node = null
 @onready var floor_mesh: MeshInstance3D = get_node_or_null("../Floor/MeshInstance3D") as MeshInstance3D
 
 var telemetry: Label
-var action_bar: HBoxContainer
+var btn_menu: Button
 var dev_panel: PanelContainer
 var tab_container: TabContainer
 var fps_mode_idx: int = 0
 var region_idx: int = 0
-var btn_fps: Button
-var btn_lock: Button
-var btn_ai: Button
-var btn_region: Button
-var btn_build: Button
+const FPS_CAPS: Array[int] = [0, 60, 120, 165]   # 0 = match the display's refresh rate
+const P5_ROW_TOP: float = 92.0
+const P5_ROW_MAX_H: float = 36.0
+const P5_ROW_MIN_H: float = 22.0
 var story_mgr: Node = null
 var story_node_title: Label = null
 var story_node_desc: Label = null
@@ -32,6 +31,7 @@ func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	RenderingServer.viewport_set_measure_render_time(get_viewport().get_viewport_rid(), true)
 	_build_ui()
+	_apply_display_mode()
 	fp_mod = FlameP5PvPScript.new()
 	fp_mod.name = "FlameP5PvPModule"
 	add_child(fp_mod)
@@ -66,43 +66,19 @@ func _build_ui() -> void:
 	telemetry.add_theme_constant_override("outline_size", 4)
 	add_child(telemetry)
 
-	action_bar = HBoxContainer.new()
-	action_bar.anchor_left = 1.0
-	action_bar.anchor_right = 1.0
-	action_bar.offset_left = -1140
-	action_bar.offset_top = 12
-	action_bar.offset_right = -16
-	action_bar.offset_bottom = 52
-	action_bar.alignment = BoxContainer.ALIGNMENT_END
-	action_bar.add_theme_constant_override("separation", 4)
-	add_child(action_bar)
-
-	btn_lock = _add_quick_btn("[ LOCK (Q) ]", func(): if player: player.toggle_lock_on())
-	_add_quick_btn("[ AWAKEN ]", func(): if fp_mod: fp_mod.call("toggle_flame_awakening"))
-	_add_quick_btn("[ PVP DUEL ]", func(): if fp_mod and fp_mod.get("pvp_modal"): fp_mod.get("pvp_modal").visible = not fp_mod.get("pvp_modal").visible)
-	_add_quick_btn("[ P5 MENU ]", func(): if fp_mod: fp_mod.call("toggle_p5_pause"))
-	_add_quick_btn("[ SWITCH ]", func(): if player: player.cycle_lock_target())
-	btn_build = _add_quick_btn("[ BUILD: OFF ]", func():
-		if combat:
-			combat.build_mode_active = not combat.build_mode_active
-			btn_build.text = "[ BUILD: ON ]" if combat.build_mode_active else "[ BUILD: OFF ]"
-			btn_build.modulate = Color(1.0, 0.85, 0.25) if combat.build_mode_active else Color.WHITE
-	)
-	btn_region = _add_quick_btn("[ REG: INK_CATHEDRAL ]", _cycle_region)
-	btn_ai = _add_quick_btn("[ AI: ADAPTIVE_RIVAL ]", func():
-		if combat:
-			combat.ai_mode = ((combat.ai_mode + 1) % 4) as GestureCombat.AIMode
-			btn_ai.text = "[ AI: %s ]" % GestureCombat.AIMode.keys()[combat.ai_mode]
-	)
-	btn_fps = _add_quick_btn("[ FPS: NATIVE ]", _cycle_fps)
-	_add_quick_btn("[ SAVE JSON ]", func():
-		if player and player.data_store:
-			if player.dash_vfx:
-				player.data_store.placed_blocks = player.dash_vfx.serialize_user_blocks()
-			player.data_store.save_to_disk(player)
-			if combat: combat.last_combat_action = "SAVED TO JSON!"
-	)
-	_add_quick_btn("[ DEV STUDIO (Tab) ]", _toggle_dev_panel)
+	# One large, reliable tap target. Everything else lives in the in-game menu.
+	btn_menu = Button.new()
+	btn_menu.text = "[ MENU ]"
+	btn_menu.focus_mode = Control.FOCUS_NONE
+	btn_menu.custom_minimum_size = Vector2(140, 58)
+	btn_menu.anchor_left = 1.0
+	btn_menu.anchor_right = 1.0
+	btn_menu.offset_left = -156
+	btn_menu.offset_right = -16
+	btn_menu.offset_top = 10
+	btn_menu.offset_bottom = 68
+	btn_menu.pressed.connect(func(): if fp_mod: fp_mod.call("toggle_p5_pause"))
+	add_child(btn_menu)
 
 	dev_panel = PanelContainer.new()
 	dev_panel.visible = false
@@ -142,18 +118,8 @@ func _build_ui() -> void:
 	_build_tab_world_and_char()
 	_build_tab_world_map()
 
-func _add_quick_btn(txt: String, cb: Callable) -> Button:
-	var b := Button.new()
-	b.text = txt
-	b.focus_mode = Control.FOCUS_NONE
-	b.custom_minimum_size = Vector2(0, 36)
-	b.pressed.connect(cb)
-	action_bar.add_child(b)
-	return b
-
 func _cycle_region() -> void:
 	region_idx = (region_idx + 1) % 3
-	btn_region.text = "[ REG: %s ]" % REGION_NAMES[region_idx]
 	var env := world_env.environment if world_env else null
 	var fmat := StandardMaterial3D.new()
 	fmat.roughness = 0.92
@@ -182,25 +148,45 @@ func _cycle_region() -> void:
 	if floor_mesh:
 		floor_mesh.material_override = fmat
 
+func _screen_max_hz() -> int:
+	var hz: float = DisplayServer.screen_get_refresh_rate()
+	if hz <= 1.0:
+		hz = 60.0
+	return int(clampf(snappedf(hz, 1.0), 60.0, 240.0))
+
+func _apply_display_mode() -> int:
+	var target: int = FPS_CAPS[fps_mode_idx]
+	var cap: int = _screen_max_hz() if target == 0 else target
+	Engine.max_fps = cap
+	# Render at the panel's native rate, simulate at a fixed 60 Hz: same feel, ~1/3 of the CPU.
+	Engine.physics_ticks_per_second = 60
+	if not (DisplayServer.get_name() in ["Android", "iOS", "Web"]):
+		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_ENABLED if cap >= _screen_max_hz() else DisplayServer.VSYNC_DISABLED)
+	return cap
+
 func _cycle_fps() -> void:
-	fps_mode_idx = (fps_mode_idx + 1) % 3
-	var is_android: bool = DisplayServer.get_name() in ["Android", "iOS", "Web"]
-	match fps_mode_idx:
-		0:
-			if not is_android: DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_ENABLED)
-			Engine.max_fps = 0
-			Engine.physics_ticks_per_second = 120
-			btn_fps.text = "[ FPS: NATIVE ]"
-		1:
-			if not is_android: DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
-			Engine.max_fps = 144
-			Engine.physics_ticks_per_second = 144
-			btn_fps.text = "[ FPS: 144Hz ]"
-		2:
-			if not is_android: DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
-			Engine.max_fps = 165
-			Engine.physics_ticks_per_second = 165
-			btn_fps.text = "[ FPS: 165Hz ]"
+	fps_mode_idx = (fps_mode_idx + 1) % FPS_CAPS.size()
+	_apply_display_mode()
+
+func _fps_text() -> String:
+	if Engine.max_fps <= 0:
+		return "NATIVE"
+	return "%d Hz" % Engine.max_fps
+
+func _cycle_ai() -> void:
+	if combat:
+		combat.ai_mode = ((combat.ai_mode + 1) % 4) as GestureCombat.AIMode
+
+func _toggle_build() -> void:
+	if combat:
+		combat.build_mode_active = not combat.build_mode_active
+
+func _save_loadout() -> void:
+	if player and player.data_store:
+		if player.dash_vfx:
+			player.data_store.placed_blocks = player.dash_vfx.serialize_user_blocks()
+		player.data_store.save_to_disk(player)
+		if combat: combat.last_combat_action = "SAVED TO JSON!"
 
 func _make_scroll_tab(tab_name: String) -> VBoxContainer:
 	var sc := ScrollContainer.new()
@@ -521,8 +507,6 @@ func _build_tab_world_and_char() -> void:
 	chk_build.toggled.connect(func(on: bool):
 		if combat:
 			combat.build_mode_active = on
-			btn_build.text = "[ BUILD: ON ]" if on else "[ BUILD: OFF ]"
-			btn_build.modulate = Color(1.0, 0.85, 0.25) if on else Color.WHITE
 	)
 	b_row.add_child(chk_build)
 
@@ -553,7 +537,6 @@ func _process(_delta: float) -> void:
 	telemetry.text = "FPS: %d | Panel Hz: %d (OS Cap) | GPU: %.2f ms | CPU: %.2f ms%s\nProfile: %s | Dash: %s | State: %s | Weave: [%s] | Action: %s" % [
 		fps, panel_hz, gpu_ms, cpu_ms, b_tag, player.active_race_name, dash_name, st_name, seq_txt, combat.last_combat_action
 	]
-	btn_lock.modulate = Color(0.3, 1.0, 0.5) if player.is_locked_on else Color.WHITE
 	queue_redraw()
 
 func _draw() -> void:
@@ -718,36 +701,82 @@ func _refresh_story_ui() -> void:
 		)
 		story_choices_box.add_child(b)
 
-func _handle_p5_blade_tap(pos: Vector2) -> void:
-	if pos.y < 54.0 or not fp_mod: return
+func _p5_row_count() -> int:
+	if not fp_mod: return 0
+	return (fp_mod.get("MENU_ITEMS") as Array).size()
+
+# Rows shrink to fit the viewport, so the list can never clip on a wide phone.
+func _p5_row_h() -> float:
+	var avail: float = get_viewport_rect().size.y - P5_ROW_TOP - 34.0
+	return clampf(avail / float(maxi(1, _p5_row_count())), P5_ROW_MIN_H, P5_ROW_MAX_H)
+
+func _p5_row_rect(idx: int) -> Rect2:
 	var vp: Vector2 = get_viewport_rect().size
 	var bx: float = vp.x * 0.54
-	for i in range(6):
-		var by: float = 128.0 + float(i) * 54.0
-		if Rect2(Vector2(bx - 12.0, by - 25.0), Vector2(360.0, 50.0)).has_point(pos):
+	var w: float = maxf(300.0, vp.x - bx - 24.0)
+	var h: float = _p5_row_h()
+	return Rect2(Vector2(bx - 6.0, P5_ROW_TOP + float(idx) * h), Vector2(w, h - 3.0))
+
+func _handle_p5_blade_tap(pos: Vector2) -> void:
+	if pos.y < 54.0 or not fp_mod: return
+	for i in range(_p5_row_count()):
+		if _p5_row_rect(i).has_point(pos):
 			fp_mod.set("p5_selected_idx", i)
-			match i:
-				0:
-					fp_mod.call("toggle_p5_pause")
-					fp_mod.call("toggle_flame_awakening")
-				1:
-					fp_mod.call("toggle_p5_pause")
-					dev_panel.visible = true
-					tab_container.current_tab = 5
-				2:
-					fp_mod.call("toggle_p5_pause")
-					dev_panel.visible = true
-					tab_container.current_tab = 6
-				3:
-					fp_mod.call("toggle_p5_pause")
-					if fp_mod.get("pvp_modal"): fp_mod.get("pvp_modal").visible = true
-				4:
-					fp_mod.call("roll_next_pose")
-				5:
-					fp_mod.call("toggle_p5_pause")
+			_p5_menu_action(i)
 			return
-	if pos.x < vp.x * 0.5:
+	if pos.x < get_viewport_rect().size.x * 0.5:
 		fp_mod.call("roll_next_pose")
+
+func _p5_menu_action(idx: int) -> void:
+	match idx:
+		0:
+			fp_mod.call("toggle_p5_pause")
+			fp_mod.call("toggle_flame_awakening")
+		1:
+			if player: player.toggle_lock_on()
+		2:
+			if player: player.cycle_lock_target()
+		3:
+			fp_mod.call("roll_next_pose")
+		4:
+			fp_mod.call("toggle_p5_pause")
+			if fp_mod.get("pvp_modal"): (fp_mod.get("pvp_modal") as Control).visible = true
+		5:
+			_toggle_build()
+		6:
+			fp_mod.call("toggle_p5_pause")
+			_cycle_region()
+		7:
+			_cycle_ai()
+		8:
+			_cycle_fps()
+		9:
+			_save_loadout()
+		10:
+			fp_mod.call("toggle_p5_pause")
+			dev_panel.visible = true
+			tab_container.current_tab = 0
+		11:
+			fp_mod.call("toggle_p5_pause")
+			dev_panel.visible = true
+			tab_container.current_tab = 5
+		12:
+			fp_mod.call("toggle_p5_pause")
+			dev_panel.visible = true
+			tab_container.current_tab = 6
+		13:
+			fp_mod.call("toggle_p5_pause")
+
+func _p5_value_text(idx: int) -> String:
+	match idx:
+		0: return "ON" if fp_mod and bool(fp_mod.get("is_flame_awakened")) else "OFF"
+		1: return "LOCKED" if player and player.is_locked_on else "FREE"
+		4: return "LINKED" if fp_mod and bool(fp_mod.get("is_p2p_connected")) else "SOLO"
+		5: return "ON" if combat and combat.build_mode_active else "OFF"
+		6: return REGION_NAMES[region_idx]
+		7: return GestureCombat.AIMode.keys()[combat.ai_mode] if combat else "-"
+		8: return _fps_text()
+	return ""
 
 func _draw_p5_menu() -> void:
 	var vp: Vector2 = get_viewport_rect().size
@@ -762,10 +791,19 @@ func _draw_p5_menu() -> void:
 	draw_string(ThemeDB.fallback_font, Vector2(bx, 78), "MIND_EYE // " + str(pnames[pi]), HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color.WHITE)
 	var items: Array = fp_mod.get("MENU_ITEMS")
 	for i in range(items.size()):
-		var by: float = 128.0 + float(i) * 54.0
+		var r: Rect2 = _p5_row_rect(i)
 		var sel: bool = (i == si)
-		var w: float = 335.0 if sel else 300.0
-		var bp: PackedVector2Array = PackedVector2Array([Vector2(bx, by - 20), Vector2(bx + w + 14, by - 24), Vector2(bx + w, by + 20), Vector2(bx - 8, by + 24)])
+		var bp: PackedVector2Array = PackedVector2Array([
+			Vector2(r.position.x, r.position.y),
+			Vector2(r.end.x + 10.0, r.position.y - 3.0),
+			Vector2(r.end.x, r.end.y),
+			Vector2(r.position.x - 6.0, r.end.y + 3.0)
+		])
 		draw_colored_polygon(bp, Color(0.95, 0.12, 0.16, 1.0) if sel else Color(0.08, 0.08, 0.12, 0.96))
-		draw_string(ThemeDB.fallback_font, Vector2(bx + 16, by + 5), str(items[i]), HORIZONTAL_ALIGNMENT_LEFT, -1, 14 if sel else 12, Color.WHITE)
+		var ty: float = r.position.y + r.size.y * 0.68
+		var f_size: int = mini(12, maxi(9, int(_p5_row_h() * 0.40)))
+		draw_string(ThemeDB.fallback_font, Vector2(r.position.x + 14.0, ty), str(items[i]), HORIZONTAL_ALIGNMENT_LEFT, -1, f_size, Color.WHITE)
+		var vt: String = _p5_value_text(i)
+		if not vt.is_empty():
+			draw_string(ThemeDB.fallback_font, Vector2(r.position.x, ty), vt, HORIZONTAL_ALIGNMENT_RIGHT, r.size.x - 16.0, f_size, Color(1.0, 0.88, 0.45))
 	draw_string(ThemeDB.fallback_font, Vector2(bx, vp.y - 24.0), "Tap any blade once to open • Tap character on left for new pose", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(1.0, 0.85, 0.3))

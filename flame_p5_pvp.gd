@@ -17,12 +17,20 @@ var p5_pose_idx: int = 0
 var p5_anim_t: float = 0.0
 
 const MENU_ITEMS: Array[String] = [
-	"01 // FLAME AWAKEN (IGNITE)",
-	"02 // WORLD & CHAR MAKER (TAB 6)",
-	"03 // STORY & RIVALS (TAB 7)",
-	"04 // CUSTOM ROOM PVP LOBBY",
-	"05 // SWITCH CAMERA POSE",
-	"06 // RESUME COMBAT"
+	"01 // FLAME AWAKEN",
+	"02 // LOCK-ON",
+	"03 // SWITCH TARGET",
+	"04 // CAMERA POSE",
+	"05 // PVP ROOM",
+	"06 // BUILD MODE",
+	"07 // REGION",
+	"08 // AI MODE",
+	"09 // FPS CAP",
+	"10 // SAVE LOADOUT",
+	"11 // DEV STUDIO",
+	"12 // WORLD & CHAR (TAB 6)",
+	"13 // STORY & RIVALS (TAB 7)",
+	"14 // RESUME COMBAT"
 ]
 const POSE_NAMES: Array[String] = [
 	"CRIMSON IGNITION", "RITUAL BLADE POINT", "OVER-SHOULDER ECLIPSE", "SOVEREIGN LEAN", "ASH VANGUARD"
