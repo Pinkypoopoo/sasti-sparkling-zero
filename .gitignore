@@ -2,3 +2,7 @@
 .godot/
 /android/
 venv/
+
+# Python bytecode from build_models.py syntax checks
+__pycache__/
+*.pyc
