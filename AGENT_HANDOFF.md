@@ -186,5 +186,73 @@ saves. Physics stays 60 Hz on every tier; rendering interpolates.
 `V3-min.patch` + `apply_v3.sh` committed onto `Pinkypoopoo-patch-1`, and `apply_v3.sh` removes both
 after committing. If you are reading this inside commit `V3`, the patch landed correctly.
 
+### 2026-11-16 · Buffy (Freebuff) — V4: quality tiers, NPR face pipeline, story JSON, typed AI state
+
+Branch `Pinkypoopoo-patch-1`. `main` untouched. Gate: **VERIFY_PASSED**, 7 gates, 45 signatures,
+34 combat asserts (was 25), full asset import (not `SKIP_IMPORT`).
+
+**1. Single-tap menu (task from the phone video).** Root cause was not the row loop: the row loop
+already executed on the first tap. `_handle_p5_blade_tap()` never consumed the touch, so the same
+tap was *also* delivered to the `Button` layer under the menu (`btn_menu`), which toggled the pause
+menu shut again — every row therefore looked like it needed a second tap. Fix: `set_input_as_handled()`
+is now called before any row logic; row hits select + execute immediately; only taps on the left
+character-preview side (or row 04 CAMERA POSE) roll a pose; taps in the right-side gutter do nothing.
+Verified by three headless asserts (one tap → one action, selection follows the tap, outside-row tap →
+no action).
+
+**2. 4-tier device quality (tab 8 + `[ MENU ]` rows 15/16).** `CombatData.QUALITY_TIERS` holds
+LOW 0.65 / MID 0.85 / HIGH 0.92 / ULTRA 1.00 with msaa, shadow, fog, outline and debris caps
+(8/16/28/28). `detect_quality_tier()` maps `RenderingServer.get_video_adapter_name()` + `OS.get_name()`:
+iOS/`Apple M` → ULTRA, Adreno 7xx/8xx + Mali-G7/G9 + Xclipse + desktop RTX/RX → HIGH, other desktop
+→ MID, Adreno 5xx/6xx + Mali-G5/G6 + PowerVR → LOW. `auto_quality` is a checkbox in tab 8; turning it
+off (or tapping either menu row) keeps manual values, and auto never overwrites a saved `render_scale`.
+`apply_quality_tier()` in `character_body_3d.gd` applies viewport `scaling_3d_scale`/`msaa_3d`, sun
+shadows, `Environment.fog_enabled`, the outline `next_pass`, afterimage gating and the debris cap. It
+re-runs on the next physics tick when `quality_tier` changes, so the tab-8 slider is a live preview.
+Physics stays 60 Hz + interpolation on every tier.
+
+**3. NPR face/vertex pipeline.** The cel shader now reads a packed vertex COLOR via two varyings
+(`COLOR` is a vertex built-in — docs: fragment built-ins need a varying to reach `light()`, and
+`return` is illegal inside `light()`, so the branches are if/else). R = shadow threshold bias,
+G = outline weight, B = spec mask, A = 1 on unmasked anime-face skin, which switches `light()` to a
+horizontally-shifted 64×64 SDF face ramp (procedural, `res://assets/sdf_face.png` overrides it) with
+the head basis fed every frame. Outline extrusion now supports per-vertex weight + camera-distance
+falloff. Characters no longer cast self-shadows, which stops cel-band flicker. `build_models.py`
+gained `paint_vertex_channels()`, `proxy_smooth_normals()` (DATA_TRANSFER custom normals from a proxy
+sphere) and an opt-in `ANIME_FACE_MODE = "plate"`. **Three new tab-8 knobs**: SDF Face Softness,
+Vertex Shadow Bias, Outline Distance Falloff.
+**IMPORTANT — the shipped GLBs were NOT re-exported** (no Blender in the sandbox). They carry no COLOR
+layer yet, so `vertex_shadow_bias` defaults to 0.0 and the current look is bit-identical. Run
+`blender --background --python build_models.py` once, then raise Vertex Shadow Bias to 1.0.
+`face_sdf_*` only activates when `slot_head == "ANIME_FACE"`.
+
+**4. Story graph externalised.** `res://data/story_nodes.json` (`schema_version: 1`) holds origins,
+nodes, choices, `requires_flags`, `grants_unlocks`. `world_story.gd` lost its hardcoded dicts, gained
+`load_story_data()`/`save_state()`/`load_state()`, and persists origin + node + flags + unlocks under
+`"story"` in `user://dev_profile.json`. `CombatData.save_to_disk()` now reads the old file first and
+merges, so the two writers cannot erase each other. Flag gating exists but every `requires_flags` is
+empty, so no current path changed. New `story_test.gd` validates schema, origin targets, choice links
+and slot names from gate 7. `export_presets.cfg` now has `include_filter="*.json"` on all three
+presets so the file actually ships.
+
+**5. `ai_state` string machine → `enum AIState`** (27 call sites). `AI_STATE_LABELS` + `ai_state_label()`
+keep the HUD text identical; a legacy string in a save is still accepted. `match` now switches on
+`int(s["ai_state"])`.
+
+**6. `ios_ipa.yml`** downloads Godot **4.7-stable** (was 4.3, which could not open this project).
+
+**Verified**: gate 7/7 green with real asset import; combat asserts 25→34; shader compiles in the dummy
+renderer (the failure mode that would have shipped a magenta character was caught here); `python3 -m
+py_compile build_models.py`; JSON parsed and schema-checked. **Not verified**: anything visual (no GPU,
+no phone), the Blender path (never executed), and on-device tier selection (adapter strings on the real
+Redmi/iQOO were never observed — `detect_quality_tier()` may need a fragment added).
+
+**Still open**: (a) run `build_models.py` in Blender and inspect the vertex-colour look; (b) the ~40
+`get()`/`call()` string bridges in `flame_p5_pvp.gd` were deliberately **not** rewritten to typed
+access — `player_ref` would need a `PlayerController` static type, and with no on-device run a typo'd
+member is a silent no-op today but a hard parse break then; do it behind a compile check; (c) P2PSYNC
+throttling already existed (`P2P_SEND_HZ = 30`, accumulator) — verified, no change needed; (d) ranked
+arena shell (M3).
+
 ### _next entry_
 _(date · agent · what you changed · what you verified · what is left open)_

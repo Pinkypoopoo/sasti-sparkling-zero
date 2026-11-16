@@ -1,6 +1,6 @@
 import bpy
 import math
-from mathutils import Euler
+from mathutils import Euler, Vector
 
 def make_mat(name, rgb, rough=0.8, metal=0.0, alpha=1.0, emit_rgb=None, emit_str=0.0):
     mat = bpy.data.materials.new(name=name)
@@ -108,6 +108,127 @@ def bake_standard_combat_anims(arm_obj):
         except Exception:
             pass
 
+# =============================================================================
+# NPR VERTEX COLOR + PROXY NORMAL PIPELINE
+# =============================================================================
+# Packs four channels into a COLOR attribute that character_body_3d.gd reads:
+#   R = shadow threshold bias (0 permanent shadow .. 0.5 normal .. 1 permanent lit)
+#   G = outline weight (0 on eyes/inner face .. 1 on the outer silhouette)
+#   B = specular / matcap metallic mask
+#   A = 1.0 on unmasked anime-face skin, 0.0 everywhere else
+# The shader only consumes this once "Vertex Shadow Bias" (tab 8) is raised above
+# 0, so re-exporting these models does NOT change the current look until you ask.
+
+HERO_VC_RULES = {
+    "voidface":      (0.0, 0.0, 0.0, 0.0),
+    "crimsoneye":    (1.0, 0.0, 0.0, 0.0),
+    "tarnishediron": (0.5, 1.0, 1.0, 0.0),
+    "obsidiancloak": (0.5, 1.0, 0.0, 0.0),
+    "ashvestment":   (0.62, 0.8, 0.0, 0.0),
+    "animefaceskin": (0.5, 0.0, 0.0, 1.0),
+}
+
+BOSS_VC_RULES = {
+    "voidface":         (0.0, 0.0, 0.0, 0.0),
+    "gildedfiligree":   (0.5, 0.35, 1.0, 0.0),
+    "porcelainlily":    (0.6, 0.8, 0.0, 0.0),
+    "cathedralveil":    (0.7, 0.2, 0.0, 0.0),
+    "midnightvestment": (0.5, 1.0, 0.0, 0.0),
+    "animefaceskin":    (0.5, 0.0, 0.0, 1.0),
+}
+
+# "off" keeps the masked void-face characters exactly as they are today.
+# "plate" adds an unmasked anime face with A=1 so the SDF path takes over.
+ANIME_FACE_MODE = "off"
+
+def paint_vertex_channels(mesh_obj, rules, default=(0.5, 1.0, 0.0, 0.0)):
+    """Write the 4-channel mask into a CORNER byte-color layer named 'Col'."""
+    try:
+        me = mesh_obj.data
+        layer = None
+        if hasattr(me, "color_attributes"):
+            layer = me.color_attributes.get("Col")
+            if layer is None:
+                layer = me.color_attributes.new(name="Col", type='BYTE_COLOR', domain='CORNER')
+        else:
+            layer = me.vertex_colors.new(name="Col")
+
+        slot_rules = []
+        for slot in mesh_obj.material_slots:
+            name = (slot.material.name if slot.material else "").lower()
+            chosen = default
+            for frag, rule in rules.items():
+                if frag in name:
+                    chosen = rule
+                    break
+            slot_rules.append(chosen)
+
+        for poly in me.polygons:
+            rule = slot_rules[poly.material_index] if poly.material_index < len(slot_rules) else default
+            for li in poly.loop_indices:
+                layer.data[li].color = (rule[0], rule[1], rule[2], rule[3])
+        print("  vertex colors packed on %s" % mesh_obj.name)
+    except Exception as exc:
+        print("  vertex color packing skipped:", exc)
+
+def proxy_smooth_normals(mesh_obj, radius_scale=1.35):
+    """DATA_TRANSFER custom normals from a smooth proxy sphere so the low-poly
+    head and torso shade like one continuous surface. Geometry is untouched."""
+    try:
+        bpy.ops.mesh.primitive_uv_sphere_add(segments=48, ring_count=32, radius=1.0)
+        proxy = bpy.context.active_object
+        proxy.name = mesh_obj.name + "_NormalProxy"
+        dims = mesh_obj.dimensions
+        proxy.location = mesh_obj.matrix_world.translation + Vector((0.0, 0.0, float(dims.z) * 0.55))
+        proxy.scale = (dims.x * 0.75 * radius_scale,
+                       dims.y * 0.75 * radius_scale,
+                       dims.z * 0.62 * radius_scale)
+        bpy.context.view_layer.objects.active = proxy
+        bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+
+        mod = mesh_obj.modifiers.new(name="ProxyNormals", type='DATA_TRANSFER')
+        mod.object = proxy
+        mod.use_loop_data = True
+        mod.data_types_loops = {'CUSTOM_NORMAL'}
+        mod.loop_mapping = 'NEAREST_POLYNOR'
+        with bpy.context.temp_override(object=mesh_obj, active_object=mesh_obj,
+                                       selected_objects=[mesh_obj],
+                                       selected_editable_objects=[mesh_obj]):
+            bpy.ops.object.modifier_apply(modifier=mod.name)
+        bpy.data.objects.remove(proxy, do_unlink=True)
+        print("  proxy normals transferred onto %s" % mesh_obj.name)
+    except Exception as exc:
+        print("  proxy normal transfer skipped:", exc)
+
+def build_anime_face_plate(parts_list, mat_face):
+    """Unmasked anime face option. UVs come from the sphere; A=1 is applied by
+    paint_vertex_channels() through the 'animefaceskin' material rule."""
+    bpy.ops.mesh.primitive_uv_sphere_add(segments=24, ring_count=16, radius=0.19)
+    obj = bpy.context.active_object
+    obj.name = "AnimeFacePlate"
+    obj.scale = (0.92, 0.55, 1.08)
+    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+    obj.location = (0.0, -0.09, 1.66)
+    obj.data.materials.clear()
+    obj.data.materials.append(mat_face)
+    vg = obj.vertex_groups.new(name="Head")
+    vg.add([v.index for v in obj.data.vertices], 1.0, 'REPLACE')
+    parts_list.append(obj)
+    print("  anime face plate added")
+
+def export_glb(path):
+    """Always ship the active COLOR layer; older exporters lack the kwarg."""
+    base = dict(filepath=path, export_format='GLB', export_animations=True)
+    for kwargs in (dict(base, export_vertex_color='ACTIVE'),
+                   dict(base, export_vertex_color='MATERIAL'),
+                   base):
+        try:
+            bpy.ops.export_scene.gltf(**kwargs)
+            print("EXPORTED:", path)
+            return
+        except TypeError:
+            continue
+
 # ==========================================
 # 1. BUILD PLAYER HERO (models/hero.glb)
 # ==========================================
@@ -140,6 +261,9 @@ add_part(h_parts, bpy.ops.mesh.primitive_cube_add, {"size": 1.0}, (-0.62, -0.22,
 add_part(h_parts, bpy.ops.mesh.primitive_cylinder_add, {"vertices": 8, "radius": 0.08, "depth": 0.48}, (0.46, -0.10, 1.24), (24, 24, 0), (1.0, 1.0, 1.0), mat_obsidian, "Arm_L")
 add_part(h_parts, bpy.ops.mesh.primitive_torus_add, {"major_radius": 0.26, "minor_radius": 0.025, "major_segments": 16, "minor_segments": 6}, (0.62, -0.32, 1.18), (70, 0, 20), (1.0, 1.0, 1.0), mat_eye, "Arm_L")
 
+if ANIME_FACE_MODE == "plate":
+    build_anime_face_plate(h_parts, make_mat("AnimeFaceSkin", (0.98, 0.88, 0.82), 0.6))
+
 bpy.ops.object.select_all(action='DESELECT')
 for p in h_parts: p.select_set(True)
 bpy.context.view_layer.objects.active = h_parts[0]
@@ -150,7 +274,9 @@ h_mesh.parent = hero_rig
 h_mod = h_mesh.modifiers.new(name="Armature", type='ARMATURE')
 h_mod.object = hero_rig
 bake_standard_combat_anims(hero_rig)
-bpy.ops.export_scene.gltf(filepath="models/hero.glb", export_format='GLB', export_animations=True)
+paint_vertex_channels(h_mesh, HERO_VC_RULES)
+proxy_smooth_normals(h_mesh)
+export_glb("models/hero.glb")
 
 # ==========================================================
 # 2. BUILD GILDED VEIL CATHEDRAL BOSS (models/boss_veil.glb)
@@ -216,5 +342,7 @@ b_mesh.parent = boss_rig
 b_mod = b_mesh.modifiers.new(name="Armature", type='ARMATURE')
 b_mod.object = boss_rig
 bake_standard_combat_anims(boss_rig)
-bpy.ops.export_scene.gltf(filepath="models/boss_veil.glb", export_format='GLB', export_animations=True)
+paint_vertex_channels(b_mesh, BOSS_VC_RULES)
+proxy_smooth_normals(b_mesh)
+export_glb("models/boss_veil.glb")
 print("BOTH_MODELS_EXPORTED_SUCCESSFULLY")

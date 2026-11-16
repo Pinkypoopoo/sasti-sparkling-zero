@@ -3,6 +3,21 @@ extends Node
 
 enum AIMode { STATIC_BAG, FEINT_TESTER, COMBO_ATTACKER, ADAPTIVE_RIVAL }
 
+# Typed rival state machine. "ai_state" used to be a bare string, so a typo in any
+# of the 27 comparisons silently fell through to the else branch. The labels array
+# keeps HUD text stable for anything that still wants a string.
+enum AIState { IDLE, PURSUIT, TELEGRAPH, STRIKE_ACTIVE, STAGGERED, BAITED_WHIFF, LAUNCHED, Z_VANISH_COUNTER, RAGDOLL_KO, DEAD }
+const AI_STATE_LABELS: Array[String] = [
+	"IDLE", "PURSUIT", "TELEGRAPH", "STRIKE ACTIVE", "STAGGERED",
+	"BAITED WHIFF!", "LAUNCHED", "Z-VANISH COUNTER!", "RAGDOLL KO", "DEAD"
+]
+
+func ai_state_label(s: Dictionary) -> String:
+	var st = s.get("ai_state", AIState.IDLE)
+	if typeof(st) == TYPE_STRING:
+		return str(st)  # legacy string written by an old save or an addon
+	return AI_STATE_LABELS[clampi(int(st), 0, AI_STATE_LABELS.size() - 1)]
+
 var left_dot_ratio: Vector2 = Vector2(0.18, 0.56)
 var right_dot_ratio: Vector2 = Vector2(0.82, 0.64)
 var left_dot_pos: Vector2 = Vector2.ZERO
@@ -229,7 +244,7 @@ func _init_targets() -> void:
 			target_stats[td] = {
 				"hp": 1500.0, "max_hp": 1500.0,
 				"posture": 0.0, "max_posture": 300.0,
-				"hit_flash": 0.0, "ai_state": "IDLE",
+				"hit_flash": 0.0, "ai_state": AIState.IDLE,
 				"state_timer": 1.0, "whiff_timer": 0.0,
 				"combo_left": 0, "strike_hit_done": false,
 				"vel": Vector3.ZERO, "home_pos": td.global_position,
@@ -341,8 +356,8 @@ func _check_active_parry_against_enemies() -> bool:
 		if is_instance_valid(t) and t is Node3D:
 			var td := t as Node3D
 			var s: Dictionary = target_stats[td]
-			var st: String = s["ai_state"]
-			if (st == "TELEGRAPH" or st == "STRIKE_ACTIVE") and player.global_position.distance_to(td.global_position) <= 9.0:
+			var st: int = int(s["ai_state"])
+			if (st == AIState.TELEGRAPH or st == AIState.STRIKE_ACTIVE) and player.global_position.distance_to(td.global_position) <= 9.0:
 				player.global_position = td.global_position + td.global_transform.basis.z * 2.2
 				player.cam_rot_y += 180.0
 				player.whip_lag_timer = player.camera_whip_lag
@@ -353,7 +368,7 @@ func _check_active_parry_against_enemies() -> bool:
 				if player.dash_vfx:
 					player.dash_vfx.play_sfx("clash")
 					player.dash_vfx.spawn_step_sigil(player.global_position + Vector3(0, 1.0, 0), Color(1.0, 0.95, 0.3), 1.9)
-				s["ai_state"] = "STAGGERED"
+				s["ai_state"] = AIState.STAGGERED
 				s["state_timer"] = 1.15
 				s["combo_left"] = 0
 				s["posture"] = minf(s["max_posture"], s["posture"] + 75.0)
@@ -492,7 +507,7 @@ func _trigger_super_parry() -> void:
 			player.dash_vfx.check_destruction(player.global_position, 5.0, Vector3.UP, true)
 		for t in target_stats.keys():
 			if is_instance_valid(t) and player.global_position.distance_to((t as Node3D).global_position) <= 8.0:
-				target_stats[t]["ai_state"] = "STAGGERED"
+				target_stats[t]["ai_state"] = AIState.STAGGERED
 				target_stats[t]["state_timer"] = 1.2
 				target_stats[t]["vel"] = ((t as Node3D).global_position - player.global_position).normalized() * 14.0
 	simulate_clash(true)
@@ -501,7 +516,7 @@ func _trigger_feint() -> void:
 	last_combat_action = "HALF-SWIPE FEINT!"
 	for t in target_stats.keys():
 		if is_instance_valid(t) and player and player.global_position.distance_to((t as Node3D).global_position) <= 10.0:
-			target_stats[t]["ai_state"] = "BAITED_WHIFF!"
+			target_stats[t]["ai_state"] = AIState.BAITED_WHIFF
 			target_stats[t]["whiff_timer"] = 1.1
 			target_stats[t]["state_timer"] = 1.1
 			target_stats[t]["combo_left"] = 0
@@ -552,16 +567,16 @@ func _commit_strike(dir: Vector2) -> void:
 				continue
 			hit_any = true
 			var s: Dictionary = target_stats[td]
-			var st: String = s["ai_state"]
+			var st: int = int(s["ai_state"])
 
-			if st == "STRIKE_ACTIVE" or (st == "TELEGRAPH" and s["state_timer"] < ai_telegraph_time * 0.5):
+			if st == AIState.STRIKE_ACTIVE or (st == AIState.TELEGRAPH and s["state_timer"] < ai_telegraph_time * 0.5):
 				last_combat_action = "DBZ / ELDEN CLASH!!"
 				var push_dir := (player.global_position - td.global_position).normalized()
 				player.velocity = push_dir * 12.0 + Vector3(0, 6.5, 0)
 				player.trigger_air_hang(0.65)
 				player.trigger_hitstop(0.065, 0.72)
 				s["vel"] = -push_dir * 12.0 + Vector3(0, 6.5, 0)
-				s["ai_state"] = "STAGGERED"
+				s["ai_state"] = AIState.STAGGERED
 				s["state_timer"] = 0.65
 				s["combo_left"] = 0
 				if player.dash_vfx:
@@ -572,8 +587,8 @@ func _commit_strike(dir: Vector2) -> void:
 				simulate_clash(true)
 				return
 
-			if ai_mode == AIMode.ADAPTIVE_RIVAL and player_habits.get(slot_key, 0.0) >= 0.9 and s["whiff_timer"] <= 0.0 and st != "STAGGERED":
-				s["ai_state"] = "Z-VANISH COUNTER!"
+			if ai_mode == AIMode.ADAPTIVE_RIVAL and player_habits.get(slot_key, 0.0) >= 0.9 and s["whiff_timer"] <= 0.0 and st != AIState.STAGGERED:
+				s["ai_state"] = AIState.Z_VANISH_COUNTER
 				td.global_position = player.global_position + player.global_transform.basis.z * 2.2
 				s["state_timer"] = 0.35
 				s["combo_left"] = 2
@@ -582,7 +597,7 @@ func _commit_strike(dir: Vector2) -> void:
 				player_habits[slot_key] = 0.0
 				return
 
-			var mult := 1.5 if (s["whiff_timer"] > 0.0 or st == "STAGGERED") else 1.0
+			var mult := 1.5 if (s["whiff_timer"] > 0.0 or st == AIState.STAGGERED) else 1.0
 			var dmg_out: float = float(data.get("dmg", 90.0)) * player.physical_strength * mult * tune("player_damage_mult", 1.0)
 			apply_damage(td, dmg_out, float(data.get("posture", 40.0)), fwd * float(data.get("knockback", 6.0)) + Vector3(0, float(data.get("launch_y", 0.0)), 0), mult > 1.0)
 
@@ -592,7 +607,7 @@ func _commit_strike(dir: Vector2) -> void:
 func apply_damage(t: Node3D, dmg: float, post_dmg: float, launch_vec: Vector3 = Vector3.ZERO, crit: bool = false) -> void:
 	if not target_stats.has(t): return
 	var s: Dictionary = target_stats[t]
-	if s.get("ai_state", "") == "DEAD": return
+	if int(s.get("ai_state", AIState.IDLE)) == AIState.DEAD: return
 	s["hp"] = maxf(0.0, s["hp"] - dmg)
 	s["posture"] = minf(s["max_posture"], s["posture"] + post_dmg * tune("posture_damage_mult", 1.0))
 	s["hit_flash"] = 0.16
@@ -603,7 +618,7 @@ func apply_damage(t: Node3D, dmg: float, post_dmg: float, launch_vec: Vector3 = 
 	_pop_damage_number(t.global_position + Vector3(0, 1.7, 0), dmg, Color(1.0, 0.92, 0.35) if crit else Color(1.0, 0.86, 0.45), crit)
 	_bump_combo()
 	if launch_vec.y > 6.0 or launch_vec.length() > 14.0:
-		s["ai_state"] = "LAUNCHED"
+		s["ai_state"] = AIState.LAUNCHED
 		s["state_timer"] = 0.75
 		s["combo_left"] = 0
 		_boss_anim(s, "guard_sway")
@@ -617,7 +632,7 @@ func apply_damage(t: Node3D, dmg: float, post_dmg: float, launch_vec: Vector3 = 
 		# Posture break is a reward window, NOT a full heal + reset (that made the
 		# boss effectively immortal and the fight unwinnable).
 		s["posture"] = 0.0
-		s["ai_state"] = "STAGGERED"
+		s["ai_state"] = AIState.STAGGERED
 		s["state_timer"] = 1.7
 		s["combo_left"] = 0
 		last_combat_action = "POSTURE BREAK — FREE HIT WINDOW!"
@@ -629,7 +644,7 @@ func apply_damage(t: Node3D, dmg: float, post_dmg: float, launch_vec: Vector3 = 
 func _kill_rival(t: Node3D, s: Dictionary) -> void:
 	s["hp"] = 0.0
 	s["posture"] = 0.0
-	s["ai_state"] = "DEAD"
+	s["ai_state"] = AIState.DEAD
 	s["state_timer"] = 999.0
 	s["combo_left"] = 0
 	var ko_dir := (t.global_position - player.global_position).normalized() if player else Vector3.BACK
@@ -656,7 +671,7 @@ func reset_duel() -> void:
 		var s: Dictionary = target_stats[td]
 		s["hp"] = s["max_hp"]
 		s["posture"] = 0.0
-		s["ai_state"] = "IDLE"
+		s["ai_state"] = AIState.IDLE
 		s["state_timer"] = 1.0
 		s["vel"] = Vector3.ZERO
 		s["combo_left"] = 0
@@ -696,7 +711,7 @@ func _move_body(td: Node3D, vel: Vector3, delta: float) -> void:
 
 func _update_enemy_ai(td: Node3D, s: Dictionary, delta: float, is_active_duelist: bool) -> void:
 	if not player or player.hitstop_timer > 0.0: return
-	if s["ai_state"] == "DEAD": return
+	if s["ai_state"] == AIState.DEAD: return
 	var to_p := player.global_position - td.global_position
 	var flat_to_p := Vector2(to_p.x, to_p.z)
 	var dist := to_p.length()
@@ -708,19 +723,19 @@ func _update_enemy_ai(td: Node3D, s: Dictionary, delta: float, is_active_duelist
 	var wp: Node3D = s.get("weapon", null)
 	if s["hit_flash"] > 0.0:
 		dmat.albedo_color = Color(1.0, 1.0, 1.0)
-	elif s["ai_state"] == "TELEGRAPH":
+	elif s["ai_state"] == AIState.TELEGRAPH:
 		dmat.albedo_color = Color(0.98, 0.12, 0.18)
 		td.rotation.x = deg_to_rad(18.0)
 		if wp and wp.name == "DummyWeaponPivot": wp.rotation_degrees = Vector3(75.0, -35.0, -65.0)
-	elif s["ai_state"] == "STRIKE_ACTIVE":
+	elif s["ai_state"] == AIState.STRIKE_ACTIVE:
 		dmat.albedo_color = Color(1.0, 0.88, 0.25)
 		td.rotation.x = deg_to_rad(-24.0)
 		if wp and wp.name == "DummyWeaponPivot": wp.rotation_degrees = Vector3(-85.0, 25.0, 40.0)
-	elif s["ai_state"] == "RAGDOLL_KO" or s["ai_state"] == "DEAD":
+	elif s["ai_state"] == AIState.RAGDOLL_KO or s["ai_state"] == AIState.DEAD:
 		dmat.albedo_color = Color(1.0, 0.45, 0.15)
 		td.rotation.x += 11.0 * delta
 		td.rotation.z += 8.5 * delta
-	elif s["ai_state"] == "STAGGERED" or s["ai_state"] == "BAITED_WHIFF!":
+	elif s["ai_state"] == AIState.STAGGERED or s["ai_state"] == AIState.BAITED_WHIFF:
 		dmat.albedo_color = Color(0.3, 0.85, 1.0)
 		td.rotation.x = deg_to_rad(14.0)
 		td.rotation.z = 0.0
@@ -735,24 +750,24 @@ func _update_enemy_ai(td: Node3D, s: Dictionary, delta: float, is_active_duelist
 		return
 
 	s["state_timer"] -= delta
-	match s["ai_state"]:
-		"IDLE", "PURSUIT":
+	match int(s["ai_state"]):
+		AIState.IDLE, AIState.PURSUIT:
 			if dist > 4.2 and dist < 38.0:
-				s["ai_state"] = "PURSUIT"
+				s["ai_state"] = AIState.PURSUIT
 				var move_dir := to_p.normalized()
 				var spd := 15.0 if ai_mode == AIMode.ADAPTIVE_RIVAL else 11.0
 				_move_body(td, Vector3(move_dir.x, 0.0, move_dir.z) * spd, delta)
 				if player.global_position.y - td.global_position.y > 2.0:
 					s["vel"].y = 14.0
 			elif dist <= 4.5 and s["state_timer"] <= 0.0:
-				s["ai_state"] = "TELEGRAPH"
+				s["ai_state"] = AIState.TELEGRAPH
 				s["state_timer"] = ai_telegraph_time
 				s["combo_left"] = 3 if ai_mode == AIMode.ADAPTIVE_RIVAL else 2
 				s["strike_hit_done"] = false
 				_boss_anim(s, "slash_up")
-		"TELEGRAPH":
+		AIState.TELEGRAPH:
 			if s["state_timer"] <= 0.0:
-				s["ai_state"] = "STRIKE_ACTIVE"
+				s["ai_state"] = AIState.STRIKE_ACTIVE
 				s["state_timer"] = 0.20
 				s["strike_hit_done"] = false
 				var lunge_dir := to_p.normalized()
@@ -763,26 +778,26 @@ func _update_enemy_ai(td: Node3D, s: Dictionary, delta: float, is_active_duelist
 					player.dash_vfx.spawn_slash_arc(td.global_position + Vector3(0, 1.1, 0) + lunge_dir * 0.7, lunge_dir, 25.0 * float(s["combo_left"]), Color(0.98, 0.18, 0.22))
 				if player.global_position.y > 1.8:
 					s["vel"].y = maxf(s["vel"].y, 4.5)
-		"STRIKE_ACTIVE":
+		AIState.STRIKE_ACTIVE:
 			if not s["strike_hit_done"] and dist <= 4.2:
 				s["strike_hit_done"] = true
 				_resolve_enemy_strike_on_player(td, s)
 			if s["state_timer"] <= 0.0:
 				s["combo_left"] -= 1
 				if s["combo_left"] > 0 and dist <= 6.5:
-					s["ai_state"] = "TELEGRAPH"
+					s["ai_state"] = AIState.TELEGRAPH
 					s["state_timer"] = maxf(0.22, ai_telegraph_time * 0.65)
 					_boss_anim(s, "slash_up")
 				else:
-					s["ai_state"] = "IDLE"
+					s["ai_state"] = AIState.IDLE
 					s["state_timer"] = ai_attack_cooldown
-		"STAGGERED", "BAITED_WHIFF!", "LAUNCHED", "Z-VANISH COUNTER!", "RAGDOLL_KO":
+		AIState.STAGGERED, AIState.BAITED_WHIFF, AIState.LAUNCHED, AIState.Z_VANISH_COUNTER, AIState.RAGDOLL_KO:
 			if s["state_timer"] <= 0.0:
-				if s["ai_state"] == "Z-VANISH COUNTER!":
-					s["ai_state"] = "TELEGRAPH"
+				if s["ai_state"] == AIState.Z_VANISH_COUNTER:
+					s["ai_state"] = AIState.TELEGRAPH
 					s["state_timer"] = 0.26
 				else:
-					s["ai_state"] = "IDLE"
+					s["ai_state"] = AIState.IDLE
 					s["state_timer"] = ai_attack_cooldown * 0.7
 
 func _resolve_enemy_strike_on_player(td: Node3D, s: Dictionary) -> void:
@@ -791,7 +806,7 @@ func _resolve_enemy_strike_on_player(td: Node3D, s: Dictionary) -> void:
 		_trigger_sonic_sway()
 		s["posture"] = minf(s["max_posture"], s["posture"] + 35.0)
 		if s["posture"] >= s["max_posture"]:
-			s["ai_state"] = "STAGGERED"
+			s["ai_state"] = AIState.STAGGERED
 			s["state_timer"] = 1.3
 			s["posture"] = 0.0
 			last_combat_action = "SWAY POSTURE BREAK!!"
@@ -911,7 +926,7 @@ func _physics_process(delta: float) -> void:
 					v.y -= 24.0 * g_mult * delta
 				else:
 					td.global_position.y = 1.0
-					if (s["ai_state"] == "RAGDOLL_KO" or s["ai_state"] == "DEAD") and v.y < -3.5:
+					if (s["ai_state"] == AIState.RAGDOLL_KO or s["ai_state"] == AIState.DEAD) and v.y < -3.5:
 						var b_factor := player.ragdoll_bouncy if player else 0.48
 						v.y = absf(v.y) * b_factor
 						if player and player.dash_vfx:
@@ -934,7 +949,7 @@ func spawn_story_rival(nd: Dictionary) -> void:
 	s["max_hp"] = max_h
 	s["hp"] = max_h
 	s["posture"] = 0.0
-	s["ai_state"] = "TELEGRAPH"
+	s["ai_state"] = AIState.TELEGRAPH
 	s["state_timer"] = 0.65
 	s["boss_name"] = str(nd.get("rival_name", "RIVAL BOSS"))
 	s["anim"] = s.get("anim", null)

@@ -1,105 +1,148 @@
 class_name WorldStoryManager
 extends Node
 
+# Story graph now lives in res://data/story_nodes.json (validated by story_test.gd
+# in verify.sh) instead of hardcoded dictionaries, and the player's position in it
+# is persisted next to the combat tuning in user://dev_profile.json.
+const STORY_PATH: String = "res://data/story_nodes.json"
+const PROFILE_PATH: String = "user://dev_profile.json"
+const SCHEMA_VERSION: int = 1
+
 var active_origin_id: String = "Profile_1"
 var current_node_id: String = "node_start_sanctuary"
 var story_flags: Dictionary = {}
 var completed_nodes: Array[String] = []
+var unlocks: Dictionary = {}
+var schema_ok: bool = false
+var last_blocked_reason: String = ""
 
-var origins: Dictionary = {
-	"Profile_1": {
-		"title": "Ash Inquisitor (Ink Cathedral)",
-		"start_node": "node_start_sanctuary",
-		"eye_shape": 0, "eye_hue": 0.98
-	},
-	"Profile_2": {
-		"title": "Gilded Veil Apostate (Cathedral Choir)",
-		"start_node": "node_boss_veil_duel",
-		"eye_shape": 2, "eye_hue": 0.14
-	},
-	"Profile_3": {
-		"title": "Silicon Nomad (Blame! Megastructure)",
-		"start_node": "node_megastructure_descent",
-		"eye_shape": 1, "eye_hue": 0.52
-	},
-	"Profile_4": {
-		"title": "Eclipse Sovereign (Gothic Dusk)",
-		"start_node": "node_eclipse_summit",
-		"eye_shape": 3, "eye_hue": 0.02
-	}
-}
+var origins: Dictionary = {}
+var story_nodes: Dictionary = {}
 
-var story_nodes: Dictionary = {
-	"node_start_sanctuary": {
-		"title": "Node 1: The Shattered Threshold",
-		"region": "INK_CATHEDRAL",
-		"rival_name": "INQUISITOR VANGUARD",
-		"rival_slots": {"Slot_HeadMask_": "HERO", "Slot_VeilCloak_": "VEIL", "Slot_UpperGarb_": "HERO", "Slot_LowerSkirt_": "VEIL", "Slot_Weapon_": "HERO"},
-		"rival_scale": 1.05,
-		"rival_hp": 1500.0,
-		"desc": "You wake beneath the weeping arches of the Ink Cathedral. A scarred Inquisitor in hybrid obsidian-and-lace vestments blocks the stairway to the Megastructure elevator.",
-		"choices": [
-			{"text": "Draw blade & challenge the Gilded Veil Apostate", "next": "node_boss_veil_duel", "flag": "fought_inquisitor"},
-			{"text": "Descend into the Blame! Megastructure shaft", "next": "node_megastructure_descent", "flag": "took_elevator"}
-		]
-	},
-	"node_boss_veil_duel": {
-		"title": "Node 2: The Gilded Veil Duel",
-		"region": "INK_CATHEDRAL",
-		"rival_name": "LADY OF THE GILDED VEIL",
-		"rival_slots": {"Slot_HeadMask_": "VEIL", "Slot_VeilCloak_": "VEIL", "Slot_UpperGarb_": "VEIL", "Slot_LowerSkirt_": "VEIL", "Slot_Weapon_": "VEIL"},
-		"rival_scale": 1.12,
-		"rival_hp": 1950.0,
-		"desc": "The Gilded Veil Boss descends in a storm of porcelain lilies and gold filigree. Her ritual blade hums with cathedral resonance.",
-		"choices": [
-			{"text": "Shatter her posture & claim the Cathedral Relic", "next": "node_eclipse_summit", "flag": "claimed_relic"},
-			{"text": "Spare her & pursue the Silicon Nomad into the Abyss", "next": "node_megastructure_descent", "flag": "allied_with_veil"}
-		]
-	},
-	"node_megastructure_descent": {
-		"title": "Node 3: The Abyssal Megastructure (Blame!)",
-		"region": "BLAME_MEGASTRUC",
-		"rival_name": "SILICON NOMADEXECUTIONER",
-		"rival_slots": {"Slot_HeadMask_": "HERO", "Slot_VeilCloak_": "NONE", "Slot_UpperGarb_": "HERO", "Slot_LowerSkirt_": "HERO", "Slot_Weapon_": "VEIL"},
-		"rival_scale": 1.18,
-		"rival_hp": 2200.0,
-		"desc": "Cold cyan fog rolls across brutalist megastructure bridges. The Silicon Nomad intercepts your path with Sandevistan afterimages.",
-		"choices": [
-			{"text": "Overload the reactor & ascend to the Gothic Eclipse", "next": "node_eclipse_summit", "flag": "reactor_overloaded"},
-			{"text": "Return to the Ink Cathedral Sanctuary", "next": "node_start_sanctuary", "flag": "returned_sanctuary"}
-		]
-	},
-	"node_eclipse_summit": {
-		"title": "Node 4: The Gothic Eclipse Convergence",
-		"region": "GOTHIC_ECLIPSE",
-		"rival_name": "ECLIPSE SOVEREIGN (FINAL RIVAL)",
-		"rival_slots": {"Slot_HeadMask_": "VEIL", "Slot_VeilCloak_": "HERO", "Slot_UpperGarb_": "VEIL", "Slot_LowerSkirt_": "HERO", "Slot_Weapon_": "HERO"},
-		"rival_scale": 1.25,
-		"rival_hp": 2600.0,
-		"desc": "Beneath a blood-red eclipsed sun, your intertwined paths collide. The Eclipse Sovereign awaits at the shattered altar for the final duel.",
-		"choices": [
-			{"text": "Begin New Cycle (Keep Unlocks & Replay)", "next": "node_start_sanctuary", "flag": "cycle_complete"}
-		]
-	}
-}
+func _ready() -> void:
+	load_story_data()
+	load_state()
+
+# Returns false (and leaves the story empty) if the JSON is missing or malformed.
+# verify.sh runs story_test.gd against the same file, so a broken edit cannot ship.
+func load_story_data() -> bool:
+	schema_ok = false
+	if not FileAccess.file_exists(STORY_PATH):
+		push_warning("WorldStory: %s is missing" % STORY_PATH)
+		return false
+	var parsed = JSON.parse_string(FileAccess.get_file_as_string(STORY_PATH))
+	if typeof(parsed) != TYPE_DICTIONARY:
+		push_warning("WorldStory: %s is not a JSON object" % STORY_PATH)
+		return false
+	var doc: Dictionary = parsed
+	if int(doc.get("schema_version", 0)) != SCHEMA_VERSION:
+		push_warning("WorldStory: schema_version %s unsupported" % str(doc.get("schema_version", -1)))
+		return false
+	if typeof(doc.get("origins", null)) != TYPE_DICTIONARY or typeof(doc.get("nodes", null)) != TYPE_DICTIONARY:
+		push_warning("WorldStory: origins/nodes missing")
+		return false
+	var loaded_nodes: Dictionary = doc["nodes"]
+	if loaded_nodes.is_empty():
+		push_warning("WorldStory: no nodes")
+		return false
+	origins = doc["origins"]
+	story_nodes = loaded_nodes
+	if not story_nodes.has(current_node_id):
+		current_node_id = str((origins.get(active_origin_id, {}) as Dictionary).get("start_node", story_nodes.keys()[0]))
+	schema_ok = true
+	return true
 
 func get_current_node() -> Dictionary:
-	return story_nodes.get(current_node_id, story_nodes["node_start_sanctuary"])
+	var node = story_nodes.get(current_node_id, {})
+	return node if typeof(node) == TYPE_DICTIONARY else {}
+
+func node_exists(node_id: String) -> bool:
+	return story_nodes.has(node_id)
 
 func select_origin(profile_key: String) -> Dictionary:
 	if origins.has(profile_key):
 		active_origin_id = profile_key
-		current_node_id = str(origins[profile_key].get("start_node", "node_start_sanctuary"))
+		current_node_id = str((origins[profile_key] as Dictionary).get("start_node", current_node_id))
+		save_state()
 	return get_current_node()
+
+func _flags_met(choice: Dictionary) -> bool:
+	var required: Array = choice.get("requires_flags", [])
+	for f in required:
+		if not bool(story_flags.get(str(f), false)):
+			return false
+	return true
 
 func make_choice(choice_idx: int) -> Dictionary:
 	var node := get_current_node()
+	if node.is_empty():
+		return node
 	var choices: Array = node.get("choices", [])
-	if choice_idx >= 0 and choice_idx < choices.size():
-		var ch: Dictionary = choices[choice_idx]
-		var flag: String = str(ch.get("flag", ""))
-		if not flag.is_empty():
-			story_flags[flag] = true
-		completed_nodes.append(current_node_id)
-		current_node_id = str(ch.get("next", "node_start_sanctuary"))
+	if choice_idx < 0 or choice_idx >= choices.size():
+		return node
+	var ch: Dictionary = choices[choice_idx]
+	if not _flags_met(ch):
+		# Reserved for later gating: every choice currently requires nothing.
+		last_blocked_reason = "LOCKED: needs " + str(ch.get("requires_flags", []))
+		return node
+	last_blocked_reason = ""
+	var flag: String = str(ch.get("flag", ""))
+	if not flag.is_empty():
+		story_flags[flag] = true
+	for u in ch.get("grants_unlocks", []):
+		unlocks[str(u)] = true
+	completed_nodes.append(current_node_id)
+	current_node_id = str(ch.get("next", current_node_id))
+	save_state()
 	return get_current_node()
+
+# --- Persistence (shares user://dev_profile.json with CombatData) -------------
+func save_state() -> void:
+	if not schema_ok:
+		return
+	var doc: Dictionary = {}
+	if FileAccess.file_exists(PROFILE_PATH):
+		var old_f := FileAccess.open(PROFILE_PATH, FileAccess.READ)
+		if old_f:
+			var old = JSON.parse_string(old_f.get_as_text())
+			if typeof(old) == TYPE_DICTIONARY:
+				doc = old
+	doc["story"] = {
+		"schema_version": SCHEMA_VERSION,
+		"active_origin_id": active_origin_id,
+		"current_node_id": current_node_id,
+		"story_flags": story_flags,
+		"completed_nodes": completed_nodes,
+		"unlocks": unlocks,
+	}
+	var w := FileAccess.open(PROFILE_PATH, FileAccess.WRITE)
+	if w:
+		w.store_string(JSON.stringify(doc, "\t"))
+
+func load_state() -> void:
+	if not FileAccess.file_exists(PROFILE_PATH):
+		return
+	var f := FileAccess.open(PROFILE_PATH, FileAccess.READ)
+	if not f:
+		return
+	var parsed = JSON.parse_string(f.get_as_text())
+	if typeof(parsed) != TYPE_DICTIONARY or not (parsed as Dictionary).has("story"):
+		return
+	var st = (parsed as Dictionary)["story"]
+	if typeof(st) != TYPE_DICTIONARY:
+		return
+	var s: Dictionary = st
+	if int(s.get("schema_version", 0)) != SCHEMA_VERSION:
+		return
+	active_origin_id = str(s.get("active_origin_id", active_origin_id))
+	var saved_node := str(s.get("current_node_id", current_node_id))
+	if story_nodes.is_empty() or story_nodes.has(saved_node):
+		current_node_id = saved_node
+	if typeof(s.get("story_flags", null)) == TYPE_DICTIONARY:
+		story_flags = s["story_flags"]
+	if typeof(s.get("completed_nodes", null)) == TYPE_ARRAY:
+		completed_nodes.clear()
+		for n in s["completed_nodes"]:
+			completed_nodes.append(str(n))
+	if typeof(s.get("unlocks", null)) == TYPE_DICTIONARY:
+		unlocks = s["unlocks"]

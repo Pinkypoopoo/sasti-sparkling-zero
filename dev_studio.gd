@@ -288,6 +288,33 @@ func _reset_combat_feel() -> void:
 		c.queue_free()
 	_fill_combat_feel(combat_feel_vb)
 
+func _rebuild_combat_feel() -> void:
+	if not combat_feel_vb: return
+	for c in combat_feel_vb.get_children():
+		combat_feel_vb.remove_child(c)
+		c.queue_free()
+	_fill_combat_feel(combat_feel_vb)
+
+# Presets first, then the raw numbers: picking a tier stamps render_scale, and the
+# user can still nudge it afterwards. Auto detection turns itself off on touch.
+func _cycle_quality_tier() -> void:
+	if not (player and player.data_store): return
+	var ds = player.data_store
+	var tier: int = (int(round(ds.tuning_get("quality_tier", 2.0))) + 1) % CombatData.QUALITY_TIERS.size()
+	ds.tuning["quality_tier"] = tier
+	ds.tuning["render_scale"] = float(ds.tier_profile(tier)["scale"])
+	ds.tuning["auto_quality"] = false
+	_rebuild_combat_feel()
+
+func _step_render_scale() -> void:
+	if not (player and player.data_store): return
+	var ds = player.data_store
+	var s: float = ds.tuning_get("render_scale", 0.92) + 0.05
+	if s > 0.995: s = 0.5
+	ds.tuning["render_scale"] = clampf(s, 0.5, 1.0)
+	ds.tuning["auto_quality"] = false
+	_rebuild_combat_feel()
+
 func _cycle_region() -> void:
 	region_idx = (region_idx + 1) % 3
 	var env := world_env.environment if world_env else null
@@ -778,7 +805,7 @@ func _draw() -> void:
 			draw_rect(Rect2(sp - Vector2(45, -10), Vector2(90, 5)), Color(0.05, 0.05, 0.07, 0.9))
 			draw_rect(Rect2(sp - Vector2(44, -9), Vector2(88 * tpo, 3)), Color(1.0, 0.82, 0.15))
 
-			var st_txt := str(s["ai_state"])
+			var st_txt: String = combat.ai_state_label(s)
 			var st_col := Color(1, 0.9, 0.4)
 			if st_txt == "TELEGRAPH":
 				st_txt = "!! PARRY / SWAY NOW !!"
@@ -926,12 +953,20 @@ func _p5_row_rect(idx: int) -> Rect2:
 	return Rect2(Vector2(bx - 6.0, P5_ROW_TOP + float(idx) * h), Vector2(w, h - 3.0))
 
 func _handle_p5_blade_tap(pos: Vector2) -> void:
-	if pos.y < 54.0 or not fp_mod: return
+	if not fp_mod: return
+	if not bool(fp_mod.get("p5_pause_active")): return
+	# Consume the touch before anything else. Without this the same physical tap
+	# was also delivered to the Button layer underneath (btn_menu), which closed
+	# the menu again, so every row looked like it needed a second tap.
+	get_viewport().set_input_as_handled()
+	if pos.y < 54.0: return
 	for i in range(_p5_row_count()):
 		if _p5_row_rect(i).has_point(pos):
 			fp_mod.set("p5_selected_idx", i)
 			_p5_menu_action(i)
 			return
+	# Only the character-preview side rolls a new pose. Tapping the empty gutter on
+	# the right no longer silently changes the camera.
 	if pos.x < get_viewport_rect().size.x * 0.5:
 		fp_mod.call("roll_next_pose")
 
@@ -977,12 +1012,16 @@ func _p5_menu_action(idx: int) -> void:
 			dev_panel.visible = true
 			tab_container.current_tab = 7
 		14:
+			_cycle_quality_tier()
+		15:
+			_step_render_scale()
+		16:
 			if player and player.data_store:
 				player.data_store.tuning["immortal_mode"] = not player.data_store.tuning_bool("immortal_mode", false)
-		15:
+		17:
 			fp_mod.call("toggle_p5_pause")
 			if combat: combat.reset_duel()
-		16:
+		18:
 			fp_mod.call("toggle_p5_pause")
 
 func _p5_value_text(idx: int) -> String:
@@ -994,8 +1033,13 @@ func _p5_value_text(idx: int) -> String:
 		6: return REGION_NAMES[region_idx]
 		7: return GestureCombat.AIMode.keys()[combat.ai_mode] if combat else "-"
 		8: return _fps_text()
-		14: return "ON" if player and player.data_store and player.data_store.tuning_bool("immortal_mode", false) else "OFF"
-		15: return "VICTORY" if combat and combat.result_state == "VICTORY" else ("DEFEAT" if combat and combat.result_state == "DEFEAT" else "")
+		14:
+			if not (player and player.data_store): return "-"
+			var auto_txt: String = " AUTO" if player.data_store.tuning_bool("auto_quality", true) else ""
+			return player.data_store.tier_label(int(round(player.data_store.tuning_get("quality_tier", 2.0)))) + auto_txt
+		15: return "%.2f" % (player.data_store.tuning_get("render_scale", 0.92) if player and player.data_store else 1.0)
+		16: return "ON" if player and player.data_store and player.data_store.tuning_bool("immortal_mode", false) else "OFF"
+		17: return "VICTORY" if combat and combat.result_state == "VICTORY" else ("DEFEAT" if combat and combat.result_state == "DEFEAT" else "")
 	return ""
 
 func _draw_p5_menu() -> void:

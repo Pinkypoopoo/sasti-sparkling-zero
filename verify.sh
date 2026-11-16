@@ -29,7 +29,7 @@ scan() { # $1 = gate label, $2 = log file
 }
 
 # --- GUARDRAIL 0: engine version ---------------------------------------------
-echo "[0/6] engine"
+echo "[0/7] engine"
 command -v "$GODOT_BIN" >/dev/null 2>&1 \
     || fail "Godot not found. Install Godot ${REQUIRED_GODOT}.x or run: GODOT_BIN=/path/to/godot bash verify.sh"
 GODOT_VER="$("$GODOT_BIN" --version 2>/dev/null | head -n1)"
@@ -39,14 +39,14 @@ case "$GODOT_VER" in
 esac
 
 # --- GUARDRAIL 1: required files ---------------------------------------------
-echo "[1/6] required files"
-for f in combat_data.gd dash_vfx.gd character_body_3d.gd gesture_combat.gd dev_studio.gd world_story.gd flame_p5_pvp.gd smoke_test.gd; do
+echo "[1/7] required files"
+for f in combat_data.gd dash_vfx.gd character_body_3d.gd gesture_combat.gd dev_studio.gd world_story.gd flame_p5_pvp.gd smoke_test.gd data/story_nodes.json; do
     [ -f "$f" ] || fail "GUARDRAIL_VIOLATION: missing core file $f"
 done
-ok "8 core scripts present"
+ok "8 core scripts + story data present"
 
 # --- GUARDRAIL 2: feature presence (blocks silent AI deletions) ---------------
-echo "[2/6] features"
+echo "[2/7] features"
 REQUIRED_SIGNATURES=(
     "1. Camera & Physics:dev_studio.gd"
     "2. Profile & Dash:dev_studio.gd"
@@ -77,6 +77,23 @@ REQUIRED_SIGNATURES=(
     "_move_body:gesture_combat.gd"
     "MAX_USER_BLOCKS:dash_vfx.gd"
     "COMBAT_TEST_PASS:combat_test.gd"
+    "STORY_SCHEMA_PASS:story_test.gd"
+    # V4: device quality tiers, SDF face pipeline, typed AI state, story loader
+    "QUALITY_TIERS:combat_data.gd"
+    "detect_quality_tier:combat_data.gd"
+    "tier_profile:combat_data.gd"
+    "apply_quality_tier:character_body_3d.gd"
+    "sdf_face_tex:character_body_3d.gd"
+    "face_sdf_enabled:character_body_3d.gd"
+    "debris_cap:dash_vfx.gd"
+    "AIState:gesture_combat.gd"
+    "ai_state_label:gesture_combat.gd"
+    "_cycle_quality_tier:dev_studio.gd"
+    "_rebuild_combat_feel:dev_studio.gd"
+    "load_story_data:world_story.gd"
+    "save_state:world_story.gd"
+    "paint_vertex_channels:build_models.py"
+    "proxy_smooth_normals:build_models.py"
 )
 for item in "${REQUIRED_SIGNATURES[@]}"; do
     sig="${item%%:*}"
@@ -86,7 +103,7 @@ done
 ok "${#REQUIRED_SIGNATURES[@]} signatures intact"
 
 # --- GUARDRAIL 2b: project invariants ---------------------------------------
-echo "[2b/6] invariants"
+echo "[2b/7] invariants"
 # 60 Hz physics is only smooth on a 120-165 Hz panel WITH interpolation enabled.
 grep -q "physics_interpolation=true" project.godot \
     || fail "physics/common/physics_interpolation is OFF: 60 Hz physics will micro-stutter on a 120 Hz+ panel"
@@ -101,7 +118,7 @@ fi
 ok "interpolation on, no physics bone bodies, combat on the physics tick"
 
 # --- GUARDRAIL 3: assets actually import -------------------------------------
-echo "[3/6] asset import"
+echo "[3/7] asset import"
 # A .blend anywhere in the import path aborts the whole import batch (verified on 4.7).
 STRAY_BLEND="$(find . -name '*.blend' -not -path './art/*' -not -path './.godot/*' 2>/dev/null | head -n1)"
 [ -z "$STRAY_BLEND" ] || fail "blender source inside the import path: $STRAY_BLEND - move it to art/ (it aborts headless asset import)"
@@ -124,13 +141,13 @@ else
 fi
 
 # --- GUARDRAIL 4: headless boot ----------------------------------------------
-echo "[4/6] headless boot (120 frames)"
+echo "[4/7] headless boot (120 frames)"
 "$GODOT_BIN" --headless --path . --quit-after 120 > "$TMP_DIR/boot.log" 2>&1
 scan "headless boot" "$TMP_DIR/boot.log"
 ok "booted clean"
 
 # --- GUARDRAIL 5: smoke test (touch input + dev panel) -----------------------
-echo "[5/6] smoke test"
+echo "[5/7] smoke test"
 "$GODOT_BIN" --headless --path . --script res://smoke_test.gd > "$TMP_DIR/smoke.log" 2>&1
 SMOKE_RC=$?
 scan "smoke test" "$TMP_DIR/smoke.log"
@@ -139,7 +156,7 @@ grep -q "SMOKE_TEST_PASS" "$TMP_DIR/smoke.log" \
 ok "touch input + dev panel"
 
 # --- GUARDRAIL 6: combat loop (damage, KO, retry, tuning, save/load) ---------
-echo "[6/6] combat loop"
+echo "[6/7] combat loop"
 "$GODOT_BIN" --headless --path . --script res://combat_test.gd > "$TMP_DIR/combat.log" 2>&1
 COMBAT_RC=$?
 # The dummy renderer (servers/rendering/dummy) logs a null theme/font material when
@@ -150,8 +167,17 @@ sed -i '/^ERROR: Parameter "material" is null\.$/{N;/at: material_get_instance_s
 scan "combat loop" "$TMP_DIR/combat.log"
 grep -q "COMBAT_TEST_PASS" "$TMP_DIR/combat.log" \
     || fail "combat loop test did not reach COMBAT_TEST_PASS (exit $COMBAT_RC)"
-ok "25 combat checks (hit, combo, KO, retry, immortal, defeat, tuning, menu)"
+ok "combat checks (hit, combo, KO, retry, immortal, defeat, tuning, tiers, menu)"
+
+# --- GUARDRAIL 7: story schema ----------------------------------------------
+echo "[7/7] story schema"
+"$GODOT_BIN" --headless --path . --script res://story_test.gd > "$TMP_DIR/story.log" 2>&1
+STORY_RC=$?
+scan "story schema" "$TMP_DIR/story.log"
+grep -q "STORY_SCHEMA_PASS" "$TMP_DIR/story.log" \
+    || fail "story schema test did not reach STORY_SCHEMA_PASS (exit $STORY_RC): $(grep -m2 'FAIL' "$TMP_DIR/story.log" | tr '\n' ' ')"
+ok "data/story_nodes.json valid (origins, nodes, choices, links)"
 
 echo
-echo "VERIFY_PASSED: 8 tabs, ${#REQUIRED_SIGNATURES[@]} signatures, invariants, asset import, boot, smoke and combat loop all clean."
+echo "VERIFY_PASSED: 8 tabs, ${#REQUIRED_SIGNATURES[@]} signatures, invariants, import, boot, smoke, combat loop, story schema."
 exit 0

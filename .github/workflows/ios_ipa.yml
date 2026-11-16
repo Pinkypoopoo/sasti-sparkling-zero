@@ -10,14 +10,14 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Download Godot 4.3 Stable & Export Templates for macOS
+      - name: Download Godot 4.7 Stable & Export Templates for macOS
         run: |
-          curl -sL https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_macos.universal.zip -o godot.zip
+          curl -sL https://github.com/godotengine/godot/releases/download/4.7-stable/Godot_v4.7-stable_macos.universal.zip -o godot.zip
           unzip -q godot.zip
-          mkdir -p ~/Library/Application\ Support/Godot/export_templates/4.3.stable
-          curl -sL https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_export_templates.tpz -o templates.tpz
+          mkdir -p ~/Library/Application\ Support/Godot/export_templates/4.7.stable
+          curl -sL https://github.com/godotengine/godot/releases/download/4.7-stable/Godot_v4.7-stable_export_templates.tpz -o templates.tpz
           unzip -q templates.tpz
-          mv templates/* ~/Library/Application\ Support/Godot/export_templates/4.3.stable/
+          mv templates/* ~/Library/Application\ Support/Godot/export_templates/4.7.stable/
 
       - name: Export Xcode Project & Package Unsigned IPA
         run: |

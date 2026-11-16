@@ -24,6 +24,8 @@ var slash_idx: int = 0
 
 var destructible_pillars: Array[Dictionary] = []
 var debris_pool: Array[Dictionary] = []
+# Quality tiers shrink this: simultaneous rubble chunks are fill-rate, not logic.
+var debris_cap: int = 28
 var crater_pool: Array[MeshInstance3D] = []
 var crater_idx: int = 0
 var stone_mat: StandardMaterial3D = null
@@ -405,6 +407,13 @@ func check_destruction(impact_pos: Vector3, radius: float, impulse_dir: Vector3,
 
 func _burst_debris(origin: Vector3, dir: Vector3, count: int) -> void:
 	var spawned := 0
+	var active := 0
+	for d in debris_pool:
+		if d["timer"] > 0.0:
+			active += 1
+	var room: int = clampi(debris_cap - active, 0, debris_pool.size())
+	if room <= 0:
+		return
 	var base_d := dir.normalized() if dir.length_squared() > 0.01 else Vector3.UP
 	for d in debris_pool:
 		if d["timer"] <= 0.0:
@@ -416,7 +425,7 @@ func _burst_debris(origin: Vector3, dir: Vector3, count: int) -> void:
 			d["timer"] = 1.6
 			mi.visible = true
 			spawned += 1
-			if spawned >= count:
+			if spawned >= count or spawned >= room:
 				break
 
 func reset_destructibles() -> void:

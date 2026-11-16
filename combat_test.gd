@@ -73,7 +73,7 @@ func _run() -> void:
 	# --- 2. KO -> real victory, no silent full heal --------------------------
 	combat.apply_damage(td, 9999.0, 0.0, Vector3(0, 8.0, 12.0))
 	check(float(s["hp"]) <= 0.0, "rival HP stays at 0 after a lethal hit")
-	check(str(s["ai_state"]) == "DEAD", "rival enters DEAD state")
+	check(int(s["ai_state"]) == combat.AIState.DEAD, "rival enters DEAD state")
 	check(str(combat.result_state) == "VICTORY", "result_state == VICTORY")
 	Engine.time_scale = 1.0
 
@@ -81,7 +81,7 @@ func _run() -> void:
 	combat.reset_duel()
 	check(str(combat.result_state) == "", "reset_duel clears the result")
 	check(is_equal_approx(float(s["hp"]), float(s["max_hp"])), "reset_duel restores rival HP")
-	check(str(s["ai_state"]) == "IDLE", "reset_duel puts rival back to IDLE")
+	check(int(s["ai_state"]) == combat.AIState.IDLE, "reset_duel puts rival back to IDLE")
 	check(not bool(player.is_defeated), "reset_duel revives the player")
 
 	# --- 4. Sandbox Immortal ------------------------------------------------
@@ -127,7 +127,7 @@ func _run() -> void:
 	check(int(studio.tab_container.get_tab_count()) == 8, "Dev Studio has 8 tabs (Combat Feel added)")
 	check(studio.combat_feel_vb != null and studio.combat_feel_vb.get_child_count() >= 12, "Combat Feel tab generated its rows")
 	var rows: int = int(studio._p5_row_count())
-	check(rows == 17, "in-game menu has 17 rows")
+	check(rows == 19, "in-game menu has 19 rows")
 	var vp: Vector2 = studio.get_viewport_rect().size
 	check(studio._p5_row_rect(rows - 1).end.y <= vp.y, "last menu row fits on screen")
 
@@ -135,8 +135,44 @@ func _run() -> void:
 	combat._boss_anim(s, "slash_up")
 	check(true, "_boss_anim is safe to call")
 
+	# --- 10. Quality tiers drive the live viewport -------------------------
+	player.data_store.tuning["auto_quality"] = false
+	player.data_store.tuning["quality_tier"] = 0
+	player.data_store.tuning["render_scale"] = 0.65
+	player.apply_quality_tier()
+	check(is_equal_approx(player.get_viewport().scaling_3d_scale, 0.65), "LOW tier applies 0.65 render scale")
+	check(int(player.get_viewport().msaa_3d) == Viewport.MSAA_DISABLED, "LOW tier disables MSAA")
+	check(int(player.dash_vfx.debris_cap) == 8, "LOW tier caps debris at 8")
+	player.data_store.tuning["quality_tier"] = 3
+	player.data_store.tuning["render_scale"] = 1.0
+	player.apply_quality_tier()
+	check(is_equal_approx(player.get_viewport().scaling_3d_scale, 1.0), "ULTRA tier applies full render scale")
+	check(player.anime_mat.next_pass != null, "ULTRA tier keeps the ink outline pass")
+	check(not player.face_sdf_active, "masked characters stay off the SDF face path")
+	# The detector must never claim ULTRA for a potato GPU name.
+	check(player.data_store.tier_label(0) == "LOW" and player.data_store.tier_label(3) == "ULTRA", "tier labels resolve")
+
+	# --- 11. One tap = one menu action -------------------------------------
+	var fp = studio.fp_mod
+	fp.set("p5_pause_active", true)
+	studio.fps_mode_idx = 0
+	var target_row: int = 8
+	var row_rect: Rect2 = studio._p5_row_rect(target_row)
+	studio._handle_p5_blade_tap(row_rect.get_center())
+	check(studio.fps_mode_idx == 1, "a single tap executes the tapped row once")
+	check(int(fp.get("p5_selected_idx")) == target_row, "the tapped row is selected")
+	var after_one_tap: int = studio.fps_mode_idx
+	var vpx: float = studio.get_viewport_rect().size.x
+	studio._handle_p5_blade_tap(Vector2(vpx - 2.0, row_rect.get_center().y))
+	check(studio.fps_mode_idx == after_one_tap, "tapping outside a row fires nothing")
+	fp.set("p5_pause_active", false)
+	studio.fps_mode_idx = 0
+	studio._apply_display_mode()
+
 	# Leave no test tuning behind for the next run.
 	player.data_store.reset_tuning()
+	player.data_store.refresh_auto_quality()
+	player.apply_quality_tier()
 	combat.reset_duel()
 
 func _finish() -> void:

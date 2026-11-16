@@ -138,6 +138,13 @@ var active_skeleton: Skeleton3D = null
 var sword_bone_attachment: BoneAttachment3D = null
 var sword_hitbox_area: Area3D = null
 
+# --- Device quality tier + NPR face feed ---------------------------------
+var sdf_face_tex: Texture2D = null
+var face_sdf_active: bool = false
+var afterimage_profile: bool = false
+var _quality_afterimage_ok: bool = true
+var _applied_tier: int = -99
+
 func _ready() -> void:
 	DirAccess.make_dir_recursive_absolute("user://models")
 	DirAccess.make_dir_recursive_absolute("user://vfx")
@@ -163,6 +170,8 @@ func _ready() -> void:
 	apply_character_proportions()
 	update_cel_shader(cel_cut_threshold, outline_width, rim_strength)
 	update_eye_shader()
+	_build_sdf_face_texture()
+	apply_quality_tier()
 
 	if not DisplayServer.is_touchscreen_available():
 		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
@@ -180,6 +189,25 @@ uniform float cel_cut : hint_range(0.0, 1.0) = 0.45;
 uniform float hatch_width : hint_range(0.0, 0.3) = 0.08;
 uniform float rim_str : hint_range(0.0, 2.5) = 0.9;
 
+// Vertex color packing (see build_models.py):
+//   R = shadow threshold bias, G = outline weight, B = spec/matcap mask,
+//   A = 1.0 on unmasked anime-face skin (enables the SDF face path).
+uniform float vertex_bias : hint_range(0.0, 2.0) = 0.0;
+uniform float face_sdf_enabled : hint_range(0.0, 1.0) = 0.0;
+uniform float face_softness : hint_range(0.01, 0.25) = 0.06;
+uniform sampler2D sdf_face_tex : source_color, filter_linear, repeat_disable;
+uniform vec3 head_forward = vec3(0.0, 0.0, -1.0);
+uniform vec3 head_right = vec3(1.0, 0.0, 0.0);
+
+// COLOR and UV are vertex/fragment built-ins; light() cannot read them directly.
+varying vec4 v_col;
+varying vec2 v_uv;
+
+void vertex() {
+	v_col = COLOR;
+	v_uv = UV;
+}
+
 void fragment() {
 	ALBEDO = albedo.rgb;
 	ROUGHNESS = 0.85;
@@ -187,20 +215,40 @@ void fragment() {
 }
 
 void light() {
-	float NdotL = clamp(dot(NORMAL, LIGHT), 0.0, 1.0);
 	vec3 H = normalize(LIGHT + VIEW);
 	float spec = step(0.88, pow(max(dot(NORMAL, H), 0.0), 16.0));
 	float rim = step(0.78, 1.0 - clamp(dot(NORMAL, VIEW), 0.0, 1.0));
 
-	float hatch_pattern = step(0.0, sin((FRAGCOORD.x + FRAGCOORD.y) * 0.95));
-	vec3 ink_lit = ALBEDO * LIGHT_COLOR * ATTENUATION;
-	vec3 ink_hatch = mix(shadow_color.rgb, ink_lit, hatch_pattern * 0.65);
+	vec3 band_color = vec3(0.0);
 
-	vec3 band_color = shadow_color.rgb;
-	if (NdotL >= cel_cut + hatch_width) {
-		band_color = ink_lit;
-	} else if (NdotL >= cel_cut) {
-		band_color = ink_hatch;
+	// Unmasked anime face: swap the N-dot-L band for a horizontally shifted SDF
+	// mask so the shadow terminator follows the light instead of the topology.
+	if (face_sdf_enabled > 0.5 && v_col.a > 0.5) {
+		vec3 hf = normalize((VIEW_MATRIX * vec4(head_forward, 0.0)).xyz);
+		vec3 hr = normalize((VIEW_MATRIX * vec4(head_right, 0.0)).xyz);
+		vec3 lh = normalize(vec3(LIGHT.x, 0.0, LIGHT.z));
+		float f_dot_l = dot(normalize(hf.xz), normalize(lh.xz));
+		float r_dot_l = dot(normalize(hr.xz), normalize(lh.xz));
+		vec2 suv = vec2(r_dot_l > 0.0 ? 1.0 - v_uv.x : v_uv.x, v_uv.y);
+		float thresh = 0.5 - f_dot_l * 0.5;
+		float sdf = texture(sdf_face_tex, suv).r;
+		float face_lit = step(0.5, smoothstep(thresh - face_softness, thresh + face_softness, sdf));
+		band_color = mix(shadow_color.rgb * 1.25, ALBEDO * LIGHT_COLOR * ATTENUATION, face_lit);
+	} else {
+		// Armor / cloth / masked head: 2-band cel with diagonal ink hatch.
+		// vertex_bias 0 keeps the pre-vertex-color look exactly; raise it to 1..2
+		// once the models actually carry a packed COLOR layer.
+		float bias = mix(1.0, v_col.r * 2.0, clamp(vertex_bias, 0.0, 1.0));
+		float NdotL = clamp(dot(NORMAL, LIGHT) * bias, 0.0, 1.0);
+		float hatch_pattern = step(0.0, sin((FRAGCOORD.x + FRAGCOORD.y) * 0.95));
+		vec3 ink_lit = ALBEDO * LIGHT_COLOR * ATTENUATION;
+		vec3 ink_hatch = mix(shadow_color.rgb, ink_lit, hatch_pattern * 0.65);
+		band_color = shadow_color.rgb;
+		if (NdotL >= cel_cut + hatch_width) {
+			band_color = ink_lit;
+		} else if (NdotL >= cel_cut) {
+			band_color = ink_hatch;
+		}
 	}
 
 	DIFFUSE_LIGHT += band_color + (spec * vec3(0.95, 0.92, 0.88) * ATTENUATION) + (rim * rim_str * rim_color.rgb);
@@ -210,7 +258,13 @@ void light() {
 shader_type spatial;
 render_mode cull_front, unshaded;
 uniform float width = 0.024;
-void vertex() { VERTEX += NORMAL * width; }
+uniform float dist_falloff : hint_range(0.0, 1.0) = 0.0;
+uniform float vcol_weight : hint_range(0.0, 1.0) = 0.0;
+void vertex() {
+	float g = mix(1.0, COLOR.g, clamp(vcol_weight, 0.0, 1.0));
+	float d = clamp(length((MODELVIEW_MATRIX * vec4(VERTEX, 1.0)).xyz) * 0.18, 0.55, 1.65);
+	VERTEX += NORMAL * width * g * mix(1.0, d, clamp(dist_falloff, 0.0, 1.0));
+}
 void fragment() { ALBEDO = vec3(0.015, 0.0, 0.015); }
 """
 	outline_mat = ShaderMaterial.new()
@@ -268,6 +322,69 @@ void fragment() {
 	update_cel_shader(cel_cut_threshold, outline_width, rim_strength)
 	if body_mesh: body_mesh.set_surface_override_material(0, anime_mat)
 	if visor_mesh: visor_mesh.set_surface_override_material(0, anime_mat)
+	# Low-poly self-shadows flicker the cel bands; the outline already reads the
+	# silhouette, so characters stop casting onto themselves.
+	if body_mesh: body_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	if visor_mesh: visor_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+
+# Procedural 64x64 anime face SDF: a lit cheek/nose ramp that the light() branch
+# samples horizontally. Drop res://assets/sdf_face.png in to override it.
+func _build_sdf_face_texture() -> void:
+	if not anime_mat: return
+	var size := 64
+	var img := Image.create(size, size, false, Image.FORMAT_RGBA8)
+	for y in range(size):
+		for x in range(size):
+			var u := (float(x) + 0.5) / float(size)
+			var v := (float(y) + 0.5) / float(size)
+			var cx := absf(u - 0.5) * 2.0
+			var nose := 1.0 - smoothstep(0.0, 0.16, absf(cx - 0.02))
+			var cheek := smoothstep(0.34, 0.86, cx)
+			var brow := smoothstep(0.28, 0.10, v)
+			var lit := clampf(1.0 - maxf(nose * 0.55, cheek * 0.75) - brow * 0.35, 0.0, 1.0)
+			img.set_pixel(x, y, Color(lit, lit, lit, 1.0))
+	sdf_face_tex = ImageTexture.create_from_image(img)
+	var external := "res://assets/sdf_face.png"
+	if ResourceLoader.exists(external):
+		var ext = load(external)
+		if ext is Texture2D:
+			sdf_face_tex = ext as Texture2D
+	anime_mat.set_shader_parameter("sdf_face_tex", sdf_face_tex)
+
+func _push_head_basis() -> void:
+	if not anime_mat: return
+	var b: Basis = visual_root.global_basis if visual_root else global_basis
+	anime_mat.set_shader_parameter("head_forward", -b.z)
+	anime_mat.set_shader_parameter("head_right", b.x)
+
+# Applies the selected quality tier to the live viewport, sun, fog, outline
+# material, afterimages and debris budget. Called on boot and whenever tab 8
+# changes quality_tier, so it doubles as the live preview for the sliders.
+func apply_quality_tier() -> void:
+	if not data_store: return
+	var tier: int = clampi(int(round(data_store.tuning_get("quality_tier", 2.0))), 0, CombatData.QUALITY_TIERS.size() - 1)
+	var prof: Dictionary = data_store.tier_profile(tier)
+	var scale: float = clampf(data_store.tuning_get("render_scale", float(prof["scale"])), 0.5, 1.0)
+	var vp := get_viewport()
+	if vp:
+		vp.scaling_3d_scale = scale
+		vp.msaa_3d = int(prof["msaa"])
+	var sun := get_node_or_null("../DirectionalLight3D") as DirectionalLight3D
+	if sun:
+		sun.shadow_enabled = bool(prof["shadow"])
+	var we := get_node_or_null("../WorldEnvironment") as WorldEnvironment
+	if we and we.environment:
+		we.environment.fog_enabled = bool(prof["fog"])
+	if anime_mat:
+		anime_mat.next_pass = outline_mat if bool(prof["outline"]) else null
+	_quality_afterimage_ok = bool(prof["afterimage"])
+	afterimage_enabled = afterimage_profile and _quality_afterimage_ok
+	if dash_vfx:
+		dash_vfx.debris_cap = int(prof["debris"])
+		if not afterimage_enabled:
+			dash_vfx.clear_afterimages()
+	_applied_tier = tier
+	print("QUALITY_TIER_APPLIED: %s scale=%.2f debris=%d" % [str(prof["label"]), scale, int(prof["debris"])])
 
 func _setup_weapon_rig() -> void:
 	if not visual_root: return
@@ -421,6 +538,10 @@ func apply_modular_clothing_slots(root_node: Node = null) -> void:
 		"Slot_Weapon_": slot_weapon
 	}
 	_set_slot_visibility_recursive(target_root, slot_map)
+	# A head-slot change can switch a character onto (or off) the SDF face path.
+	face_sdf_active = slot_head == "ANIME_FACE"
+	if anime_mat:
+		anime_mat.set_shader_parameter("face_sdf_enabled", 1.0 if face_sdf_active else 0.0)
 
 func _set_slot_visibility_recursive(n: Node, slot_map: Dictionary) -> void:
 	if n is MeshInstance3D:
@@ -526,8 +647,14 @@ func update_cel_shader(cel: float, out_w: float, rim_s: float, rim_col: Color = 
 		anime_mat.set_shader_parameter("hatch_width", hatch_width)
 		anime_mat.set_shader_parameter("rim_str", rim_s)
 		anime_mat.set_shader_parameter("rim_color", rim_col)
+		if data_store:
+			anime_mat.set_shader_parameter("vertex_bias", data_store.tuning_get("vertex_shadow_bias", 0.0))
+			anime_mat.set_shader_parameter("face_softness", data_store.tuning_get("sdf_face_softness", 0.06))
 	if outline_mat:
 		outline_mat.set_shader_parameter("width", out_w)
+		if data_store:
+			outline_mat.set_shader_parameter("vcol_weight", data_store.tuning_get("vertex_shadow_bias", 0.0))
+			outline_mat.set_shader_parameter("dist_falloff", data_store.tuning_get("outline_dist_scale", 0.0))
 
 func _reset_dash_visuals() -> void:
 	if visual_root:
@@ -570,7 +697,8 @@ func apply_race_by_name(r_name: String) -> void:
 	base_power = float(r.get("base_power", 1.0))
 	step_mult = float(r.get("step_mult", 1.15))
 	dash_style = int(r.get("dash_style", 0)) as DashStyle
-	afterimage_enabled = bool(r.get("afterimage_on", false))
+	afterimage_profile = bool(r.get("afterimage_on", false))
+	afterimage_enabled = afterimage_profile and _quality_afterimage_ok
 	char_height = float(r.get("char_height", 1.0))
 	char_width = float(r.get("char_width", 1.0))
 	weapon_scale = float(r.get("weapon_scale", 1.0))
@@ -579,6 +707,9 @@ func apply_race_by_name(r_name: String) -> void:
 	slot_upper = str(r.get("slot_upper", "HERO"))
 	slot_lower = str(r.get("slot_lower", "HERO"))
 	slot_weapon = str(r.get("slot_weapon", "HERO"))
+	face_sdf_active = slot_head == "ANIME_FACE"
+	if anime_mat:
+		anime_mat.set_shader_parameter("face_sdf_enabled", 1.0 if face_sdf_active else 0.0)
 	var ac: Array = r.get("aura_color", [0.95, 0.12, 0.18])
 	update_cel_shader(cel_cut_threshold, outline_width, rim_strength, Color(ac[0], ac[1], ac[2]))
 	if dash_vfx and not afterimage_enabled:
@@ -629,6 +760,7 @@ func _apply_seinen_shader_to_glb(n: Node) -> void:
 			for s_idx in range(mi.mesh.get_surface_count()):
 				var smat := mi.mesh.surface_get_material(s_idx)
 				var mname := smat.resource_name if smat else ""
+				mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 				if "VoidFace" in mname:
 					var vmat := StandardMaterial3D.new()
 					vmat.shading_mode = StandardMaterial3D.SHADING_MODE_UNSHADED
@@ -829,6 +961,11 @@ func trigger_dash(dir: Vector3) -> void:
 		dash_vfx.check_destruction(global_position, 3.2, dash_dir, false)
 
 func _physics_process(delta: float) -> void:
+	# Live tier switching: the Tab 8 slider re-applies on the next physics tick.
+	if data_store and int(round(data_store.tuning_get("quality_tier", 2.0))) != _applied_tier:
+		apply_quality_tier()
+	if face_sdf_active:
+		_push_head_basis()
 	if p5_camera_override: return
 	if not is_defeated:
 		hp = minf(max_hp, hp + hp_regen * delta)

@@ -23,7 +23,12 @@ const TUNING_SPEC: Dictionary = {
 	"ko_slowmo_scale":     [0.05, 1.0,   0.05, "KO Slow-Mo Speed"],
 	"ko_slowmo_time":      [0.0,  2.0,   0.05, "KO Slow-Mo (s)"],
 	"hurt_vignette":       [0.0,  1.0,   0.05, "Hurt Vignette"],
-	"dmg_number_size":     [0.5,  2.0,   0.1,  "Damage Number Size"],
+		"dmg_number_size":     [0.5,  2.0, 0.1,  "Damage Number Size"],
+	"quality_tier":        [0.0,  3.0, 1.0,  "Quality Tier (0 LOW-3 ULTRA)"],
+	"render_scale":        [0.5,  1.0, 0.01, "Render Scale"],
+	"sdf_face_softness":   [0.01, 0.25, 0.01, "SDF Face Softness"],
+	"vertex_shadow_bias":  [0.0,  2.0, 0.05, "Vertex Shadow Bias"],
+	"outline_dist_scale":  [0.0,  1.0, 0.05, "Outline Distance Falloff"],
 }
 
 const TUNING_BOOLS: Dictionary = {
@@ -31,6 +36,7 @@ const TUNING_BOOLS: Dictionary = {
 	"show_damage_numbers": "Floating Damage Numbers",
 	"show_combo_counter":  "Combo Counter",
 	"auto_lock_on":        "Auto Lock-On Near Rival",
+	"auto_quality":        "Auto Quality (detect GPU on boot)",
 }
 
 const TUNING_DEFAULTS: Dictionary = {
@@ -39,9 +45,62 @@ const TUNING_DEFAULTS: Dictionary = {
 	"parry_window": 0.24, "super_parry_window": 0.09, "combo_grace": 1.4,
 	"ko_slowmo_scale": 0.28, "ko_slowmo_time": 0.55, "hurt_vignette": 0.55,
 	"dmg_number_size": 1.0,
+	"quality_tier": 2, "render_scale": 0.92,
+	"sdf_face_softness": 0.06, "vertex_shadow_bias": 0.0, "outline_dist_scale": 0.0,
 	"immortal_mode": false, "show_damage_numbers": true,
 	"show_combo_counter": true, "auto_lock_on": true,
+	"auto_quality": true,
 }
+
+# =============================================================================
+#  DEVICE QUALITY TIERS
+#  The panel can be 120 Hz and the GPU still cannot feed it. Each tier is a
+#  complete preset; render_scale is what the tier stamps and what the viewport
+#  actually uses, so a user can pick a tier and then fine-tune the one number
+#  that matters. msaa: 0 = off, 1 = 2x. debris = simultaneous rubble chunks.
+# =============================================================================
+const QUALITY_TIERS: Array = [
+	{"label": "LOW",   "scale": 0.65, "msaa": 0, "shadow": false, "fog": false, "outline": false, "afterimage": false, "debris": 8},
+	{"label": "MID",   "scale": 0.85, "msaa": 0, "shadow": true,  "fog": true,  "outline": true,  "afterimage": false, "debris": 16},
+	{"label": "HIGH",  "scale": 0.92, "msaa": 1, "shadow": true,  "fog": true,  "outline": true,  "afterimage": true,  "debris": 28},
+	{"label": "ULTRA", "scale": 1.00, "msaa": 1, "shadow": true,  "fog": true,  "outline": true,  "afterimage": true,  "debris": 28},
+]
+
+func tier_profile(tier: int) -> Dictionary:
+	return QUALITY_TIERS[clampi(tier, 0, QUALITY_TIERS.size() - 1)]
+
+func tier_label(tier: int) -> String:
+	return str(tier_profile(tier).get("label", "MID"))
+
+# Pick a tier from the actual GPU, not from the panel refresh rate.
+# Adreno 618 (Redmi Note 10 Pro) is a LOW device even though its panel is 120 Hz.
+func detect_quality_tier() -> int:
+	var adapter: String = RenderingServer.get_video_adapter_name().to_lower()
+	var os_name: String = OS.get_name()
+
+	if os_name == "iOS" or adapter.contains("apple m"):
+		return 3
+	for frag in ["adreno (tm) 7", "adreno (tm) 8", "mali-g7", "mali-g9", "xclipse", "immortalis", "rtx", "radeon rx"]:
+		if adapter.contains(frag):
+			return 2
+	if os_name in ["Linux", "Windows", "macOS"]:
+		return 1
+	for frag in ["adreno", "mali-g5", "mali-g6", "powervr", "img gpu"]:
+		if adapter.contains(frag):
+			return 0
+	return 1
+
+# Auto mode stamps the detected tier at boot. Turning the box off keeps whatever
+# the user picked, which is the whole point of having the box.
+func refresh_auto_quality(stamp_scale: bool = true) -> void:
+	if not bool(tuning.get("auto_quality", true)):
+		return
+	tuning["quality_tier"] = detect_quality_tier()
+	if stamp_scale:
+		tuning["render_scale"] = float(tier_profile(int(tuning["quality_tier"]))["scale"])
+
+func _ready() -> void:
+	refresh_auto_quality()
 
 var tuning: Dictionary = TUNING_DEFAULTS.duplicate(true)
 
@@ -114,15 +173,22 @@ var spell_slots: Dictionary = {
 var placed_blocks: Array = []
 
 func save_to_disk(player: Node, combat: Node = null) -> void:
-	var payload := {
-		"profiles": profiles,
-		"move_slots": move_slots,
-		"spell_slots": spell_slots,
-		"placed_blocks": placed_blocks,
-		"tuning": tuning,
-		"player_tunables": {},
-		"combat_tunables": {}
-	}
+	# Read the old file first: world_story.gd writes its own "story" section into
+	# the same profile, and a blind overwrite would delete every saved choice.
+	var payload: Dictionary = {}
+	if FileAccess.file_exists(SAVE_PATH):
+		var old_f := FileAccess.open(SAVE_PATH, FileAccess.READ)
+		if old_f:
+			var old = JSON.parse_string(old_f.get_as_text())
+			if typeof(old) == TYPE_DICTIONARY:
+				payload = (old as Dictionary).duplicate(true)
+	payload["profiles"] = profiles
+	payload["move_slots"] = move_slots
+	payload["spell_slots"] = spell_slots
+	payload["placed_blocks"] = placed_blocks
+	payload["tuning"] = tuning
+	payload["player_tunables"] = {}
+	payload["combat_tunables"] = {}
 	if combat:
 		for prop in ["ai_telegraph_time", "ai_attack_cooldown", "ai_adaptation_rate", "auto_lock_enabled"]:
 			payload["combat_tunables"][prop] = combat.get(prop)
@@ -154,6 +220,9 @@ func load_from_disk(player: Node, combat: Node = null) -> void:
 		for k in TUNING_DEFAULTS.keys():
 			if parsed["tuning"].has(k):
 				tuning[k] = parsed["tuning"][k]
+	# Auto quality: re-detect the GPU, but never throw away a render scale the
+	# user set by hand in an earlier session.
+	refresh_auto_quality(not (parsed["tuning"] as Dictionary).has("render_scale"))
 	if combat and parsed.has("combat_tunables"):
 		var ct: Dictionary = parsed["combat_tunables"]
 		for k in ct.keys():
