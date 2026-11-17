@@ -37,6 +37,7 @@ var water_mesh: MeshInstance3D = null
 var water_mat: ShaderMaterial = null
 var water_enabled: bool = false
 var water_boss_pos: Vector3 = Vector3(9999.0, 0.0, 9999.0)
+var _water_height_applied: float = -1.0
 var cel_smoke_pool: Array[Dictionary] = []
 var cel_smoke_idx: int = 0
 
@@ -351,13 +352,18 @@ func _setup_water_floor() -> void:
 	water_mesh.visible = false
 	add_child(water_mesh)
 
+# Called once per physics tick by the player, so it must be change-driven: a
+# blind set_shader_parameter every tick is a RenderingServer dirty-mark per frame.
 func set_water_enabled(on: bool, wave_height: float = 0.12) -> void:
 	if not water_mesh:
 		return
-	water_enabled = on
-	water_mesh.visible = on
-	if water_mat:
-		water_mat.set_shader_parameter("wave_height", clampf(wave_height, 0.0, 0.65))
+	if water_enabled != on:
+		water_enabled = on
+		water_mesh.visible = on
+	var h := clampf(wave_height, 0.0, 0.65)
+	if water_mat and not is_equal_approx(h, _water_height_applied):
+		_water_height_applied = h
+		water_mat.set_shader_parameter("wave_height", h)
 
 func _update_water_floor(player_pos: Vector3) -> void:
 	if not water_enabled or not water_mat:
