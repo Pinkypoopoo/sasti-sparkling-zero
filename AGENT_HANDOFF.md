@@ -317,6 +317,51 @@ anything is rebuilt. Two structural gaps found while reading: the GLBs contain *
 so the Tab 6 modular-clothing switcher is a no-op today, and `_attach_hitbox_to_skeleton()` grabs an
 `Arm_R` bone that exists but no `Veil_Back` bone does, so the spring-bone jiggle never runs.
 
+### [2026-11-17] Buffy — V5 characters: Dark Seinen Ink, built without Blender
+
+Style locked from the user's reference board (Google Drive `Game dev` folder, ~60 Pinterest
+saves): monochrome ink, heavy hatching, one saturated accent, silhouette-first. The three
+through-lines are a hooded/wide-hatted dark wanderer with a sword (Berserk-ish ink piece), a
+one-accent duotone (the dragon piece: ink + periwinkle), and a silhouette against a saturated
+sky (the red torii piece). That is the same **Dark Seinen Ink** lane ROADMAP.md recommended.
+
+**Blender is not available in this sandbox** (the official Linux build needs `libXrender`,
+`libXi`, `libXxf86vm`… and there is no root or apt index here). So the character pipeline was
+rewritten as `tools/build_character.py`: stdlib-only, writes `models/hero.glb` and
+`models/boss_veil.glb` directly (glTF JSON + binary chunk), ~100 KB each, 643 / 598 verts.
+`python3 tools/build_character.py` is the whole build.
+
+**What the models now have that they did not before**
+- 21 joints: Root, Hips, Spine, Chest, Neck, Head, Arm/Elbow/Hand L+R, Hip/Knee/Foot L+R,
+  **Veil_Back**, Veil_L, Veil_R. `Veil_Back` was missing entirely, so
+  `_update_spring_bone_jiggle()` returned early every frame and the cloak never moved.
+- Real `Slot_*` nodes: `Slot_HeadMask_HERO`, `Slot_VeilCloak_HERO`, `Slot_UpperGarb_HERO`,
+  `Slot_LowerSkirt_HERO`, `Slot_Weapon_HERO` (+ `_VEIL` variants). The Tab 6 modular outfit
+  switcher was a complete no-op because the old GLBs had no such nodes; it works now.
+- Five baked clips per model: idle, slash_up, slash_down, slash_side, guard_sway.
+- 4-channel NPR vertex colours per surface, `Slot_`-aware, with the weapon skinned to `Hand_R`
+  so the blade follows the swing the animation actually plays.
+- `_apply_seinen_shader_to_glb()` now gives each surface its own cel material
+  (`CEL_ALBEDO` + `_cel_material_for`), because the shader takes albedo from a *uniform*, not
+  from the GLB material — every surface used to render the same blue-grey. `_sync_cel_materials()`
+  keeps those copies following the Tab-8 sliders and the quality tier.
+
+**How it was checked without a GPU:** `tools/preview_character.py` is a numpy software
+rasterizer that skins the GLB and writes a 3-view PNG contact sheet. The first pass rendered a
+white lab-coat apron, white shins and a wizard cone, which is exactly the kind of thing a
+headless gate cannot see — it was fixed by eye from those renders (dark coat edges, iron shins,
+swept-back hood, shorter blade). `character_test.gd` is the permanent gate: it asserts both GLBs
+expose the bones, `Slot_*` nodes and clips the engine asks for (gate `[3b/7]`).
+
+**Verified:** `bash verify.sh` → `VERIFY_PASSED`, 61 signatures, character contract, import,
+boot, smoke, 58 combat asserts, story schema. **Not verified:** any of it in the engine renderer
+(no GPU) — the look in-game is unconfirmed, and the pose blending at 12 fps stepping is unseen.
+
+**Left open:** `build_models.py` now exports to `art/` so a Blender run cannot clobber the
+shipped GLBs; it is kept only as the reference for the vertex-colour packing. The two characters
+are still primitive-assembled — good silhouette, simple forms. Next art step is either more
+geometry per slot or a Blender pass at home against these proportions.
+
 === AI HANDOFF PACKET ===
 REPO: Pinkypoopoo/sasti-sparkling-zero
 BRANCH: Pinkypoopoo-patch-1 (HEAD for this entry: V5)

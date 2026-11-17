@@ -1,3 +1,8 @@
+# SUPERSEDED for the shipped characters: models/*.glb are now produced by
+# tools/build_character.py (pure Python, no Blender, runnable in CI). This file
+# still exports its own meshes, but into art/ so running it in Blender can never
+# clobber the models the game ships. Its NPR helpers below are still the
+# reference for the vertex-colour packing the cel shader reads.
 import bpy
 import math
 from mathutils import Euler, Vector
@@ -276,7 +281,7 @@ h_mod.object = hero_rig
 bake_standard_combat_anims(hero_rig)
 paint_vertex_channels(h_mesh, HERO_VC_RULES)
 proxy_smooth_normals(h_mesh)
-export_glb("models/hero.glb")
+export_glb("art/hero_blender.glb")
 
 # ==========================================================
 # 2. BUILD GILDED VEIL CATHEDRAL BOSS (models/boss_veil.glb)
@@ -344,5 +349,5 @@ b_mod.object = boss_rig
 bake_standard_combat_anims(boss_rig)
 paint_vertex_channels(b_mesh, BOSS_VC_RULES)
 proxy_smooth_normals(b_mesh)
-export_glb("models/boss_veil.glb")
+export_glb("art/boss_veil_blender.glb")
 print("BOTH_MODELS_EXPORTED_SUCCESSFULLY")

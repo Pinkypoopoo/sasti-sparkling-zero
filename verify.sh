@@ -109,6 +109,10 @@ REQUIRED_SIGNATURES=(
     "impact_slash_timer:gesture_combat.gd"
     "_draw_impact_slash:dev_studio.gd"
     "CELESTIAL_CONSTELLATION:dev_studio.gd"
+    # V5 character pipeline: dependency-free GLB generator + contract test
+    "Slot_VeilCloak_:tools/build_character.py"
+    "_apply_wall_run_velocity:character_body_3d.gd"
+    "CHARACTER_TEST_PASS:character_test.gd"
 )
 for item in "${REQUIRED_SIGNATURES[@]}"; do
     sig="${item%%:*}"
@@ -174,6 +178,16 @@ else
     done
     ok "models/*.glb imported"
 fi
+
+# The import above can pass while the model quietly loses a bone or a Slot_ node,
+# so the engine-facing names get their own check.
+echo "[3b/7] character contract"
+"$GODOT_BIN" --headless --path . --script res://character_test.gd > "$TMP_DIR/chars.log" 2>&1
+CHARS_RC=$?
+scan "character contract" "$TMP_DIR/chars.log"
+grep -q "CHARACTER_TEST_PASS" "$TMP_DIR/chars.log" \
+    || fail "character contract test failed (exit $CHARS_RC): $(grep -m2 'FAIL' "$TMP_DIR/chars.log" | tr '\n' ' ')"
+ok "hero + boss expose the bones, Slot_ nodes and clips the engine asks for"
 
 # --- GUARDRAIL 4: headless boot ----------------------------------------------
 echo "[4/7] headless boot (120 frames)"

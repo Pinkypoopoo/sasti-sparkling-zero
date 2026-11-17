@@ -415,6 +415,7 @@ func apply_quality_tier() -> void:
 		anime_mat.next_pass = outline_mat if bool(prof["outline"]) else null
 	_quality_afterimage_ok = bool(prof["afterimage"])
 	afterimage_enabled = afterimage_profile and _quality_afterimage_ok
+	_sync_cel_materials()
 	if dash_vfx:
 		dash_vfx.debris_cap = int(prof["debris"])
 		if not afterimage_enabled:
@@ -817,6 +818,7 @@ func update_cel_shader(cel: float, out_w: float, rim_s: float, rim_col: Color = 
 		if data_store:
 			outline_mat.set_shader_parameter("vcol_weight", data_store.tuning_get("vertex_shadow_bias", 0.0))
 			outline_mat.set_shader_parameter("dist_falloff", data_store.tuning_get("outline_dist_scale", 0.0))
+	_sync_cel_materials()
 
 func _reset_dash_visuals() -> void:
 	_end_wall_run(0.0)
@@ -917,6 +919,40 @@ func swap_custom_model(path: String) -> bool:
 	play_character_anim("idle")
 	return true
 
+# One cel material per surface name, so the character is not a single flat
+# colour: the shader takes albedo from a uniform, not from the GLB material.
+const CEL_ALBEDO: Dictionary = {
+	"obsidiancloak": Color(0.048, 0.048, 0.062),
+	"ashvestment": Color(0.72, 0.70, 0.66),
+	"tarnishediron": Color(0.13, 0.13, 0.16),
+	"porcelainlily": Color(0.88, 0.86, 0.82),
+	"gildedfiligree": Color(0.84, 0.67, 0.24),
+	"cathedralveil": Color(0.80, 0.78, 0.73),
+}
+var _cel_mat_cache: Dictionary = {}
+
+func _cel_material_for(mat_name: String) -> ShaderMaterial:
+	var key := mat_name.to_lower()
+	if _cel_mat_cache.has(key):
+		return _cel_mat_cache[key] as ShaderMaterial
+	var m := anime_mat.duplicate() as ShaderMaterial
+	m.set_shader_parameter("albedo", CEL_ALBEDO.get(key, Color(0.18, 0.20, 0.26)))
+	_cel_mat_cache[key] = m
+	return m
+
+# Tab-8 sliders and the quality tier write to anime_mat; the per-surface copies
+# have to follow or the character ignores every slider.
+func _sync_cel_materials() -> void:
+	if not anime_mat:
+		return
+	for k in _cel_mat_cache.keys():
+		var m = _cel_mat_cache[k]
+		if not (m is ShaderMaterial) or not is_instance_valid(m):
+			continue
+		(m as ShaderMaterial).next_pass = anime_mat.next_pass
+		for p in ["cel_cut", "hatch_width", "rim_str", "rim_color", "vertex_bias", "face_softness", "face_sdf_enabled", "sdf_face_tex"]:
+			(m as ShaderMaterial).set_shader_parameter(p, anime_mat.get_shader_parameter(p))
+
 func _apply_seinen_shader_to_glb(n: Node) -> void:
 	if n is MeshInstance3D:
 		var mi := n as MeshInstance3D
@@ -949,9 +985,10 @@ func _apply_seinen_shader_to_glb(n: Node) -> void:
 					wmat.set_shader_parameter("rim_color", Color(1.0, 0.85, 0.45, 1.0))
 					mi.set_surface_override_material(s_idx, wmat)
 				else:
-					mi.set_surface_override_material(s_idx, anime_mat)
+					mi.set_surface_override_material(s_idx, _cel_material_for(mname))
 	for c in n.get_children():
 		_apply_seinen_shader_to_glb(c)
+	_sync_cel_materials()
 
 func play_character_anim(anim_name: String) -> void:
 	if not active_anim_player: return
