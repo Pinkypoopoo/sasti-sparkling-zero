@@ -188,8 +188,11 @@ func toggle_flame_awakening() -> void:
 		if is_flame_awakened:
 			trigger_flame_explosion(player_ref.global_position)
 			player_ref.call("update_cel_shader", float(player_ref.get("cel_cut_threshold")), float(player_ref.get("outline_width")), 1.6, Color(1.0, 0.42, 0.05))
+			player_ref.set("eye_awaken_boost", 2.4)
 		else:
 			player_ref.call("update_cel_shader", float(player_ref.get("cel_cut_threshold")), float(player_ref.get("outline_width")), float(player_ref.get("rim_strength")), Color(0.95, 0.12, 0.18))
+			player_ref.set("eye_awaken_boost", 1.0)
+		player_ref.call("update_eye_shader")
 	if combat_ref:
 		combat_ref.set("last_combat_action", "FLAME AWAKENING IGNITED!!" if is_flame_awakened else "BASE FORM")
 

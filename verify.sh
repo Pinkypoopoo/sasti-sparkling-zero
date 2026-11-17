@@ -21,7 +21,7 @@ ok()   { echo "  ok   $*"; }
 # Anything in a Godot log that means the project is broken.
 scan() { # $1 = gate label, $2 = log file
     local label="$1" log="$2" hits
-    hits="$(grep -nE '^ERROR:|SCRIPT ERROR|Parse Error|Failed to load script|Failed loading resource|Cannot open file .res://\.godot/imported|Failed to correctly scale body|InputMap action .* doesn.t exist|same name as a built-in' "$log" 2>/dev/null | grep -vE "$BENIGN" || true)"
+    hits="$(grep -nE '^ERROR:|SCRIPT ERROR|Parse Error|Failed to load script|Failed loading resource|Cannot open file .res://\.godot/imported|Failed to correctly scale body|InputMap action .* doesn.t exist|same name as a built-in|Invalid access to property or key|Invalid get index|Invalid set index|Invalid call\.|Cannot convert argument' "$log" 2>/dev/null | grep -vE "$BENIGN" || true)"
     if [ -n "$hits" ]; then
         echo "$hits"
         fail "$label reported engine or script errors (see above)"
@@ -94,6 +94,21 @@ REQUIRED_SIGNATURES=(
     "save_state:world_story.gd"
     "paint_vertex_channels:build_models.py"
     "proxy_smooth_normals:build_models.py"
+    # V5: safe legacy profile load, parkour wall-run, anime water, celestial eye,
+    # NOBI_2D screen-space impact slash + 2-tone cel smoke
+    "ensure_tuning:combat_data.gd"
+    "wall_run_gate:character_body_3d.gd"
+    "_apply_wall_run_velocity:character_body_3d.gd"
+    "wall_run_enabled:combat_data.gd"
+    "wall_kick_force:combat_data.gd"
+    "water_floor_enabled:combat_data.gd"
+    "water_wave_height:combat_data.gd"
+    "set_water_enabled:dash_vfx.gd"
+    "spawn_cel_smoke:dash_vfx.gd"
+    "trigger_impact_slash:gesture_combat.gd"
+    "impact_slash_timer:gesture_combat.gd"
+    "_draw_impact_slash:dev_studio.gd"
+    "CELESTIAL_CONSTELLATION:dev_studio.gd"
 )
 for item in "${REQUIRED_SIGNATURES[@]}"; do
     sig="${item%%:*}"
@@ -116,6 +131,26 @@ if ! grep -q "func _physics_process" gesture_combat.gd; then
     fail "gesture_combat.gd lost its _physics_process: enemies and projectiles would run at render rate and speed up with refresh rate"
 fi
 ok "interpolation on, no physics bone bodies, combat on the physics tick"
+
+# GDScript hygiene: these are compiler WARNINGS, so they never fail a headless boot
+# and they were shipped twice already (snapped/scale shadowing in the phone log).
+SHADOW_HITS="$(grep -nE '^[[:space:]]*var[[:space:]]+(snapped|snappedf|scale|rotation|position|basis|transform|visible|velocity|lerp|clamp|abs|sign|min|max|str|range|print)[[:space:]]*:?=' ./*.gd 2>/dev/null || true)"
+if [ -n "$SHADOW_HITS" ]; then
+    echo "$SHADOW_HITS"
+    fail "a local variable shadows a built-in (SHADOWED_VARIABLE): rename it"
+fi
+# INT_AS_ENUM_WITHOUT_CAST: assigning int() straight to a typed enum var.
+if grep -nE 'dash_style[[:space:]]*=[[:space:]]*int\(' ./*.gd 2>/dev/null | grep -v 'as DashStyle'; then
+    fail "int assigned to an enum without an \`as DashStyle\` cast (INT_AS_ENUM_WITHOUT_CAST)"
+fi
+ok "no shadowed built-ins, no bare int-to-enum cast"
+
+# Every agent must leave a handoff entry (protocol rule, enforced here so it
+# cannot be skipped by the next model in the chain).
+[ -f AGENT_HANDOFF.md ] || fail "AGENT_HANDOFF.md is missing, the AI handoff channel must exist"
+grep -qE '=== AI HANDOFF|^### ?\[?2026-' AGENT_HANDOFF.md \
+    || fail "AGENT_HANDOFF.md has no dated entry or '=== AI HANDOFF' packet"
+ok "AGENT_HANDOFF.md present with a dated entry"
 
 # --- GUARDRAIL 3: assets actually import -------------------------------------
 echo "[3/7] asset import"

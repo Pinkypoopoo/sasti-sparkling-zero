@@ -60,8 +60,8 @@ func _validate(doc: Dictionary) -> void:
 			need(o, k, olab)
 		if o.has("start_node") and not nodes.has(str(o["start_node"])):
 			failures.append("%s start_node '%s' is not in nodes" % [olab, str(o["start_node"])])
-		if o.has("eye_shape") and not (int(o["eye_shape"]) >= 0 and int(o["eye_shape"]) <= 3):
-			failures.append("%s eye_shape must be 0..3" % olab)
+		if o.has("eye_shape") and not (int(o["eye_shape"]) >= 0 and int(o["eye_shape"]) <= 4):
+			failures.append("%s eye_shape must be 0..4" % olab)
 		if o.has("eye_hue") and not (float(o["eye_hue"]) >= 0.0 and float(o["eye_hue"]) <= 1.0):
 			failures.append("%s eye_hue must be 0..1" % olab)
 

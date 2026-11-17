@@ -41,6 +41,8 @@ var active_race_name: String = "Profile_1"
 @export var char_width: float = 1.0
 @export var weapon_scale: float = 1.0
 @export var eye_glow_strength: float = 1.8
+# Flame Awakening multiplies eye emission (2.4x); base form resets it to 1.0.
+var eye_awaken_boost: float = 1.0
 @export var eye_shape: int = 0
 @export var eye_hue: float = 0.98
 @export var eye_pupil_scale: float = 1.0
@@ -102,6 +104,22 @@ var swing_target_rot: Vector3 = Vector3.ZERO
 var hitstop_timer: float = 0.0
 var p5_camera_override: bool = false
 var cam_shake_trauma: float = 0.0
+
+# --- Parkour wall-run state (video_2.mp4) ---------------------------------
+# The capsule always stays upright (up_direction = UP). Only VisualRoot and the
+# camera roll tilt; physics is a velocity projection along the wall plane plus a
+# light inward push so CharacterBody3D keeps the contact is_on_wall() reports.
+const WALL_RUN_MAX_TIME: float = 2.4
+const WALL_RUN_MIN_SPEED: float = 11.0
+const WALL_RUN_STICK: float = 3.5
+
+var is_wall_running: bool = false
+var wall_run_normal: Vector3 = Vector3.ZERO
+var wall_run_forward: Vector3 = Vector3.ZERO
+var wall_run_timer: float = 0.0
+var wall_run_latch: float = 0.0
+var wall_run_side: float = 0.0
+var camera_roll_target: float = 0.0
 
 var jump_count: int = 0
 var max_jumps: int = 2
@@ -281,6 +299,7 @@ uniform int eye_shape = 0;
 uniform float eye_hue : hint_range(0.0, 1.0) = 0.98;
 uniform float pupil_scale : hint_range(0.3, 2.5) = 1.0;
 uniform float glow_str : hint_range(0.2, 5.0) = 1.8;
+uniform float awaken : hint_range(0.5, 4.0) = 1.0;
 
 vec3 hsv2rgb(vec3 c) {
 	vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
@@ -305,13 +324,30 @@ void fragment() {
 		float hb = 1.0 - smoothstep(0.12, 0.24, abs(p.y) + abs(p.x) * 0.14);
 		float vb = 1.0 - smoothstep(0.12, 0.24, abs(p.x) + abs(p.y) * 0.14);
 		mask = max(hb, vb);
-	} else {
+	} else if (eye_shape == 3) {
 		float oc = 1.0 - smoothstep(0.65, 0.76, length(p));
 		float cc = smoothstep(0.45, 0.55, length(p - vec2(0.28, 0.16)));
 		mask = oc * cc;
+	} else {
+		// 4: Celestial Constellation (@ITSJUAN.NDS) — cyan-white radial iris,
+		// one concentric dark ring, six starlight dots around the pupil.
+		float r = length(p);
+		float glow_r = 1.0 - smoothstep(0.0, 0.62, r);
+		float iris = smoothstep(0.16, 0.42, r) * (1.0 - smoothstep(0.50, 0.58, r));
+		float core = 1.0 - smoothstep(0.07, 0.17, r);
+		float dark_ring = smoothstep(0.42, 0.455, r) * (1.0 - smoothstep(0.50, 0.545, r));
+		float stars = 0.0;
+		for (int i = 0; i < 6; i++) {
+			float a = float(i) * 1.0471975512 + 0.264;
+			float rr = 0.34 + 0.055 * float(i % 2);
+			vec2 c = vec2(cos(a), sin(a)) * rr;
+			stars = max(stars, 1.0 - smoothstep(0.028, 0.062, length(p - c)));
+		}
+		mask = max(max(iris * 0.85, core), stars);
+		mask *= (1.0 - dark_ring * 0.85) * (0.35 + 0.65 * glow_r);
 	}
-	vec3 base_col = hsv2rgb(vec3(eye_hue, 0.88, 1.0)) * glow_str;
-	vec3 hot_core = vec3(1.0, 0.98, 0.95) * (glow_str * 0.7);
+	vec3 base_col = hsv2rgb(vec3(eye_hue, 0.88, 1.0)) * glow_str * awaken;
+	vec3 hot_core = vec3(1.0, 0.98, 0.95) * (glow_str * 0.7 * awaken);
 	ALBEDO = mix(vec3(0.005, 0.005, 0.01), mix(base_col, hot_core, mask * 0.45), mask);
 }
 """
@@ -383,6 +419,7 @@ func apply_quality_tier() -> void:
 		dash_vfx.debris_cap = int(prof["debris"])
 		if not afterimage_enabled:
 			dash_vfx.clear_afterimages()
+		dash_vfx.set_water_enabled(data_store.tuning_bool("water_floor_enabled", false), data_store.tuning_get("water_wave_height", 0.12))
 	_applied_tier = tier
 	print("QUALITY_TIER_APPLIED: %s scale=%.2f debris=%d" % [str(prof["label"]), scale, int(prof["debris"])])
 
@@ -579,6 +616,130 @@ func _update_spring_bone_jiggle(dt: float) -> void:
 	var q := Quaternion.from_euler(Vector3(deg_to_rad(veil_spring_rot.x), deg_to_rad(veil_spring_rot.y), deg_to_rad(veil_spring_rot.z)))
 	active_skeleton.set_bone_pose_rotation(veil_bone_idx, q)
 
+# =============================================================================
+#  PARKOUR WALL-RUN  (video_2.mp4 — @UCHBLOX cliff/pillar running)
+#  Gate first, physics second: a dodge or a swing next to a pillar must never
+#  magnetise the player to it mid-combo. The gate is a pure function so the
+#  rules are testable headless without a physics world.
+# =============================================================================
+func _wall_run_enabled() -> bool:
+	return data_store == null or data_store.tuning_bool("wall_run_enabled", true)
+
+# on_wall: is_on_wall(); ny: absf(get_wall_normal().y) (a floor is 1.0);
+# busy: attacking, dashing, hitstun or defeated.
+func wall_run_gate(on_wall: bool, ny: float, sprint_held: bool, h_speed: float, busy: bool) -> bool:
+	if not _wall_run_enabled() or busy:
+		return false
+	if not on_wall or ny >= 0.35:
+		return false
+	return sprint_held or h_speed > WALL_RUN_MIN_SPEED
+
+func _tick_wall_run(delta: float, mv_vec: Vector2, sprint_held: bool) -> void:
+	if wall_run_latch > 0.0:
+		wall_run_latch = maxf(0.0, wall_run_latch - delta)
+	var busy: bool = is_defeated or state == MoveState.HITSTUN or state == MoveState.DASH or state == MoveState.WINDUP
+	var wn := get_wall_normal()
+	if is_wall_running:
+		if busy or not is_on_wall() or not _wall_run_enabled():
+			_end_wall_run(0.22)
+		elif wall_run_timer > WALL_RUN_MAX_TIME:
+			_end_wall_run(0.4)
+		return
+	if wall_run_latch > 0.0:
+		return
+	if mv_vec.length() < 0.15 and not sprint_held:
+		return
+	var h_speed: float = Vector2(velocity.x, velocity.z).length()
+	if not wall_run_gate(is_on_wall(), absf(wn.y), sprint_held, h_speed, busy):
+		return
+	is_wall_running = true
+	wall_run_timer = 0.0
+	wall_run_normal = Vector3(wn.x, 0.0, wn.z).normalized()
+	if wall_run_normal.length_squared() < 0.01:
+		wall_run_normal = -visual_root.global_transform.basis.z
+	jump_count = 1
+	if visual_root:
+		visual_root.rotation.z = 0.0
+	if dash_vfx:
+		dash_vfx.play_sfx("vanish")
+		dash_vfx.spawn_cel_smoke(global_position + Vector3(0.0, 0.7, 0.0), 3, -wall_run_normal, 0.55)
+
+func _apply_wall_run_velocity(delta: float, mv_vec: Vector2) -> void:
+	wall_run_timer += delta
+	var wn := wall_run_normal
+	var cam_fwd := -camera.global_transform.basis.z
+	cam_fwd.y = 0.0
+	cam_fwd = cam_fwd.normalized()
+	var cam_right := camera.global_transform.basis.x
+	cam_right.y = 0.0
+	cam_right = cam_right.normalized()
+	var input_world := cam_right * mv_vec.x + cam_fwd * -mv_vec.y
+	if input_world.length_squared() < 0.01:
+		input_world = cam_fwd
+	input_world = input_world.normalized()
+	var along := input_world.slide(wn)
+	if along.length_squared() < 0.05:
+		along = cam_fwd.slide(wn)
+	if along.length_squared() < 0.05:
+		along = Vector3.UP.cross(wn)
+	along = along.normalized()
+	wall_run_forward = along
+
+	var speed := 26.0
+	var gscale := 0.15
+	if data_store:
+		speed = data_store.tuning_get("wall_run_speed", 26.0)
+		gscale = clampf(data_store.tuning_get("wall_run_gravity_scale", 0.15), 0.0, 1.0)
+
+	# Pushing the stick into the wall means "climb"; running along it keeps only
+	# a fraction of gravity, which is what makes the arc read as a wall-run.
+	var into_wall: float = clampf(-input_world.dot(wn), 0.0, 1.0)
+	if into_wall > 0.35:
+		velocity.y = lerpf(velocity.y, speed * 0.42, 14.0 * delta)
+	else:
+		velocity.y += get_gravity().y * gscale * delta
+		velocity.y = maxf(velocity.y, -7.0)
+	velocity.x = along.x * speed - wn.x * WALL_RUN_STICK
+	velocity.z = along.z * speed - wn.z * WALL_RUN_STICK
+	wall_run_side = signf(cam_right.dot(-wn))
+
+func _after_wall_move(delta: float) -> void:
+	if not is_wall_running:
+		camera_roll_target = 0.0
+		if visual_root and not is_on_floor() and state != MoveState.HITSTUN:
+			visual_root.rotation.z = lerpf(visual_root.rotation.z, 0.0, 8.0 * delta)
+		return
+	# Auto ledge-vault: the wall ended while we were still climbing, so we just
+	# cleared its top edge. Hop over it instead of dropping down the face.
+	if not is_on_wall():
+		if velocity.y > 0.5:
+			var fwd := wall_run_forward
+			velocity.y = 11.5
+			velocity.x += fwd.x * 14.0
+			velocity.z += fwd.z * 14.0
+			_end_wall_run(0.0)
+			wall_run_latch = 0.12
+			jump_count = 1
+			if dash_vfx:
+				dash_vfx.play_sfx("vanish")
+				dash_vfx.spawn_cel_smoke(global_position + Vector3(0.0, 1.0, 0.0), 5, Vector3.UP, 0.8)
+				dash_vfx.spawn_step_sigil(global_position + Vector3(0.0, 0.2, 0.0), Color(0.55, 0.92, 1.0), 1.2)
+		else:
+			_end_wall_run(0.2)
+		return
+	if visual_root:
+		visual_root.rotation.z = lerpf(visual_root.rotation.z, deg_to_rad(-9.0 * wall_run_side), 10.0 * delta)
+	camera_roll_target = deg_to_rad(-8.0 * wall_run_side)
+
+func _end_wall_run(latch: float = 0.25) -> void:
+	if is_wall_running and visual_root:
+		visual_root.rotation.z = 0.0
+	is_wall_running = false
+	wall_run_timer = 0.0
+	wall_run_latch = latch
+	wall_run_side = 0.0
+	camera_roll_target = 0.0
+
 func trigger_weapon_windup(dir: Vector2) -> void:
 	if weapon_pivot:
 		weapon_pivot.rotation_degrees = Vector3(65.0 + dir.y * 35.0, dir.x * 45.0, -55.0 * signf(dir.x if absf(dir.x) > 0.1 else 1.0))
@@ -600,10 +761,11 @@ func trigger_weapon_swing(roll_deg: float, core_col: Color = Color(0.98, 0.96, 0
 
 func update_eye_shader() -> void:
 	if not eye_mat: return
-	eye_mat.set_shader_parameter("eye_shape", eye_shape)
+	eye_mat.set_shader_parameter("eye_shape", clampf(eye_shape, 0, 4))
 	eye_mat.set_shader_parameter("eye_hue", eye_hue)
 	eye_mat.set_shader_parameter("pupil_scale", eye_pupil_scale)
 	eye_mat.set_shader_parameter("glow_str", eye_glow_strength)
+	eye_mat.set_shader_parameter("awaken", maxf(1.0, eye_awaken_boost))
 
 func _setup_physical_ragdoll(skel: Skeleton3D) -> void:
 	# Name kept (verify gate + save compatibility) but this now prepares a
@@ -657,6 +819,7 @@ func update_cel_shader(cel: float, out_w: float, rim_s: float, rim_col: Color = 
 			outline_mat.set_shader_parameter("dist_falloff", data_store.tuning_get("outline_dist_scale", 0.0))
 
 func _reset_dash_visuals() -> void:
+	_end_wall_run(0.0)
 	if visual_root:
 		visual_root.visible = true
 		visual_root.scale = Vector3.ONE
@@ -685,6 +848,7 @@ func trigger_sonic_sway_pose(duration: float = 0.28) -> void:
 
 func apply_race_by_name(r_name: String) -> void:
 	if not data_store or not data_store.profiles.has(r_name): return
+	if not (data_store.profiles[r_name] is Dictionary): return
 	active_race_name = r_name
 	var r: Dictionary = data_store.profiles[r_name]
 	max_hp = float(r.get("max_hp", 1000.0))
@@ -917,6 +1081,24 @@ func _handle_left_release(pos: Vector2) -> void:
 
 func _trigger_jump() -> void:
 	if state == MoveState.HITSTUN: return
+	if is_wall_running:
+		# Wall kick-off: launch away from the wall and up, the anime backflip exit.
+		var kick: float = 18.0
+		if data_store:
+			kick = data_store.tuning_get("wall_kick_force", 18.0)
+		var n := wall_run_normal
+		if n.length_squared() < 0.01:
+			n = -visual_root.global_transform.basis.z
+		velocity = n.normalized() * kick + Vector3(0.0, jump_velocity * 1.1, 0.0)
+		state = MoveState.AIR
+		jump_count = 1
+		var push_dir := n.normalized()
+		_end_wall_run(0.35)
+		if dash_vfx:
+			dash_vfx.play_sfx("clash")
+			dash_vfx.spawn_step_sigil(global_position + Vector3(0, 0.8, 0), Color(0.55, 0.92, 1.0), 1.5)
+			dash_vfx.spawn_cel_smoke(global_position + Vector3(0, 0.9, 0), 4, push_dir, 0.7)
+		return
 	if jump_count < max_jumps:
 		jump_count += 1
 		state = MoveState.AIR
@@ -964,6 +1146,9 @@ func _physics_process(delta: float) -> void:
 	# Live tier switching: the Tab 8 slider re-applies on the next physics tick.
 	if data_store and int(round(data_store.tuning_get("quality_tier", 2.0))) != _applied_tier:
 		apply_quality_tier()
+	# The water checkbox + wave height in Tab 8 are live, no tier change needed.
+	if data_store and dash_vfx:
+		dash_vfx.set_water_enabled(data_store.tuning_bool("water_floor_enabled", false), data_store.tuning_get("water_wave_height", 0.12))
 	if face_sdf_active:
 		_push_head_basis()
 	if p5_camera_override: return
@@ -991,6 +1176,8 @@ func _physics_process(delta: float) -> void:
 	else:
 		mv_vec = Input.get_vector("move_left", "move_right", "move_forward", "move_back")
 		is_sprint_drag = Input.is_action_pressed("dash")
+
+	_tick_wall_run(delta, mv_vec, is_sprint_drag)
 
 	match state:
 		MoveState.HITSTUN:
@@ -1059,7 +1246,12 @@ func _physics_process(delta: float) -> void:
 			elif t_dir.length_squared() > 0.01:
 				visual_root.rotation.y = lerp_angle(visual_root.rotation.y, atan2(-t_dir.x, -t_dir.z), 15.0 * delta)
 
+	# Wall physics runs last so it owns velocity for this tick (the ground/air
+	# branch above would otherwise lerp it back to run_speed).
+	if is_wall_running:
+		_apply_wall_run_velocity(delta, mv_vec)
 	move_and_slide()
+	_after_wall_move(delta)
 	if is_on_floor():
 		jump_count = 0
 		if state == MoveState.AIR:
@@ -1067,7 +1259,7 @@ func _physics_process(delta: float) -> void:
 
 	if dash_vfx:
 		var cam_p := camera.global_position if camera else Vector3.ZERO
-		dash_vfx.update_vfx(delta, state == MoveState.DASH, dash_style, visual_root, afterimage_enabled, cam_p, global_position)
+		dash_vfx.update_vfx(delta, state == MoveState.DASH, dash_style, visual_root, afterimage_enabled, cam_p, global_position, _water_focus_pos())
 	_update_stepped_animation(delta)
 
 func _update_stepped_animation(delta: float) -> void:
@@ -1132,3 +1324,15 @@ func _process(delta: float) -> void:
 	camera_pivot.rotation_degrees.x = lerpf(camera_pivot.rotation_degrees.x, cam_rot_x, cam_lerp * delta)
 	var target_fov := dash_fov_kick if state == MoveState.DASH else base_fov
 	camera.fov = lerpf(camera.fov, target_fov, 12.0 * delta)
+	# The capsule never rolls; only the camera does, and only on a wall.
+	camera.rotation.z = lerpf(camera.rotation.z, camera_roll_target, 9.0 * delta)
+
+# Where the water shader draws its second ripple ring.
+func _water_focus_pos() -> Vector3:
+	if is_locked_on and is_instance_valid(lock_target):
+		return lock_target.global_position
+	if combat and combat.get("target_stats") != null and not combat.target_stats.is_empty():
+		var first = combat.target_stats.keys()[0]
+		if is_instance_valid(first):
+			return (first as Node3D).global_position
+	return Vector3(9999.0, 0.0, 9999.0)

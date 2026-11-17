@@ -5,7 +5,7 @@ Newest entry at the bottom of §4. Keep entries short and factual: what you chan
 verified, what you left open.
 
 - **Repo:** `Pinkypoopoo/sasti-sparkling-zero`
-- **Working branch:** `freebuff/9df505384c5b1c5ec2578cb3`
+- **Working branch:** `Pinkypoopoo-patch-1`
 - **Protected:** `main` / `freebuff-base`. **Never commit or push to main.** All experiments live on
   their own branch so the user always has a fallback.
 - **Engine:** Godot **4.7** (declared in `project.godot`). Mobile renderer, Jolt Physics.
@@ -254,5 +254,76 @@ member is a silent no-op today but a hard parse break then; do it behind a compi
 throttling already existed (`P2P_SEND_HZ = 30`, accumulator) — verified, no change needed; (d) ranked
 arena shell (M3).
 
-### _next entry_
-_(date · agent · what you changed · what you verified · what is left open)_
+### [2026-11-17] Buffy (Freebuff, 3rd agent) — V5: phone crash fixed, wall-run, water, celestial eye, impact slash
+
+Branch `Pinkypoopoo-patch-1`, `main` untouched. Gate: **VERIFY_PASSED**, 58 signatures,
+**58 combat asserts** (was 34).
+
+**Task 0 — the phone crash (root cause confirmed in this codebase, not from the log alone).**
+The V4 script is `load_from_disk()` ending in
+`refresh_auto_quality(not (parsed["tuning"] as Dictionary).has("render_scale"))`. When
+`user://dev_profile.json` predates the `tuning` key, that line throws
+`Invalid access to property or key 'tuning' on a base object of type 'Dictionary'` and
+`PlayerController._ready()` stops half-way — camera still inside the mesh. Fix: a single
+`CombatData.ensure_tuning(src)` normaliser (defaults + only recognised keys + only numeric/bool
+values) is now the first statement of `load_from_disk()`, `save_to_disk()` and
+`refresh_auto_quality()`; `load_from_disk()` type-checks every section (`profiles`, `move_slots`,
+`spell_slots`, `placed_blocks`, `tuning`, `*_tunables`) instead of trusting the file;
+`quality_tier_index()` replaces every bare `int(tuning["quality_tier"])`.
+**Proven, not assumed:** a negative control (buggy line restored) makes `combat_test.gd` print the
+exact phone error and fail on `legacy profile reaches the end of load_from_disk()`. The test writes a
+legacy `{"run_speed": 18.0, "player_tunables": {...}}` profile and asserts a player tunable — which
+is applied at the *end* of the function — actually landed.
+**Compiler warnings:** `var snapped` in `dash_vfx.gd` was the real `SHADOWED_VARIABLE` (it is not in
+`combat_data.gd` in this revision; `world_story.gd` has no `_process_story_cinematics`). Renamed to
+`snap_pos`. `verify.sh` now greps for shadowed built-ins and for a bare `int()`-to-enum assignment,
+and the log scanner gained `Invalid access to property or key` / `Invalid get|set index` /
+`Cannot convert argument`, i.e. the crash class itself. The gate also enforces this handoff file.
+
+**Task 1 — parkour wall-run.** `wall_run_gate()` is a pure, unit-tested gate (wall + `|ny| < 0.35` +
+sprint or >11 m/s + not busy + the tab-8 toggle). Physics keeps `up_direction = UP`: velocity is the
+input slid along the wall, plus an inward push so the capsule keeps contact; pushing into the wall
+climbs, running along it gets `wall_run_gravity_scale` (0.15) gravity. Only `VisualRoot.rotation.z`
+(±9°) and the camera Dutch roll (±8°) tilt. Auto ledge-vault on losing the wall mid-climb
+(`vy 11.5`, forward 14). Jump while wall-running = kick-off (`wall_kick_force`). **Pillars had no
+collision at all** — `spawn_arena_block()` now adds a `StaticBody3D` per solid block, disabled when
+the block shatters and restored by `reset_destructibles()`, so `is_on_wall()` can finally see them.
+
+**Task 2 — anime water floor + celestial eye.** One 240×240 plane, 32×32 subdiv, unshaded 3-band
+cel shader (`#050914`/`#10254C`/`#5CE6FF`), two uniforms (`player_pos`, `boss_pos`) feed two stepped
+contact-ripple rings with no extra draw calls and no reflection pass. `water_floor_enabled` +
+`water_wave_height` are tab-8 rows and are live (no tier change needed). `eye_shape = 4`
+(CELESTIAL_CONSTELLATION) added: cyan-white radial iris, one concentric dark ring, six starlight
+dots, with an `awaken` uniform that Flame Awakening multiplies by 2.4. `story_test.gd` now accepts
+0..4.
+
+**Task 3 — @NOBI_2D impact slash + cel smoke.** `GestureCombat.trigger_impact_slash()` records the
+3D hit point, a jittered screen angle and a 0.16 s timer on crits, posture breaks, super parries and
+KOs. `DevStudio._draw_impact_slash()` unprojects that point and draws: a 0.04 s binary flash, a
+full-viewport diagonal bisect, an expanding singularity ring and a 4-point star — 2D canvas vectors
+only. Cel smoke is a 14-quad preallocated pool with a hard-stepped violet/white shader
+(`#6E5AE6`/`#F2F0FF`), emitted on dashes, wall-run entry/vault/kick-off and every cratering hit.
+
+**Verified:** `bash verify.sh` → `VERIFY_PASSED` (engine 4.7, 58 signatures, invariants, hygiene,
+import, 120-frame boot, touch smoke, 58 combat asserts, story schema). Negative control above.
+**Not verified — needs the phone:** how the wall-run arc *feels* (contact retention on Jolt, the
+vault timing), water/ripple look and cost on the 732G, the impact-slash framing on a 20:9 screen,
+and cel-smoke density. Nothing visual was inspected; there is no GPU in this sandbox.
+
+**Characters are still the Blender primitive proxies** (`models/hero.glb`, `models/boss_veil.glb`,
+both built by `build_models.py`, the hero mesh is literally named `Cone`). No Blender here, so the
+repaint is not done, and the style must come from the user's Pinterest board + T-pose orthos before
+anything is rebuilt. Two structural gaps found while reading: the GLBs contain **no `Slot_*` nodes**,
+so the Tab 6 modular-clothing switcher is a no-op today, and `_attach_hitbox_to_skeleton()` grabs an
+`Arm_R` bone that exists but no `Veil_Back` bone does, so the spring-bone jiggle never runs.
+
+=== AI HANDOFF PACKET ===
+REPO: Pinkypoopoo/sasti-sparkling-zero
+BRANCH: Pinkypoopoo-patch-1 (HEAD for this entry: V5)
+DONE: Task 0 crash + warnings (+ regression test proven by negative control), Task 1 wall-run,
+Task 2 water floor + eye_shape 4, Task 3 impact slash + cel smoke. Gate 7/7, 58 asserts.
+OPEN: character art (needs T-pose orthos + style board), `Slot_*` nodes missing from the GLBs,
+`Veil_Back` bone missing so jiggle never runs, no on-device verification of any new visual.
+NEXT: rebuild `build_models.py` output for one locked style with Slot_ nodes + Veil_Back, then
+re-run `blender --background --python build_models.py` and raise Vertex Shadow Bias to 1.0.
+=== END AI HANDOFF PACKET ===

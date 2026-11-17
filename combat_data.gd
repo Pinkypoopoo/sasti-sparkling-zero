@@ -29,6 +29,11 @@ const TUNING_SPEC: Dictionary = {
 	"sdf_face_softness":   [0.01, 0.25, 0.01, "SDF Face Softness"],
 	"vertex_shadow_bias":  [0.0,  2.0, 0.05, "Vertex Shadow Bias"],
 	"outline_dist_scale":  [0.0,  1.0, 0.05, "Outline Distance Falloff"],
+	# V5 parkour + water floor
+	"wall_run_speed":      [14.0, 48.0, 1.0,  "Wall Run Speed"],
+	"wall_run_gravity_scale": [0.0, 1.0, 0.05, "Wall Run Gravity"],
+	"wall_kick_force":     [8.0,  32.0, 1.0,  "Wall Kick-Off Force"],
+	"water_wave_height":   [0.0,  0.65, 0.02, "Water Wave Height"],
 }
 
 const TUNING_BOOLS: Dictionary = {
@@ -37,6 +42,8 @@ const TUNING_BOOLS: Dictionary = {
 	"show_combo_counter":  "Combo Counter",
 	"auto_lock_on":        "Auto Lock-On Near Rival",
 	"auto_quality":        "Auto Quality (detect GPU on boot)",
+	"wall_run_enabled":    "Parkour Wall-Run (sprint into a wall)",
+	"water_floor_enabled": "Stylized Anime Water Floor",
 }
 
 const TUNING_DEFAULTS: Dictionary = {
@@ -47,9 +54,11 @@ const TUNING_DEFAULTS: Dictionary = {
 	"dmg_number_size": 1.0,
 	"quality_tier": 2, "render_scale": 0.92,
 	"sdf_face_softness": 0.06, "vertex_shadow_bias": 0.0, "outline_dist_scale": 0.0,
+	"wall_run_speed": 26.0, "wall_run_gravity_scale": 0.15, "wall_kick_force": 18.0,
+	"water_wave_height": 0.12,
 	"immortal_mode": false, "show_damage_numbers": true,
 	"show_combo_counter": true, "auto_lock_on": true,
-	"auto_quality": true,
+	"auto_quality": true, "wall_run_enabled": true, "water_floor_enabled": false,
 }
 
 # =============================================================================
@@ -90,14 +99,36 @@ func detect_quality_tier() -> int:
 			return 0
 	return 1
 
+# A save written by any earlier build can be missing keys, or hold a value of the
+# wrong type (a string, a nested dict). Every read and write path funnels through
+# here first, because the V4 phone crash was exactly this: load_from_disk() read
+# parsed["tuning"] straight out of a pre-V3 profile and aborted PlayerController
+# ._ready() mid-way, leaving the camera inside the mesh.
+func ensure_tuning(src: Dictionary = {}) -> void:
+	if typeof(tuning) != TYPE_DICTIONARY:
+		tuning = {}
+	for k in TUNING_DEFAULTS.keys():
+		if not tuning.has(k):
+			tuning[k] = TUNING_DEFAULTS[k]
+	for k in src.keys():
+		if TUNING_DEFAULTS.has(k) and typeof(src[k]) in [TYPE_INT, TYPE_FLOAT, TYPE_BOOL]:
+			tuning[k] = src[k]
+
+func quality_tier_index() -> int:
+	var v = tuning.get("quality_tier", 2)
+	if typeof(v) in [TYPE_INT, TYPE_FLOAT]:
+		return clampi(int(round(float(v))), 0, QUALITY_TIERS.size() - 1)
+	return 2
+
 # Auto mode stamps the detected tier at boot. Turning the box off keeps whatever
 # the user picked, which is the whole point of having the box.
 func refresh_auto_quality(stamp_scale: bool = true) -> void:
-	if not bool(tuning.get("auto_quality", true)):
+	ensure_tuning()
+	if not tuning_bool("auto_quality", true):
 		return
 	tuning["quality_tier"] = detect_quality_tier()
 	if stamp_scale:
-		tuning["render_scale"] = float(tier_profile(int(tuning["quality_tier"]))["scale"])
+		tuning["render_scale"] = float(tier_profile(quality_tier_index())["scale"])
 
 func _ready() -> void:
 	refresh_auto_quality()
@@ -173,6 +204,7 @@ var spell_slots: Dictionary = {
 var placed_blocks: Array = []
 
 func save_to_disk(player: Node, combat: Node = null) -> void:
+	ensure_tuning()
 	# Read the old file first: world_story.gd writes its own "story" section into
 	# the same profile, and a blind overwrite would delete every saved choice.
 	var payload: Dictionary = {}
@@ -211,23 +243,32 @@ func load_from_disk(player: Node, combat: Node = null) -> void:
 	if not f: return
 	var parsed = JSON.parse_string(f.get_as_text())
 	if typeof(parsed) != TYPE_DICTIONARY: return
-	if parsed.has("profiles"): profiles = parsed["profiles"]
-	if parsed.has("move_slots"): move_slots = parsed["move_slots"]
-	if parsed.has("spell_slots"): spell_slots = parsed["spell_slots"]
-	if parsed.has("placed_blocks"): placed_blocks = parsed["placed_blocks"]
-	if parsed.has("tuning") and typeof(parsed["tuning"]) == TYPE_DICTIONARY:
-		# Merge over defaults so a key added after an old save still exists.
-		for k in TUNING_DEFAULTS.keys():
-			if parsed["tuning"].has(k):
-				tuning[k] = parsed["tuning"][k]
+	var doc: Dictionary = parsed
+	# Every branch below is type-checked. A hand-edited or pre-V3 profile must
+	# degrade to defaults, never abort _ready() with a key/type error.
+	if typeof(doc.get("profiles", null)) == TYPE_DICTIONARY and not (doc["profiles"] as Dictionary).is_empty():
+		profiles = doc["profiles"]
+	if typeof(doc.get("move_slots", null)) == TYPE_DICTIONARY and not (doc["move_slots"] as Dictionary).is_empty():
+		move_slots = doc["move_slots"]
+	if typeof(doc.get("spell_slots", null)) == TYPE_DICTIONARY and not (doc["spell_slots"] as Dictionary).is_empty():
+		spell_slots = doc["spell_slots"]
+	if typeof(doc.get("placed_blocks", null)) == TYPE_ARRAY:
+		placed_blocks = doc["placed_blocks"]
+	# Build the tuning dict from defaults, then overlay only keys this build knows
+	# and only values whose type we can actually use.
+	var saved_tuning: Dictionary = {}
+	if typeof(doc.get("tuning", null)) == TYPE_DICTIONARY:
+		saved_tuning = doc["tuning"]
+	tuning = TUNING_DEFAULTS.duplicate(true)
+	ensure_tuning(saved_tuning)
 	# Auto quality: re-detect the GPU, but never throw away a render scale the
 	# user set by hand in an earlier session.
-	refresh_auto_quality(not (parsed["tuning"] as Dictionary).has("render_scale"))
-	if combat and parsed.has("combat_tunables"):
-		var ct: Dictionary = parsed["combat_tunables"]
+	refresh_auto_quality(not saved_tuning.has("render_scale"))
+	if combat and typeof(doc.get("combat_tunables", null)) == TYPE_DICTIONARY:
+		var ct: Dictionary = doc["combat_tunables"]
 		for k in ct.keys():
 			combat.set(k, ct[k])
-	if player and parsed.has("player_tunables"):
-		var pt: Dictionary = parsed["player_tunables"]
+	if player and typeof(doc.get("player_tunables", null)) == TYPE_DICTIONARY:
+		var pt: Dictionary = doc["player_tunables"]
 		for k in pt.keys():
 			player.set(k, pt[k])

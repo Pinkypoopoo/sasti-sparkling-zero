@@ -72,6 +72,15 @@ var impact_flash_timer: float = 0.0
 var impact_frame_cooldown: float = 0.0
 var clash_tension: int = 0
 
+# --- @NOBI_2D screen-space impact slash (video_4.mp4, 00:01–00:02) ----------
+# Recorded in 3D, drawn as 2D canvas vectors in DevStudio._draw(): a full-screen
+# diagonal bisect, a singularity ring and a 4-point star, all at zero 3D cost.
+const IMPACT_SLASH_TIME: float = 0.16
+var impact_slash_pos_3d: Vector3 = Vector3.ZERO
+var impact_slash_angle: float = -0.62
+var impact_slash_timer: float = 0.0
+var impact_flash_scale: float = 1.0
+
 # --- Result / feel state ------------------------------------------------------
 var result_state: String = ""            # "" | "VICTORY" | "DEFEAT"
 var combo_hits: int = 0
@@ -501,6 +510,7 @@ func _trigger_super_parry() -> void:
 		player.mana = minf(player.max_mana, player.mana + 30.0)
 		player.trigger_weapon_swing(0.0, Color(0.95, 0.15, 0.25))
 		player.trigger_hitstop(0.06, 0.65)
+		trigger_impact_slash(player.global_position + (-player.camera.global_transform.basis.z) * 3.2 + Vector3(0, 1.2, 0), 42.0, 1.1)
 		if player.dash_vfx:
 			player.dash_vfx.play_sfx("clash")
 			player.dash_vfx.spawn_step_sigil(player.global_position + Vector3(0, 1.0, 0), Color(0.95, 0.15, 0.25), 2.4)
@@ -616,6 +626,8 @@ func apply_damage(t: Node3D, dmg: float, post_dmg: float, launch_vec: Vector3 = 
 		# Damage-scaled hitstop: light hits snap, heavy hits hang.
 		player.trigger_hitstop(clampf(0.038 + dmg * 0.00016, 0.038, 0.11), 0.36 + minf(0.4, dmg * 0.0012))
 	_pop_damage_number(t.global_position + Vector3(0, 1.7, 0), dmg, Color(1.0, 0.92, 0.35) if crit else Color(1.0, 0.86, 0.45), crit)
+	if crit:
+		trigger_impact_slash(t.global_position + Vector3(0, 1.2, 0), -35.0, 1.0)
 	_bump_combo()
 	if launch_vec.y > 6.0 or launch_vec.length() > 14.0:
 		s["ai_state"] = AIState.LAUNCHED
@@ -631,6 +643,7 @@ func apply_damage(t: Node3D, dmg: float, post_dmg: float, launch_vec: Vector3 = 
 	elif s["posture"] >= s["max_posture"]:
 		# Posture break is a reward window, NOT a full heal + reset (that made the
 		# boss effectively immortal and the fight unwinnable).
+		trigger_impact_slash(t.global_position + Vector3(0, 1.3, 0), 18.0, 1.15)
 		s["posture"] = 0.0
 		s["ai_state"] = AIState.STAGGERED
 		s["state_timer"] = 1.7
@@ -647,6 +660,7 @@ func _kill_rival(t: Node3D, s: Dictionary) -> void:
 	s["ai_state"] = AIState.DEAD
 	s["state_timer"] = 999.0
 	s["combo_left"] = 0
+	trigger_impact_slash(t.global_position + Vector3(0, 1.4, 0), -28.0, 1.35)
 	var ko_dir := (t.global_position - player.global_position).normalized() if player else Vector3.BACK
 	s["vel"] = ko_dir * 16.0 + Vector3(0, 11.5, 0)
 	last_combat_action = "K.O. — %s IS DOWN!" % str(s.get("boss_name", "RIVAL"))
@@ -685,6 +699,15 @@ func reset_duel() -> void:
 		if not player.is_locked_on:
 			player.toggle_lock_on()
 	last_combat_action = "DUEL RESET — ROUND 2"
+
+# angle_deg is the screen-space tilt of the bisect line; flash scales the white
+# frame. Both are cosmetic, so a crit and a KO can read differently.
+func trigger_impact_slash(world_pos: Vector3, angle_deg: float = -35.0, flash: float = 1.0) -> void:
+	impact_slash_pos_3d = world_pos
+	impact_slash_angle = deg_to_rad(angle_deg + randf_range(-7.0, 7.0))
+	impact_slash_timer = IMPACT_SLASH_TIME
+	impact_flash_scale = clampf(flash, 0.4, 1.6)
+	impact_flash_timer = maxf(impact_flash_timer, 0.045)
 
 func simulate_clash(is_super: bool) -> void:
 	clash_tension += 1
@@ -841,6 +864,7 @@ func _resolve_enemy_strike_on_player(td: Node3D, s: Dictionary) -> void:
 func _process(delta: float) -> void:
 	if parry_window_timer > 0.0: parry_window_timer -= delta
 	if impact_flash_timer > 0.0: impact_flash_timer -= delta
+	if impact_slash_timer > 0.0: impact_slash_timer = maxf(0.0, impact_slash_timer - delta)
 	if impact_frame_cooldown > 0.0: impact_frame_cooldown -= delta
 	if swipe_chain_timer > 0.0:
 		swipe_chain_timer -= delta

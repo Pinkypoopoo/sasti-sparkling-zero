@@ -32,6 +32,14 @@ var stone_mat: StandardMaterial3D = null
 var dark_stone_mat: StandardMaterial3D = null
 var flora_mat: ShaderMaterial = null
 
+# --- V5 stylized anime water floor + 2-tone cel smoke ----------------------
+var water_mesh: MeshInstance3D = null
+var water_mat: ShaderMaterial = null
+var water_enabled: bool = false
+var water_boss_pos: Vector3 = Vector3(9999.0, 0.0, 9999.0)
+var cel_smoke_pool: Array[Dictionary] = []
+var cel_smoke_idx: int = 0
+
 # --- Minecraft-Style Custom Arena Blocks & MultiMesh Flora ---
 var custom_block_nodes: Array[Dictionary] = []
 
@@ -53,6 +61,8 @@ func _ready() -> void:
 	_setup_synth_audio()
 	_setup_afterimage_pool()
 	_setup_slash_arc_pool()
+	_setup_cel_smoke_pool()
+	_setup_water_floor()
 	_setup_destructible_arena()
 
 func _setup_synth_audio() -> void:
@@ -276,15 +286,182 @@ void fragment() {
 		add_child(c_mi)
 		crater_pool.append(c_mi)
 
+# =============================================================================
+#  STYLIZED ANIME WATER FLOOR  (video_3.mp4 — @ITSJUAN.NDS, 00:00–00:13)
+#  One subdivided plane, one unshaded 3-band cel shader, two uniforms for the
+#  contact ripples. No reflection pass, no screen-space work, zero extra draw
+#  calls for the ripples — on a 732G that is the difference between 45 and 30 fps.
+# =============================================================================
+const WATER_SHADER: String = """
+shader_type spatial;
+render_mode unshaded, cull_disabled, depth_draw_opaque;
+
+uniform float wave_height : hint_range(0.0, 0.65) = 0.12;
+uniform vec3 player_pos = vec3(0.0);
+uniform vec3 boss_pos = vec3(9999.0);
+uniform vec4 trough_col : source_color = vec4(0.020, 0.035, 0.078, 1.0);
+uniform vec4 mid_col : source_color = vec4(0.063, 0.145, 0.298, 1.0);
+uniform vec4 crest_col : source_color = vec4(0.361, 0.902, 1.0, 1.0);
+
+varying float v_h;
+varying vec3 v_wpos;
+
+float contact_ring(vec2 w, vec2 c, float speed, float reach) {
+	float d = length(w - c);
+	float band = sin(d * 4.6 - TIME * speed * 4.2) * 0.5 + 0.5;
+	return step(0.74, band) * smoothstep(reach, 0.0, d);
+}
+
+void vertex() {
+	vec3 w = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	float h = sin(w.x * 0.32 + TIME * 1.35) * 0.62
+	        + sin(w.z * 0.24 - TIME * 0.95) * 0.38
+	        + sin((w.x + w.z) * 0.11 + TIME * 0.55) * 0.22;
+	VERTEX.y += h * wave_height;
+	v_h = h;
+	v_wpos = w;
+}
+
+void fragment() {
+	float t = clamp(v_h * 0.5 + 0.5, 0.0, 1.0);
+	vec3 col = trough_col.rgb;
+	if (t >= 0.54) { col = mid_col.rgb; }
+	if (t >= 0.82) { col = crest_col.rgb; }
+	col += crest_col.rgb * contact_ring(v_wpos.xz, player_pos.xz, 1.0, 6.5) * 0.85;
+	col += crest_col.rgb * contact_ring(v_wpos.xz, boss_pos.xz, 0.7, 8.5) * 0.55;
+	ALBEDO = col;
+}
+"""
+
+func _setup_water_floor() -> void:
+	var plane := PlaneMesh.new()
+	plane.size = Vector2(240.0, 240.0)
+	plane.subdivide_width = 32
+	plane.subdivide_depth = 32
+	water_mesh = MeshInstance3D.new()
+	water_mesh.name = "AnimeWaterFloor"
+	water_mesh.mesh = plane
+	water_mesh.top_level = true
+	water_mesh.position = Vector3(0.0, 0.03, 0.0)
+	water_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	water_mat = ShaderMaterial.new()
+	water_mat.shader = Shader.new()
+	water_mat.shader.code = WATER_SHADER
+	water_mesh.material_override = water_mat
+	water_mesh.visible = false
+	add_child(water_mesh)
+
+func set_water_enabled(on: bool, wave_height: float = 0.12) -> void:
+	if not water_mesh:
+		return
+	water_enabled = on
+	water_mesh.visible = on
+	if water_mat:
+		water_mat.set_shader_parameter("wave_height", clampf(wave_height, 0.0, 0.65))
+
+func _update_water_floor(player_pos: Vector3) -> void:
+	if not water_enabled or not water_mat:
+		return
+	water_mat.set_shader_parameter("player_pos", player_pos)
+	water_mat.set_shader_parameter("boss_pos", water_boss_pos)
+
+# =============================================================================
+#  2-TONE CEL SMOKE  (video_4.mp4 — @NOBI_2D, 00:03–00:05)
+#  A camera-facing quad with a hard violet/white boundary: the shadow band is a
+#  step, not a gradient, which is the whole look. Pooled, so it allocates nothing.
+# =============================================================================
+const CEL_SMOKE_SHADER: String = """
+shader_type spatial;
+render_mode unshaded, blend_mix, depth_draw_never, cull_disabled, shadows_disabled;
+
+uniform vec4 lit_col : source_color = vec4(0.949, 0.941, 1.0, 1.0);
+uniform vec4 shadow_col : source_color = vec4(0.431, 0.353, 0.902, 1.0);
+uniform float alpha : hint_range(0.0, 1.0) = 0.95;
+
+void vertex() {
+	MODELVIEW_MATRIX = VIEW_MATRIX * mat4(
+		INV_VIEW_MATRIX[0], INV_VIEW_MATRIX[1], INV_VIEW_MATRIX[2], MODEL_MATRIX[3]);
+	MODELVIEW_MATRIX = MODELVIEW_MATRIX * mat4(
+		vec4(length(MODEL_MATRIX[0].xyz), 0.0, 0.0, 0.0),
+		vec4(0.0, length(MODEL_MATRIX[1].xyz), 0.0, 0.0),
+		vec4(0.0, 0.0, length(MODEL_MATRIX[2].xyz), 0.0),
+		vec4(0.0, 0.0, 0.0, 1.0));
+}
+
+void fragment() {
+	vec2 p = UV * 2.0 - 1.0;
+	float r = length(p) + 0.09 * sin(UV.x * 11.0 + UV.y * 8.0) + 0.05 * sin(UV.y * 17.0);
+	float body = 1.0 - smoothstep(0.72, 0.98, r);
+	if (body <= 0.01) { discard; }
+	// Hard 2-band split, no interpolation between them.
+	float lit = step(0.0, dot(p, normalize(vec2(-0.62, 0.78))) + 0.12);
+	ALBEDO = mix(shadow_col.rgb, lit_col.rgb, lit);
+	ALPHA = body * alpha;
+}
+"""
+
+func _setup_cel_smoke_pool() -> void:
+	var quad := QuadMesh.new()
+	quad.size = Vector2(1.6, 1.6)
+	for i in range(14):
+		var mi := MeshInstance3D.new()
+		mi.mesh = quad
+		mi.top_level = true
+		mi.visible = false
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		var mat := ShaderMaterial.new()
+		mat.shader = Shader.new()
+		mat.shader.code = CEL_SMOKE_SHADER
+		mi.material_override = mat
+		add_child(mi)
+		cel_smoke_pool.append({"mi": mi, "mat": mat, "vel": Vector3.ZERO, "timer": 0.0, "life": 0.8})
+
+func spawn_cel_smoke(pos: Vector3, count: int = 5, dir: Vector3 = Vector3.UP, scale_mult: float = 1.0) -> void:
+	var base_dir := dir.normalized() if dir.length_squared() > 0.01 else Vector3.UP
+	for i in range(count):
+		if cel_smoke_pool.is_empty():
+			return
+		var p: Dictionary = cel_smoke_pool[cel_smoke_idx]
+		cel_smoke_idx = (cel_smoke_idx + 1) % cel_smoke_pool.size()
+		var mi: MeshInstance3D = p["mi"]
+		var mat: ShaderMaterial = p["mat"]
+		var puff := base_dir * 4.0 + Vector3(randf_range(-1.0, 1.0), randf_range(0.1, 0.9), randf_range(-1.0, 1.0)) * 2.4
+		p["vel"] = puff.normalized() * randf_range(2.0, 5.2)
+		p["life"] = randf_range(0.55, 0.95)
+		p["timer"] = float(p["life"])
+		mi.global_position = pos + Vector3(randf_range(-0.5, 0.5), randf_range(0.0, 0.6), randf_range(-0.5, 0.5))
+		mi.scale = Vector3.ONE * scale_mult * randf_range(0.7, 1.35)
+		mi.rotation.z = randf() * TAU
+		mat.set_shader_parameter("alpha", 0.95)
+		mi.visible = true
+
+func _update_cel_smoke(delta: float) -> void:
+	for p in cel_smoke_pool:
+		if float(p["timer"]) <= 0.0:
+			continue
+		p["timer"] = maxf(0.0, float(p["timer"]) - delta)
+		var mi: MeshInstance3D = p["mi"]
+		var v: Vector3 = p["vel"]
+		mi.global_position += v * delta
+		v.y += 1.4 * delta
+		v.x = lerpf(v.x, 0.0, 2.4 * delta)
+		v.z = lerpf(v.z, 0.0, 2.4 * delta)
+		p["vel"] = v
+		mi.scale += Vector3.ONE * (delta * 1.5)
+		var k: float = float(p["timer"]) / maxf(0.01, float(p["life"]))
+		(p["mat"] as ShaderMaterial).set_shader_parameter("alpha", clampf(k, 0.0, 1.0) * 0.95)
+		if float(p["timer"]) <= 0.0:
+			mi.visible = false
+
 # --- Minecraft-Style Modular Block & MultiMesh Flora Spawner ---
 func spawn_arena_block(kind: String, pos: Vector3, rot_y_deg: float = 0.0, record_user: bool = true) -> void:
 	if record_user and custom_block_nodes.size() >= MAX_USER_BLOCKS:
 		return
-	var snapped := Vector3(snappedf(pos.x, 2.0), maxf(0.0, snappedf(pos.y, 2.0)), snappedf(pos.z, 2.0))
+	var snap_pos := Vector3(snappedf(pos.x, 2.0), maxf(0.0, snappedf(pos.y, 2.0)), snappedf(pos.z, 2.0))
 	var b_root := Node3D.new()
 	b_root.top_level = true
 	add_child(b_root)
-	b_root.global_position = snapped
+	b_root.global_position = snap_pos
 	b_root.rotation_degrees.y = rot_y_deg
 
 	var upper_holder := Node3D.new()
@@ -341,7 +518,29 @@ func spawn_arena_block(kind: String, pos: Vector3, rot_y_deg: float = 0.0, recor
 			mmi.material_override = flora_mat
 			upper_holder.add_child(mmi)
 
-	var entry := {"kind": kind, "pos": snapped, "rot": rot_y_deg, "root": b_root, "upper": upper_holder, "intact": true, "user_placed": record_user}
+	# Solid geometry: without a StaticBody the parkour wall-run can never see a
+	# pillar (is_on_wall() stays false against a mesh with no collision).
+	var solid := StaticBody3D.new()
+	solid.name = "SolidBlock"
+	var solid_shape := CollisionShape3D.new()
+	var has_collision := true
+	match kind:
+		"GOTHIC_PILLAR":
+			var bs := BoxShape3D.new(); bs.size = Vector3(2.2, 16.4, 2.2)
+			solid_shape.shape = bs; solid_shape.position = Vector3(0, 8.2, 0)
+		"BLAME_MONOLITH":
+			var bm := BoxShape3D.new(); bm.size = Vector3(4.0, 22.0, 4.0)
+			solid_shape.shape = bm; solid_shape.position = Vector3(0, 11.0, 0)
+		"RUINED_ARCH":
+			var ba := BoxShape3D.new(); ba.size = Vector3(7.2, 8.8, 1.8)
+			solid_shape.shape = ba; solid_shape.position = Vector3(0, 4.4, 0)
+		_:
+			has_collision = false
+	if has_collision:
+		solid.add_child(solid_shape)
+		b_root.add_child(solid)
+
+	var entry := {"kind": kind, "pos": snap_pos, "rot": rot_y_deg, "root": b_root, "upper": upper_holder, "intact": true, "user_placed": record_user, "solid": solid if has_collision else null, "solid_shape": solid_shape if has_collision else null}
 	destructible_pillars.append(entry)
 	if record_user:
 		custom_block_nodes.append(entry)
@@ -384,6 +583,8 @@ func load_serialized_blocks(arr: Array) -> void:
 			spawn_arena_block(str(item.get("kind", "GOTHIC_PILLAR")), Vector3(float(item.get("x", 0.0)), float(item.get("y", 0.0)), float(item.get("z", 0.0))), float(item.get("rot", 0.0)), true)
 
 func check_destruction(impact_pos: Vector3, radius: float, impulse_dir: Vector3, spawn_crater: bool = false) -> void:
+	if spawn_crater:
+		spawn_cel_smoke(impact_pos + Vector3(0, 0.3, 0), 5, impulse_dir if impulse_dir.length_squared() > 0.01 else Vector3.UP, 0.9)
 	if spawn_crater and impact_pos.y <= 2.2:
 		var cm := crater_pool[crater_idx]
 		cm.global_position = Vector3(impact_pos.x, 0.54, impact_pos.z)
@@ -399,8 +600,11 @@ func check_destruction(impact_pos: Vector3, radius: float, impulse_dir: Vector3,
 			var flat_d := Vector2(impact_pos.x - p_pos.x, impact_pos.z - p_pos.z).length()
 			if flat_d <= radius:
 				p["intact"] = false
-				if is_instance_valid(p["upper"]):
+				if is_instance_valid(p.get("upper", null)):
 					(p["upper"] as Node3D).visible = false
+				# A shattered pillar must not stay an invisible wall you can climb.
+				if is_instance_valid(p.get("solid_shape", null)):
+					(p["solid_shape"] as CollisionShape3D).set_deferred("disabled", true)
 				_burst_debris(p_pos + Vector3(0, 4.5, 0), impulse_dir, 12)
 				spawn_step_sigil(p_pos + Vector3(0, 2.0, 0), Color(0.95, 0.92, 0.88), 2.4)
 				play_sfx("shatter")
@@ -433,6 +637,8 @@ func reset_destructibles() -> void:
 		p["intact"] = true
 		if is_instance_valid(p.get("upper", null)):
 			(p["upper"] as Node3D).visible = true
+		if is_instance_valid(p.get("solid_shape", null)):
+			(p["solid_shape"] as CollisionShape3D).set_deferred("disabled", false)
 	for d in debris_pool:
 		d["timer"] = 0.0
 		(d["mesh"] as MeshInstance3D).visible = false
@@ -465,6 +671,7 @@ func spawn_step_sigil(pos: Vector3, col: Color, scale_mult: float = 1.0) -> void
 
 func trigger_style_fx(style: int, start_pos: Vector3, end_pos: Vector3, visual_root: Node3D, allow_afterimage: bool) -> void:
 	play_sfx("vanish")
+	spawn_cel_smoke(start_pos + Vector3(0, 0.8, 0), 4, -Vector3(end_pos - start_pos).normalized(), 0.6)
 	if not allow_afterimage:
 		clear_afterimages()
 	match style:
@@ -499,7 +706,10 @@ func trigger_style_fx(style: int, start_pos: Vector3, end_pos: Vector3, visual_r
 			dash_fx_mesh.visible = true
 			dash_fx_timer = 0.25
 
-func update_vfx(delta: float, is_dashing: bool, style: int, visual_root: Node3D, allow_afterimage: bool, cam_pos: Vector3 = Vector3.ZERO, player_pos: Vector3 = Vector3.ZERO) -> void:
+func update_vfx(delta: float, is_dashing: bool, style: int, visual_root: Node3D, allow_afterimage: bool, cam_pos: Vector3 = Vector3.ZERO, player_pos: Vector3 = Vector3.ZERO, boss_pos: Vector3 = Vector3.ZERO) -> void:
+	water_boss_pos = boss_pos if boss_pos.length_squared() > 0.01 else water_boss_pos
+	_update_water_floor(player_pos)
+	_update_cel_smoke(delta)
 	# Camera-to-Player Wall Occlusion Dithering
 	if cam_pos.length_squared() > 0.01:
 		var cam_to_p := cam_pos.distance_to(player_pos)
