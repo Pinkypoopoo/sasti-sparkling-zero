@@ -357,6 +357,8 @@ expose the bones, `Slot_*` nodes and clips the engine asks for (gate `[3b/7]`).
 boot, smoke, 58 combat asserts, story schema. **Not verified:** any of it in the engine renderer
 (no GPU) — the look in-game is unconfirmed, and the pose blending at 12 fps stepping is unseen.
 
+**Source material is finally readable.** `sasti sparkling zero_261116153237.pdf` (the 472-page Gemini export in the Drive `Game dev` folder) extracts cleanly with pypdf in a venv — 2.25 M chars; `tools/read_source_docs.py` re-dumps it. What it actually specifies, and what this build is held to: `custom_races: Dictionary` in `dev_profile.json` with per-race `max_hp / max_mana / physical_strength / base_power / run_mult / dash_mult / flight_mult / feint_recovery_speed` (that is the Tab 8 tuning tab), the **Cursed Rags Swordsman** as the first fighter (hooded, rags, katana — the model now matches it), and hard mobile budgets: **under 80 draw calls**, one directional sun, no real-time omni/spot shadows, 256x256 palette textures, test at 60/90/120 Hz. It recommends VRoid Studio for the character, which needs a PC; that is the one recommendation this pipeline deliberately does not follow. `GodotEngine.epub` is 211 MB and still unread — it is the docs bundled as a zip of XHTML, so `tools/read_source_docs.py` will read it once downloaded, but godot-docs online covers the same ground.
+
 **Left open:** `build_models.py` now exports to `art/` so a Blender run cannot clobber the
 shipped GLBs; it is kept only as the reference for the vertex-colour packing. The two characters
 are still primitive-assembled — good silhouette, simple forms. Next art step is either more
