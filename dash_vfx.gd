@@ -41,6 +41,80 @@ var _water_height_applied: float = -1.0
 var cel_smoke_pool: Array[Dictionary] = []
 var cel_smoke_idx: int = 0
 
+# --- Screen-space 2D impact slash (CanvasLayer) ----------------------------
+# A 0.16 s diagonal ink slash + expanding singularity ring. Drawn with plain 2D
+# canvas vectors inside a CanvasLayer: no second viewport, no full-screen
+# post-process shader, no 3D fill-rate. Sits above both the 3D world and the HUD.
+const SCREEN_SLASH_TIME: float = 0.16
+var slash_layer: CanvasLayer = null
+var screen_slash: ScreenSlash = null
+var slash_enabled: bool = true
+var slash_intensity: float = 1.0
+var smoke_enabled: bool = true
+var smoke_density: float = 1.0
+var low_tier: bool = false
+# Cap on simultaneous cel-smoke puffs; set from the active 4-tier profile.
+var fx_cap: int = 14
+
+class ScreenSlash extends Control:
+	var timer: float = 0.0
+	var total: float = 0.16
+	var angle: float = -0.35
+	var strength: float = 1.0
+	var centre: Vector2 = Vector2.ZERO
+	var reduced: bool = false
+	var enabled: bool = true
+
+	func _ready() -> void:
+		mouse_filter = Control.MOUSE_FILTER_IGNORE
+		set_anchors_preset(Control.PRESET_FULL_RECT)
+		visible = false
+
+	func fire(at: Vector2, tilt: float, power: float) -> void:
+		if not enabled:
+			return
+		centre = at
+		angle = tilt
+		strength = clampf(power, 0.4, 1.6)
+		timer = total
+		visible = true
+		queue_redraw()
+
+	func _process(delta: float) -> void:
+		if timer <= 0.0:
+			return
+		timer = maxf(0.0, timer - delta)
+		queue_redraw()
+		if timer <= 0.0:
+			visible = false
+
+	func _draw() -> void:
+		if timer <= 0.0:
+			return
+		var vp: Vector2 = get_viewport_rect().size
+		var age: float = clampf(1.0 - timer / maxf(0.01, total), 0.0, 1.0)
+		var fade: float = 1.0 - age
+		var dir := Vector2(cos(angle), sin(angle))
+		var reach: float = vp.length() * 1.2
+		var a := centre - dir * reach
+		var b := centre + dir * reach
+		# Sharp diagonal ink slash: two soft under-strokes and a hard core line.
+		if age < 0.35:
+			draw_line(a, b, Color(0.70, 0.62, 1.0, 0.45 * fade * strength), 22.0 * strength)
+			draw_line(a, b, Color(0.92, 0.90, 1.0, 0.65 * fade * strength), 9.0 * strength)
+		draw_line(a, b, Color(1, 1, 1, fade * strength), 3.0 * strength)
+		if not reduced:
+			# Expanding singularity ring, double-walled.
+			var ring_r: float = lerpf(10.0, 200.0, minf(1.0, age * 1.15))
+			draw_arc(centre, ring_r, 0.0, TAU, 48, Color(1, 1, 1, fade * 0.85), 2.5 * strength)
+			draw_arc(centre, ring_r * 0.74, 0.0, TAU, 40, Color(0.72, 0.60, 1.0, fade * 0.6), 1.5 * strength)
+			# 4-point star flare on the hit point.
+			var perp := Vector2(-dir.y, dir.x)
+			var flare: float = lerpf(110.0, 14.0, age) * strength
+			for d in [dir, -dir, perp, -perp]:
+				draw_line(centre - d * flare, centre + d * flare, Color(1, 1, 1, fade * 0.9), 2.0)
+		draw_circle(centre, maxf(2.0, 9.0 * fade * strength), Color(1, 1, 1, fade))
+
 # --- Minecraft-Style Custom Arena Blocks & MultiMesh Flora ---
 var custom_block_nodes: Array[Dictionary] = []
 
@@ -63,6 +137,7 @@ func _ready() -> void:
 	_setup_afterimage_pool()
 	_setup_slash_arc_pool()
 	_setup_cel_smoke_pool()
+	_setup_screen_slash()
 	_setup_water_floor()
 	_setup_destructible_arena()
 
@@ -422,9 +497,56 @@ func _setup_cel_smoke_pool() -> void:
 		add_child(mi)
 		cel_smoke_pool.append({"mi": mi, "mat": mat, "vel": Vector3.ZERO, "timer": 0.0, "life": 0.8})
 
+func _setup_screen_slash() -> void:
+	slash_layer = CanvasLayer.new()
+	slash_layer.name = "ImpactSlashLayer"
+	slash_layer.layer = 20
+	add_child(slash_layer)
+	screen_slash = ScreenSlash.new()
+	screen_slash.name = "ScreenSlash"
+	screen_slash.total = SCREEN_SLASH_TIME
+	screen_slash.enabled = slash_enabled
+	slash_layer.add_child(screen_slash)
+
+# Project the 3D hit point to the screen and fire the CanvasLayer effect. With no
+# camera (headless tests) it still fires at screen centre rather than going silent.
+func trigger_screen_slash(world_pos: Vector3, angle_deg: float = -35.0, power: float = 1.0) -> void:
+	if not slash_enabled or screen_slash == null:
+		return
+	var at: Vector2 = get_viewport().get_visible_rect().size * 0.5
+	var cam := get_viewport().get_camera_3d()
+	if cam != null and not cam.is_position_behind(world_pos):
+		at = cam.unproject_position(world_pos)
+	screen_slash.enabled = slash_enabled
+	screen_slash.reduced = low_tier
+	screen_slash.total = SCREEN_SLASH_TIME
+	screen_slash.fire(at, deg_to_rad(angle_deg + randf_range(-7.0, 7.0)), power * slash_intensity)
+
+# Everything the 4-tier profile + tab 8 own about VFX, in one setter.
+func set_fx_budget(cap: int, low: bool, slash_on: bool, slash_power: float, smoke_on: bool, density: float) -> void:
+	fx_cap = clampi(cap, 0, maxi(1, cel_smoke_pool.size()))
+	low_tier = low
+	slash_enabled = slash_on
+	slash_intensity = clampf(slash_power, 0.0, 2.0)
+	smoke_enabled = smoke_on
+	smoke_density = clampf(density, 0.0, 2.0)
+	if screen_slash:
+		screen_slash.enabled = slash_on
+		screen_slash.reduced = low
+
 func spawn_cel_smoke(pos: Vector3, count: int = 5, dir: Vector3 = Vector3.UP, scale_mult: float = 1.0) -> void:
+	if not smoke_enabled or cel_smoke_pool.is_empty() or fx_cap <= 0:
+		return
+	var active := 0
+	for p in cel_smoke_pool:
+		if float(p["timer"]) > 0.0:
+			active += 1
+	var room: int = clampi(fx_cap - active, 0, cel_smoke_pool.size())
+	if room <= 0:
+		return
+	var want: int = clampi(int(round(float(count) * smoke_density)), 1, room)
 	var base_dir := dir.normalized() if dir.length_squared() > 0.01 else Vector3.UP
-	for i in range(count):
+	for i in range(want):
 		if cel_smoke_pool.is_empty():
 			return
 		var p: Dictionary = cel_smoke_pool[cel_smoke_idx]

@@ -34,6 +34,9 @@ const TUNING_SPEC: Dictionary = {
 	"wall_run_gravity_scale": [0.0, 1.0, 0.05, "Wall Run Gravity"],
 	"wall_kick_force":     [8.0,  32.0, 1.0,  "Wall Kick-Off Force"],
 	"water_wave_height":   [0.0,  0.65, 0.02, "Water Wave Height"],
+	# V5 Task 2: screen-space impact slash + 2-tone cel smoke
+	"impact_slash_intensity": [0.0, 2.0, 0.05, "Impact Slash Intensity"],
+	"cel_smoke_density":   [0.0, 2.0, 0.05, "Cel Smoke Density"],
 }
 
 const TUNING_BOOLS: Dictionary = {
@@ -43,6 +46,8 @@ const TUNING_BOOLS: Dictionary = {
 	"auto_lock_on":        "Auto Lock-On Near Rival",
 	"auto_quality":        "Auto Quality (detect GPU on boot)",
 	"wall_run_enabled":    "Parkour Wall-Run (sprint into a wall)",
+	"impact_slash_enabled": "Screen-Space Impact Slash + Ring",
+	"cel_smoke_enabled":   "2-Tone Cel-Smoke Puffs",
 	"water_floor_enabled": "Stylized Anime Water Floor",
 }
 
@@ -59,6 +64,8 @@ const TUNING_DEFAULTS: Dictionary = {
 	"immortal_mode": false, "show_damage_numbers": true,
 	"show_combo_counter": true, "auto_lock_on": true,
 	"auto_quality": true, "wall_run_enabled": true, "water_floor_enabled": false,
+	"impact_slash_enabled": true, "impact_slash_intensity": 1.0,
+	"cel_smoke_enabled": true, "cel_smoke_density": 1.0,
 }
 
 # =============================================================================

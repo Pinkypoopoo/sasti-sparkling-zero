@@ -22,4 +22,5 @@ description: "Combat physics, AI state machine, Tab 8 tuning specs, legacy save 
 
 ## Wall-Running Rules (V5)
 - Strictly intent-gated: activate only when `wall_run_enabled`, `is_on_wall()`, `absf(normal.y) < 0.35`, holding Sprint/Dash (speed > 11.0), and NOT attacking or in hitstun.
-- Keep `CharacterBody3D.up_direction = Vector3.UP`; tilt only `VisualRoot` + `±8°` camera roll. Add auto ledge-vault and jump wall kick-off.
+- Keep `CharacterBody3D.up_direction = Vector3.UP`; tilt only `VisualRoot` + `±8°` camera roll. Add auto ledge-vault (chest + head clearance rays) and jump wall kick-off.
+- APPROVED Intent gate: a new agent must keep `sprint_held or h_speed > WALL_RUN_MIN_SPEED`. Harden this into `and` and the feature stops working: `move_and_slide()` absorbs the normal component on contact, so tangential speed when sprinting straight into a wall is only ~4 m/s. The OR is deliberate; the test suite asserts both halves.

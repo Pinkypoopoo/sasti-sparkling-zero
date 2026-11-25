@@ -265,6 +265,47 @@ func _run() -> void:
 	check(player.dash_vfx.cel_smoke_pool.size() == 14, "cel-smoke pool is preallocated")
 	check(smoke_after >= smoke_before + 1, "cel-smoke pool emits 2-tone puffs")
 
+	# --- 15. V5 Task 2: screen-space impact slash + 2-tone cel smoke ----------
+	player.data_store.reset_tuning()
+	check(CombatData.TUNING_DEFAULTS.has("impact_slash_enabled") and bool(CombatData.TUNING_DEFAULTS["impact_slash_enabled"]), "impact_slash_enabled exists in tuning defaults")
+	check(CombatData.TUNING_SPEC.has("impact_slash_intensity"), "impact slash intensity is a tab-8 slider")
+	check(CombatData.TUNING_BOOLS.has("cel_smoke_enabled"), "cel_smoke_enabled is a tab-8 checkbox")
+	check(CombatData.TUNING_SPEC.has("cel_smoke_density"), "cel smoke density is a tab-8 slider")
+	player._push_fx_budget()
+	check(player.dash_vfx.screen_slash != null and player.dash_vfx.slash_layer is CanvasLayer, "impact slash lives on a CanvasLayer")
+	player.dash_vfx.screen_slash.timer = 0.0
+	combat.trigger_impact_slash(Vector3(0, 2, -4), -30.0, 1.2)
+	check(player.dash_vfx.screen_slash.timer > 0.0, "a crit / Z-Vanish / KO slash fires the CanvasLayer effect")
+	player.data_store.tuning["impact_slash_enabled"] = false
+	player._push_fx_budget()
+	player.dash_vfx.screen_slash.timer = 0.0
+	combat.trigger_impact_slash(Vector3(0, 2, -4), -30.0, 1.2)
+	check(player.dash_vfx.screen_slash.timer == 0.0, "the tab-8 toggle disables the screen slash")
+	player.data_store.tuning["impact_slash_enabled"] = true
+	player.data_store.tuning["cel_smoke_enabled"] = false
+	player._push_fx_budget()
+	for p in player.dash_vfx.cel_smoke_pool:
+		p["timer"] = 0.0
+	player.dash_vfx.spawn_cel_smoke(Vector3(0, 1, -2), 6, Vector3.UP, 1.0)
+	var smoke_off := 0
+	for p in player.dash_vfx.cel_smoke_pool:
+		if float(p["timer"]) > 0.0: smoke_off += 1
+	check(smoke_off == 0, "cel smoke never spawns while its tab-8 toggle is off")
+	player.data_store.tuning["cel_smoke_enabled"] = true
+	player._push_fx_budget()
+	for p in player.dash_vfx.cel_smoke_pool:
+		p["timer"] = 0.0
+	player.dash_vfx.set_fx_budget(2, true, true, 1.0, true, 1.0)
+	player.dash_vfx.spawn_cel_smoke(Vector3(0, 1, -2), 8, Vector3.UP, 1.0)
+	var smoke_capped := 0
+	for p in player.dash_vfx.cel_smoke_pool:
+		if float(p["timer"]) > 0.0: smoke_capped += 1
+	check(smoke_capped > 0 and smoke_capped <= 2, "the tier cap bounds simultaneous cel-smoke puffs")
+	for p in player.dash_vfx.cel_smoke_pool:
+		p["timer"] = 0.0
+	player.data_store.reset_tuning()
+	player._push_fx_budget()
+
 	# Leave no test tuning behind for the next run.
 	player.data_store.reset_tuning()
 	player.data_store.refresh_auto_quality()

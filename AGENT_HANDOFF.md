@@ -428,4 +428,41 @@ warning scan empty; shader still compiles.
 Not verified: no on-device run (no GPU or phone here) — the feel of the run, the vault arc height and
 the ±8° roll are unjudged, and `_ledge_vault_clear()` only ever raycast into empty space headless.
 
+### 2026-11-16 · Buffy (Freebuff) — V5 Task 2: CanvasLayer impact slash, ring, tier-capped cel smoke
+
+Branch `Pinkypoopoo-patch-1`, based on `f7b60ec`. `main` untouched (`0c80d97`).
+Gate: **VERIFY_PASSED**, 7 gates, 68 signatures, 76 combat asserts, zero GDScript warnings.
+
+Audit first (the earlier V5 commit already had most of this; do not rebuild it):
+- `gesture_combat.trigger_impact_slash()` existed at `IMPACT_SLASH_TIME = 0.16 s` and already
+  fired on a crit, on posture break, on KO (`_kill_rival`) and on super parry.
+- The 2D drawing (white impact frame, diagonal ink slash, expanding double ring, 4-point star
+  flare) existed in `dev_studio._draw_impact_slash()`.
+- `dash_vfx.spawn_cel_smoke()` existed with a 14-quad pooled 2-tone `CEL_SMOKE_SHADER`, already
+  called on hard landings, dash bursts, wall-run start, wall kick-off and the ledge vault.
+
+Gaps closed (this commit)
+1. The slash now renders on a real `CanvasLayer` (`dash_vfx.ImpactSlashLayer`, layer 20) via an
+   inner `ScreenSlash extends Control`, instead of inside the DevStudio Control's `_draw()`.
+   Same vectors, but now guaranteed above the 3D world and the HUD. `dev_studio._draw_impact_slash()`
+   and its call site are removed; the white impact frame (`impact_flash_timer`) still draws from
+   the HUD.
+2. Z-Vanish counter never fired a slash. `_check_active_parry_against_enemies()` only spawned a
+   sigil; it now triggers the slash, which is one of the triggers the spec named and was missing.
+3. Four tab-8 knobs added, auto-generated so no UI code: `impact_slash_enabled`,
+   `impact_slash_intensity`, `cel_smoke_enabled`, `cel_smoke_density`.
+4. Cel smoke respects the 4-tier budget: `dash_vfx.fx_cap` tracks the tier debris cap
+   (LOW 8 / MID 16 / HIGH 28 / ULTRA 28); `spawn_cel_smoke()` refuses when full or disabled and
+   scales puff count by density. On LOW the singularity ring and star flare are skipped, leaving
+   the slash core, so a phone pays 3 lines instead of 3 lines + 2 arcs + 4 flares.
+5. `character_body_3d._push_fx_budget()` pushes tier + knob state to `dash_vfx` every physics tick
+   next to `set_water_enabled()`, so the checkboxes are live with no extra polling state.
+
+Verified: 76 asserts (was 67). New ones cover all four defaults, the CanvasLayer, firing, the
+toggle disabling it, smoke refusing while off, and the cap bounding the puff count. Gate 7/7 with
+real GLB import and the character contract, boot warning scan empty, shader untouched.
+Not verified: no on-device run (no GPU or phone here) — slash/ring timing and the smoke read are
+unjudged, and `_draw()` never executes because the dummy renderer has no canvas, so the asserts
+prove state and lifetime, not pixels.
+
 === END AI HANDOFF PACKET ===

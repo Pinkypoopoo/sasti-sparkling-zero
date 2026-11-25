@@ -110,7 +110,11 @@ REQUIRED_SIGNATURES=(
     "spawn_cel_smoke:dash_vfx.gd"
     "trigger_impact_slash:gesture_combat.gd"
     "impact_slash_timer:gesture_combat.gd"
-    "_draw_impact_slash:dev_studio.gd"
+    "trigger_screen_slash:dash_vfx.gd"
+    "ScreenSlash:dash_vfx.gd"
+    "set_fx_budget:dash_vfx.gd"
+    "impact_slash_enabled:combat_data.gd"
+    "cel_smoke_density:combat_data.gd"
     "CELESTIAL_CONSTELLATION:dev_studio.gd"
     # V5 character pipeline: dependency-free GLB generator + contract test
     "Slot_VeilCloak_:tools/build_character.py"

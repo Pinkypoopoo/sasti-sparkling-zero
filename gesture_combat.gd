@@ -374,6 +374,8 @@ func _check_active_parry_against_enemies() -> bool:
 				player.mana = minf(player.max_mana, player.mana + 22.0)
 				player.trigger_weapon_swing(15.0, Color(1.0, 0.9, 0.25))
 				player.trigger_hitstop(0.055, 0.55)
+				# Z-Vanish counter reads as a parry, so it earns the impact slash too.
+				trigger_impact_slash(player.global_position + (-player.camera.global_transform.basis.z) * 3.0 + Vector3(0, 1.2, 0), -42.0, 1.05)
 				if player.dash_vfx:
 					player.dash_vfx.play_sfx("clash")
 					player.dash_vfx.spawn_step_sigil(player.global_position + Vector3(0, 1.0, 0), Color(1.0, 0.95, 0.3), 1.9)
@@ -708,6 +710,10 @@ func trigger_impact_slash(world_pos: Vector3, angle_deg: float = -35.0, flash: f
 	impact_slash_timer = IMPACT_SLASH_TIME
 	impact_flash_scale = clampf(flash, 0.4, 1.6)
 	impact_flash_timer = maxf(impact_flash_timer, 0.045)
+	# Drawn on the player's CanvasLayer so the slash sits above the 3D world and
+	# above the HUD, instead of inside the DevStudio Control's _draw().
+	if player and player.dash_vfx:
+		player.dash_vfx.trigger_screen_slash(world_pos, angle_deg, flash)
 
 func simulate_clash(is_super: bool) -> void:
 	clash_tension += 1

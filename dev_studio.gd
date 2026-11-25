@@ -848,54 +848,8 @@ func _draw() -> void:
 		draw_rect(get_viewport_rect(), Color(0.6, 0.02, 0.04, v_strength * 0.22))
 
 	if fp_mod and bool(fp_mod.get("p5_pause_active")): _draw_p5_menu()
-	if combat.impact_slash_timer > 0.0:
-		_draw_impact_slash(combat)
 	if combat.impact_flash_timer > 0.0:
 		draw_rect(get_viewport_rect(), Color(1, 1, 1, 0.92))
-
-# --- @NOBI_2D diagonal horizon bisect (video_4.mp4, 00:01–00:02) -------------
-# The hit point is stored in 3D and unprojected here, so the slash lands on the
-# thing you actually hit no matter where the camera is. Pure 2D canvas vectors:
-# no second viewport, no full-screen shader, no fill-rate hit on a phone.
-func _draw_impact_slash(cbt: Node) -> void:
-	if player == null or player.camera == null:
-		return
-	var cam: Camera3D = player.camera
-	var vp := get_viewport_rect().size
-	var pos3d: Vector3 = cbt.impact_slash_pos_3d
-	var sp := vp * 0.5
-	if not cam.is_position_behind(pos3d):
-		sp = cam.unproject_position(pos3d)
-	var total: float = maxf(0.01, cbt.IMPACT_SLASH_TIME)
-	var age: float = clampf(1.0 - cbt.impact_slash_timer / total, 0.0, 1.0)
-	var fade: float = 1.0 - age
-
-	# First 0.04 s: the stark binary impact frame.
-	if age < 0.25:
-		var f: float = (1.0 - age / 0.25) * 0.92 * float(cbt.impact_flash_scale)
-		draw_rect(get_viewport_rect(), Color(1, 1, 1, clampf(f, 0.0, 1.0)))
-
-	# Razor-sharp diagonal line through the hit point, across the whole viewport.
-	var dir := Vector2(cos(cbt.impact_slash_angle), sin(cbt.impact_slash_angle))
-	var reach: float = vp.length() * 1.2
-	var a := sp - dir * reach
-	var b := sp + dir * reach
-	if age < 0.35:
-		draw_line(a, b, Color(0.70, 0.62, 1.0, 0.45 * fade), 22.0)
-		draw_line(a, b, Color(0.92, 0.90, 1.0, 0.65 * fade), 9.0)
-	draw_line(a, b, Color(1, 1, 1, fade), 3.0)
-
-	# Expanding singularity ring.
-	var ring_r: float = lerpf(10.0, 200.0, minf(1.0, age * 1.15))
-	draw_arc(sp, ring_r, 0.0, TAU, 48, Color(1, 1, 1, fade * 0.85), 2.5)
-	draw_arc(sp, ring_r * 0.74, 0.0, TAU, 40, Color(0.72, 0.60, 1.0, fade * 0.6), 1.5)
-
-	# 4-point star flare at the impact point.
-	var perp := Vector2(-dir.y, dir.x)
-	var flare: float = lerpf(110.0, 14.0, age)
-	for d in [dir, -dir, perp, -perp]:
-		draw_line(sp - d * flare, sp + d * flare, Color(1, 1, 1, fade * 0.9), 2.0)
-	draw_circle(sp, maxf(2.0, 9.0 * fade), Color(1, 1, 1, fade))
 
 func _build_tab_world_map() -> void:
 	var vb := _make_scroll_tab("7. World Map & Story")

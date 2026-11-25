@@ -424,8 +424,25 @@ func apply_quality_tier() -> void:
 		if not afterimage_enabled:
 			dash_vfx.clear_afterimages()
 		dash_vfx.set_water_enabled(data_store.tuning_bool("water_floor_enabled", false), data_store.tuning_get("water_wave_height", 0.12))
+	_push_fx_budget()
 	_applied_tier = tier
 	print("QUALITY_TIER_APPLIED: %s scale=%.2f debris=%d" % [str(prof["label"]), scale, int(prof["debris"])])
+
+# VFX budget: tab-8 toggles + the active tier's cap, pushed to dash_vfx. Called
+# every tick next to set_water_enabled() so the checkboxes are live with no
+# extra polling state and no rebuild of the tab.
+func _push_fx_budget() -> void:
+	if not (data_store and dash_vfx):
+		return
+	var tier: int = clampi(int(round(data_store.tuning_get("quality_tier", 2.0))), 0, CombatData.QUALITY_TIERS.size() - 1)
+	var prof: Dictionary = data_store.tier_profile(tier)
+	dash_vfx.set_fx_budget(
+		int(prof["debris"]),
+		tier == 0,
+		data_store.tuning_bool("impact_slash_enabled", true),
+		data_store.tuning_get("impact_slash_intensity", 1.0),
+		data_store.tuning_bool("cel_smoke_enabled", true),
+		data_store.tuning_get("cel_smoke_density", 1.0))
 
 func _setup_weapon_rig() -> void:
 	if not visual_root: return
@@ -1221,6 +1238,7 @@ func _physics_process(delta: float) -> void:
 	# The water checkbox + wave height in Tab 8 are live, no tier change needed.
 	if data_store and dash_vfx:
 		dash_vfx.set_water_enabled(data_store.tuning_bool("water_floor_enabled", false), data_store.tuning_get("water_wave_height", 0.12))
+		_push_fx_budget()
 	if face_sdf_active:
 		_push_head_basis()
 	if p5_camera_override: return
