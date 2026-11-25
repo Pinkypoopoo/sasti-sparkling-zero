@@ -154,6 +154,19 @@ grep -q '_ledge_vault_clear()' character_body_3d.gd \
     || fail "auto ledge-vault lost its chest/head clearance raycast"
 ok "interpolation on, no physics bone bodies, combat on the physics tick, capsule stays upright"
 
+# Hand-crafted art pipeline. A .blend inside models/ is imported by Godot as a
+# mesh and ships broken into the mobile build; art/.gdignore keeps the sources
+# out of the import scan entirely.
+BLEND_IN_MODELS="$(find models -name '*.blend' 2>/dev/null || true)"
+[ -z "$BLEND_IN_MODELS" ] \
+    || fail "a .blend file lives inside models/ (move it to art/): $BLEND_IN_MODELS"
+[ -f art/.gdignore ] \
+    || fail "art/.gdignore is missing: Godot will try to import the .blend sources"
+python3 -m py_compile art/export_handcrafted.py \
+    || fail "art/export_handcrafted.py does not compile"
+rm -rf art/__pycache__
+ok "hand-crafted art: no .blend in models/, art/.gdignore present, exporter compiles"
+
 # GDScript hygiene: these are compiler WARNINGS, so they never fail a headless boot
 # and they were shipped twice already (snapped/scale shadowing in the phone log).
 SHADOW_HITS="$(grep -nE '^[[:space:]]*var[[:space:]]+(snapped|snappedf|scale|rotation|position|basis|transform|visible|velocity|lerp|clamp|abs|sign|min|max|str|range|print)[[:space:]]*:?=' ./*.gd 2>/dev/null || true)"

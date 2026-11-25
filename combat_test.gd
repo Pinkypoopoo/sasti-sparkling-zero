@@ -344,6 +344,37 @@ func _run() -> void:
 	player.global_position = restore_pos
 	player.wall_run_forward = restore_fwd
 
+	# --- 17. V5 Task 4: 4-channel vertex colour + SDF face head basis ---------
+	check(player.anime_mat != null and player.anime_mat.shader != null, "the character NPR shader is built on the rigged hero")
+	var code: String = player.anime_mat.shader.code if player.anime_mat and player.anime_mat.shader else ""
+	check(code.contains("varying vec4 v_col") and code.contains("v_col = COLOR"), "COLOR reaches light() through a varying")
+	var light_at := code.find("void light()")
+	var light_src: String = code.substr(light_at) if light_at != -1 else ""
+	check(light_at != -1 and not light_src.contains("return"), "no early return inside the light() processor")
+	check(code.contains("v_col.r") and code.contains("v_col.b") and code.contains("v_col.a > 0.5"), "R bias, B spec mask and A face switch are all read")
+	check(code.contains("varying vec2 v_uv") and code.contains("sdf_face_tex"), "the SDF face path samples UV through a varying")
+	check(player.body_mesh == null or player.body_mesh.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_OFF, "character self-shadowing stays off")
+	check(player.anime_mat.next_pass != null, "the outline rides next_pass instead of a second mesh")
+
+	# head_forward / head_right: live, change-driven, idle-silent.
+	player.face_sdf_active = true
+	player._push_head_basis()
+	var hb: Basis = player.visual_root.global_basis
+	var hf = player.anime_mat.get_shader_parameter("head_forward")
+	check(hf is Vector3 and (hf as Vector3).distance_to(-hb.z) < 0.001, "head_forward follows the head basis")
+	var hr = player.anime_mat.get_shader_parameter("head_right")
+	check(hr is Vector3 and (hr as Vector3).distance_to(hb.x) < 0.001, "head_right follows the head basis")
+	player.anime_mat.set_shader_parameter("head_forward", Vector3.ZERO)
+	player._push_head_basis()
+	var idle_hf = player.anime_mat.get_shader_parameter("head_forward")
+	check(idle_hf is Vector3 and (idle_hf as Vector3).length() < 0.001, "an idle head basis is not re-pushed (epsilon cache)")
+	player.visual_root.rotate_y(0.35)
+	player._push_head_basis()
+	var turn_hf = player.anime_mat.get_shader_parameter("head_forward")
+	check(turn_hf is Vector3 and (turn_hf as Vector3).distance_to(-(player.visual_root.global_basis.z)) < 0.001, "a turning head repushes the basis")
+	player.visual_root.rotate_y(-0.35)
+	player.face_sdf_active = false
+
 	# Leave no test tuning behind for the next run.
 	player.data_store.reset_tuning()
 	player.data_store.refresh_auto_quality()

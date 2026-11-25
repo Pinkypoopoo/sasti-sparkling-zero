@@ -161,6 +161,10 @@ var sword_hitbox_area: Area3D = null
 # --- Device quality tier + NPR face feed ---------------------------------
 var sdf_face_tex: Texture2D = null
 var face_sdf_active: bool = false
+# Last head basis actually pushed to the shader: the Head bone only moves when it
+# is animated, so an idle character stops dirty-marking two vec3 uniforms.
+var _head_fwd_applied: Vector3 = Vector3(1e9, 1e9, 1e9)
+var _head_right_applied: Vector3 = Vector3(1e9, 1e9, 1e9)
 var afterimage_profile: bool = false
 var _quality_afterimage_ok: bool = true
 var _applied_tier: int = -99
@@ -239,7 +243,10 @@ void fragment() {
 
 void light() {
 	vec3 H = normalize(LIGHT + VIEW);
-	float spec = step(0.88, pow(max(dot(NORMAL, H), 0.0), 16.0));
+	// B = metallic mask: 1 on iron, gold and the visor keeps the toe specular,
+	// 0 on cloth and veil kills it. Unpainted meshes carry COLOR = white, so
+	// this is a no-op until a model actually packs the channel.
+	float spec = step(0.88, pow(max(dot(NORMAL, H), 0.0), 16.0)) * v_col.b;
 	float rim = step(0.78, 1.0 - clamp(dot(NORMAL, VIEW), 0.0, 1.0));
 
 	vec3 band_color = vec3(0.0);
@@ -395,8 +402,16 @@ func _build_sdf_face_texture() -> void:
 func _push_head_basis() -> void:
 	if not anime_mat: return
 	var b: Basis = visual_root.global_basis if visual_root else global_basis
-	anime_mat.set_shader_parameter("head_forward", -b.z)
-	anime_mat.set_shader_parameter("head_right", b.x)
+	var fwd := -b.z
+	var right := b.x
+	# Epsilon-cached: 1e-6 squared is ~0.06 degrees, far below a visible SDF
+	# shift, so animation still drives the uniform while idle ticks cost nothing.
+	if fwd.distance_squared_to(_head_fwd_applied) > 0.000001:
+		_head_fwd_applied = fwd
+		anime_mat.set_shader_parameter("head_forward", fwd)
+	if right.distance_squared_to(_head_right_applied) > 0.000001:
+		_head_right_applied = right
+		anime_mat.set_shader_parameter("head_right", right)
 
 # Applies the selected quality tier to the live viewport, sun, fog, outline
 # material, afterimages and debris budget. Called on boot and whenever tab 8
