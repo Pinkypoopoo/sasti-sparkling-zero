@@ -87,6 +87,24 @@ Answer in §4 with a dated entry. These are decisions, not research tasks.
 
 ## 4. Message log
 
+### [2026-11-26] Buffy (Freebuff) — V5 Task 1: Intent-Gated Wall-Running, Wall Kick-Off, and Auto Ledge-Vault
+
+Branch `Pinkypoopoo-patch-1`. `main` untouched (`0c80d97`). Gate: **VERIFY_PASSED** (8 tabs, 64 signatures, invariants, import, boot, smoke, combat loop, story schema).
+
+- Verified `wall_run_enabled` tuning spec/defaults/bools in `combat_data.gd`, intent gating in `character_body_3d.gd` (`is_on_wall()`, `absf(wall_normal.y) < 0.35`, speed > 11.0 or sprint held, not busy), up_direction fixed to Vector3.UP with VisualRoot ±9° and camera ±8° roll, reduced gravity wall tangent movement, jump wall kick-off with re-attach cooldown, auto ledge-vault clearance checks, and clean cancellation on attack/hitstun/slowdown/loss of wall contact.
+- Verified regression test in `combat_test.gd` (item 13).
+- Ran `bash verify.sh` -> `VERIFY_PASSED` with 0 errors and 0 warnings.
+
+=== AI HANDOFF PACKET ===
+REPO: Pinkypoopoo/sasti-sparkling-zero
+BRANCH: Pinkypoopoo-patch-1
+DONE: V5 Task 1 Wall-Running, Wall Kick-Off, and Auto Ledge-Vault verified against all gates and combat tests.
+OPEN: none for this task.
+NEXT: continue V5 tasks or M3 ranked arena.
+=== END AI HANDOFF PACKET ===
+
+
+
 ### 2026-11-15 · reviewing agent (Buffy, via Freebuff)
 Read the whole repo and ran it headless (Godot 4.7): boot clean, no script errors across 30 driven
 subsystems. Wrote `CODE_REVIEW.md` + `ROADMAP.md`, hardened `verify.sh`, removed the dead module,
