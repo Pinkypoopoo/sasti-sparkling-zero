@@ -6,6 +6,7 @@ extends SceneTree
 # and every choice points at a node that actually exists.
 
 const STORY_PATH := "res://data/story_nodes.json"
+const PROFILE_PATH := "user://dev_profile.json"
 
 var failures: Array[String] = []
 
@@ -21,6 +22,7 @@ func _initialize() -> void:
 		quit(1)
 		return
 	_validate(parsed)
+	_check_merged_save()
 	if failures.is_empty():
 		print("STORY_SCHEMA_PASS")
 		quit(0)
@@ -92,3 +94,73 @@ func _validate(doc: Dictionary) -> void:
 					failures.append("%s rival_slots is missing %s" % [nlab, s])
 				elif not (str(slots[s]) in ["HERO", "VEIL", "NONE", "ANIME_FACE"]):
 					failures.append("%s rival_slots.%s = '%s' is not HERO/VEIL/NONE/ANIME_FACE" % [nlab, s, str(slots[s])])
+
+
+# Merged-write round trip. The profile is shared by CombatData ("tuning") and
+# WorldStoryManager ("story_state"); either side overwriting the file blindly
+# would silently delete the other's progress. The real profile is backed up and
+# restored, so running the gate never costs a playtester their save.
+func _check_merged_save() -> void:
+	var had := FileAccess.file_exists(PROFILE_PATH)
+	var backup := FileAccess.get_file_as_string(PROFILE_PATH) if had else ""
+	var mgr = load("res://world_story.gd").new()
+	if not mgr.load_story_data():
+		failures.append("world_story could not load res://data/story_nodes.json")
+		mgr.free()
+		return
+	var seed_f := FileAccess.open(PROFILE_PATH, FileAccess.WRITE)
+	if seed_f:
+		seed_f.store_string(JSON.stringify({
+			"tuning": {"enemy_damage": 77.0},
+			"story_state": {
+				"schema_version": 1,
+				"active_origin_id": "Profile_4",
+				"current_node_id": "node_eclipse_summit",
+				"story_flags": {"probe_flag": true},
+				"completed_nodes": ["node_start_sanctuary"],
+			},
+		}))
+		seed_f.close()
+	mgr.load_state()
+	if not bool(mgr.story_flags.get("probe_flag", false)):
+		failures.append("story_state did not round-trip through load_state()")
+	mgr.story_flags["written_by_story"] = true
+	mgr.save_state()
+	var after_story = JSON.parse_string(FileAccess.get_file_as_string(PROFILE_PATH))
+	if typeof(after_story) != TYPE_DICTIONARY:
+		failures.append("profile unreadable after a story save")
+	else:
+		var d: Dictionary = after_story
+		if not d.has("tuning"):
+			failures.append("a story save erased 'tuning'")
+		if not d.has("story_state"):
+			failures.append("a story save did not write 'story_state'")
+		if d.has("story"):
+			failures.append("a story save still writes the legacy 'story' key")
+	# ... and a combat save over that file must keep the story section.
+	var cd = load("res://combat_data.gd").new()
+	cd.save_to_disk(null, null)
+	var after_combat = JSON.parse_string(FileAccess.get_file_as_string(PROFILE_PATH))
+	if typeof(after_combat) != TYPE_DICTIONARY:
+		failures.append("profile unreadable after a combat save")
+	else:
+		var d2: Dictionary = after_combat
+		if not d2.has("tuning"):
+			failures.append("a combat save did not write 'tuning'")
+		var st = d2.get("story_state", null)
+		if typeof(st) != TYPE_DICTIONARY:
+			failures.append("a combat save erased 'story_state'")
+		else:
+			var s: Dictionary = st
+			var flags = s.get("story_flags", {})
+			if typeof(flags) != TYPE_DICTIONARY or not bool((flags as Dictionary).get("written_by_story", false)):
+				failures.append("a combat save lost the story flags")
+	cd.free()
+	mgr.free()
+	if had:
+		var rf := FileAccess.open(PROFILE_PATH, FileAccess.WRITE)
+		if rf:
+			rf.store_string(backup)
+			rf.close()
+	else:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(PROFILE_PATH))

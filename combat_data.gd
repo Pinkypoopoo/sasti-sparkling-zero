@@ -214,8 +214,8 @@ var placed_blocks: Array = []
 
 func save_to_disk(player: Node, combat: Node = null) -> void:
 	ensure_tuning()
-	# Read the old file first: world_story.gd writes its own "story" section into
-	# the same profile, and a blind overwrite would delete every saved choice.
+	# Read the old file first: world_story.gd writes its own "story_state" section
+	# into the same profile, and a blind overwrite would delete every saved choice.
 	var payload: Dictionary = {}
 	if FileAccess.file_exists(SAVE_PATH):
 		var old_f := FileAccess.open(SAVE_PATH, FileAccess.READ)

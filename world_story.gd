@@ -48,7 +48,7 @@ func load_story_data() -> bool:
 	origins = doc["origins"]
 	story_nodes = loaded_nodes
 	if not story_nodes.has(current_node_id):
-		current_node_id = str((origins.get(active_origin_id, {}) as Dictionary).get("start_node", story_nodes.keys()[0]))
+		current_node_id = _origin_start(active_origin_id, str(story_nodes.keys()[0]))
 	schema_ok = true
 	return true
 
@@ -60,14 +60,28 @@ func node_exists(node_id: String) -> bool:
 	return story_nodes.has(node_id)
 
 func select_origin(profile_key: String) -> Dictionary:
-	if origins.has(profile_key):
+	if typeof(origins.get(profile_key, null)) == TYPE_DICTIONARY:
 		active_origin_id = profile_key
-		current_node_id = str((origins[profile_key] as Dictionary).get("start_node", current_node_id))
+		current_node_id = _origin_start(profile_key, current_node_id)
 		save_state()
 	return get_current_node()
 
+# Origin entries are authored JSON: a missing or non-dictionary entry must fall
+# back to a node that exists instead of erroring on a null cast.
+func _origin_start(profile_key: String, fallback: String) -> String:
+	var entry = origins.get(profile_key, null)
+	if typeof(entry) != TYPE_DICTIONARY:
+		return fallback
+	var start := str((entry as Dictionary).get("start_node", fallback))
+	if story_nodes.is_empty() or story_nodes.has(start):
+		return start
+	return fallback
+
 func _flags_met(choice: Dictionary) -> bool:
-	var required: Array = choice.get("requires_flags", [])
+	var raw_required = choice.get("requires_flags", [])
+	if typeof(raw_required) != TYPE_ARRAY:
+		return true  # a malformed gate must never lock the player out of the story
+	var required: Array = raw_required
 	for f in required:
 		if not bool(story_flags.get(str(f), false)):
 			return false
@@ -77,8 +91,14 @@ func make_choice(choice_idx: int) -> Dictionary:
 	var node := get_current_node()
 	if node.is_empty():
 		return node
-	var choices: Array = node.get("choices", [])
+	# Half-authored nodes must degrade to "do nothing", never crash the duel.
+	var raw_choices = node.get("choices", [])
+	if typeof(raw_choices) != TYPE_ARRAY:
+		return node
+	var choices: Array = raw_choices
 	if choice_idx < 0 or choice_idx >= choices.size():
+		return node
+	if typeof(choices[choice_idx]) != TYPE_DICTIONARY:
 		return node
 	var ch: Dictionary = choices[choice_idx]
 	if not _flags_met(ch):
@@ -89,8 +109,10 @@ func make_choice(choice_idx: int) -> Dictionary:
 	var flag: String = str(ch.get("flag", ""))
 	if not flag.is_empty():
 		story_flags[flag] = true
-	for u in ch.get("grants_unlocks", []):
-		unlocks[str(u)] = true
+	var raw_unlocks = ch.get("grants_unlocks", [])
+	if typeof(raw_unlocks) == TYPE_ARRAY:
+		for u in raw_unlocks:
+			unlocks[str(u)] = true
 	completed_nodes.append(current_node_id)
 	current_node_id = str(ch.get("next", current_node_id))
 	save_state()
@@ -107,7 +129,10 @@ func save_state() -> void:
 			var old = JSON.parse_string(old_f.get_as_text())
 			if typeof(old) == TYPE_DICTIONARY:
 				doc = old
-	doc["story"] = {
+	# Key name is part of the contract (.agents/rules/world-story.md): "story_state".
+	# The old reader/writer used "story"; load_state() still migrates it once and
+	# this writer removes it so the two copies can never diverge.
+	doc["story_state"] = {
 		"schema_version": SCHEMA_VERSION,
 		"active_origin_id": active_origin_id,
 		"current_node_id": current_node_id,
@@ -115,6 +140,7 @@ func save_state() -> void:
 		"completed_nodes": completed_nodes,
 		"unlocks": unlocks,
 	}
+	doc.erase("story")
 	var w := FileAccess.open(PROFILE_PATH, FileAccess.WRITE)
 	if w:
 		w.store_string(JSON.stringify(doc, "\t"))
@@ -126,9 +152,10 @@ func load_state() -> void:
 	if not f:
 		return
 	var parsed = JSON.parse_string(f.get_as_text())
-	if typeof(parsed) != TYPE_DICTIONARY or not (parsed as Dictionary).has("story"):
+	if typeof(parsed) != TYPE_DICTIONARY:
 		return
-	var st = (parsed as Dictionary)["story"]
+	var doc: Dictionary = parsed
+	var st = doc.get("story_state", doc.get("story", null))
 	if typeof(st) != TYPE_DICTIONARY:
 		return
 	var s: Dictionary = st

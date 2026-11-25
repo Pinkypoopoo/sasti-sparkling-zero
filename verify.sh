@@ -162,6 +162,10 @@ BLEND_IN_MODELS="$(find models -name '*.blend' 2>/dev/null || true)"
     || fail "a .blend file lives inside models/ (move it to art/): $BLEND_IN_MODELS"
 [ -f art/.gdignore ] \
     || fail "art/.gdignore is missing: Godot will try to import the .blend sources"
+# No cyclic class_name hints inside the PvP module (it is attached at runtime).
+if grep -q 'PlayerController' flame_p5_pvp.gd; then
+    fail "flame_p5_pvp.gd reintroduced a cyclic PlayerController type hint"
+fi
 python3 -m py_compile art/export_handcrafted.py \
     || fail "art/export_handcrafted.py does not compile"
 rm -rf art/__pycache__

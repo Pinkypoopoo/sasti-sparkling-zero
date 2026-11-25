@@ -69,6 +69,11 @@ var last_sent_swing: bool = false
 # State sync is throttled: it used to send a formatted UDP string every rendered
 # frame (up to 165/s). 30 Hz is smooth for a background rival and 5x cheaper.
 const P2P_SEND_HZ: float = 30.0
+const P2P_MAX_PACKETS_PER_FRAME: int = 64
+const P2P_MAX_DISCOVERED_ROOMS: int = 16
+const P2P_MAX_ROOM_CODE: int = 16
+const P2P_MAX_PACKET_CHARS: int = 512
+const P2P_MAX_SYNC_COORD: float = 5000.0
 var p2p_send_accum: float = 0.0
 
 var player_ref: Node3D = null
@@ -428,6 +433,124 @@ func _on_link_established(remote_ip: String, r_code: String) -> void:
 			pvp_modal.visible = false
 	)
 
+# Join decision, extracted so the password lock can be unit-tested without a socket.
+# "IGNORE" = not our room, "DENY" = wrong password, "ACCEPT" = link.
+func _join_verdict(req_code: String, req_pass: String) -> String:
+	if req_code.to_upper() != active_room_code.to_upper():
+		return "IGNORE"
+	if not active_room_pass.is_empty() and req_pass != active_room_pass:
+		return "DENY"
+	return "ACCEPT"
+
+# to_float() on garbage yields 0.0, but nan/inf can survive; reject them explicitly.
+func _safe_float(txt: String) -> float:
+	var v: float = txt.to_float()
+	if is_nan(v) or is_inf(v):
+		return 0.0
+	return v
+
+# One packet, fully guarded. Malformed, truncated, wrong-room and wrong-password
+# datagrams can only fail to do something - they can never throw mid-match.
+func _handle_udp_packet(m: String, sender_ip: String) -> void:
+	if not udp_beacon:
+		return
+	if m.is_empty() or m.length() > P2P_MAX_PACKET_CHARS:
+		return
+
+	if m.begins_with("P2PROOM:"):
+		var sp: PackedStringArray = m.split(":")
+		if sp.size() < 4:
+			return
+		var r_code: String = sp[1].strip_edges()
+		if r_code.is_empty() or r_code.length() > P2P_MAX_ROOM_CODE:
+			return
+		var is_lck: bool = (sp[2] == "1")
+		var r_ip: String = sender_ip if not sender_ip.is_empty() else sp[3]
+		if r_ip == local_ip or r_ip == "127.0.0.1":
+			return
+		if is_p2p_host and r_code == active_room_code:
+			return
+		# A spoofer must not be able to grow this dict without bound.
+		if not discovered_rooms.has(r_code) and discovered_rooms.size() >= P2P_MAX_DISCOVERED_ROOMS:
+			return
+		discovered_rooms[r_code] = {"ip": r_ip, "locked": is_lck}
+		if is_joining and r_code.to_upper() == pending_join_code.to_upper():
+			peer_ip = r_ip
+			_send_join_packet()
+		elif not is_p2p_host and not is_p2p_connected and not is_joining:
+			if room_code_edit and (room_code_edit.text == default_room_code or room_code_edit.text.is_empty()):
+				room_code_edit.text = r_code
+			var l_txt: String = " [PASSWORD LOCKED]" if is_lck else " [OPEN]"
+			p2p_status = "FOUND ROOM '%s'%s! Tap [ JOIN ]" % [r_code, l_txt]
+
+	elif m.begins_with("P2PJOIN:") and is_p2p_host:
+		var sp_j: PackedStringArray = m.split(":")
+		if sp_j.size() < 3:
+			return
+		var req_code: String = sp_j[1].strip_edges()
+		var req_pass: String = sp_j[2]
+		if req_code.length() > P2P_MAX_ROOM_CODE or req_pass.length() > 64:
+			return
+		match _join_verdict(req_code, req_pass):
+			"ACCEPT":
+				udp_beacon.set_dest_address(sender_ip, 7778)
+				udp_beacon.put_packet(("P2PACCEPT:" + active_room_code).to_utf8_buffer())
+				if not is_p2p_connected:
+					_on_link_established(sender_ip, active_room_code)
+			"DENY":
+				udp_beacon.set_dest_address(sender_ip, 7778)
+				udp_beacon.put_packet(("P2PDENY:" + active_room_code + ":ACCESS DENIED — WRONG PASSWORD!").to_utf8_buffer())
+
+	elif m.begins_with("P2PACCEPT:") and (is_joining or not is_p2p_connected) and not is_p2p_host:
+		var sp_a: PackedStringArray = m.split(":")
+		if sp_a.size() < 2:
+			return
+		var acc_code: String = sp_a[1]
+		if acc_code.to_upper() == pending_join_code.to_upper():
+			_on_link_established(sender_ip, acc_code)
+
+	elif m.begins_with("P2PDENY:") and is_joining and not is_p2p_host:
+		var sp_d: PackedStringArray = m.split(":")
+		if sp_d.size() < 3 or sp_d[1].to_upper() != pending_join_code.to_upper():
+			return
+		is_joining = false
+		is_p2p_connected = false
+		p2p_status = sp_d[2].left(96)
+
+	elif m.begins_with("P2PSYNC:") and is_p2p_connected and sender_ip == peer_ip:
+		var sp_s: PackedStringArray = m.split(":")
+		if sp_s.size() < 7 or not combat_ref:
+			return
+		# Clamped: a hostile or garbled packet must not teleport the rival to infinity.
+		var rx: float = clampf(_safe_float(sp_s[1]), -P2P_MAX_SYNC_COORD, P2P_MAX_SYNC_COORD)
+		var ry: float = clampf(_safe_float(sp_s[2]), -P2P_MAX_SYNC_COORD, P2P_MAX_SYNC_COORD)
+		var rz: float = clampf(_safe_float(sp_s[3]), -P2P_MAX_SYNC_COORD, P2P_MAX_SYNC_COORD)
+		var ryaw: float = _safe_float(sp_s[4])
+		var rhp: float = clampf(_safe_float(sp_s[5]), 0.0, 99999.0)
+		var ratk: int = 1 if _safe_float(sp_s[6]) >= 0.5 else 0
+		var ts: Dictionary = combat_ref.get("target_stats")
+		if ts.is_empty():
+			return
+		var td: Node3D = ts.keys()[0] as Node3D
+		if not is_instance_valid(td):
+			return
+		td.global_position = td.global_position.lerp(Vector3(rx, ry, rz), 0.65)
+		td.rotation.y = ryaw
+		ts[td]["hp"] = rhp
+		ts[td]["boss_name"] = "PVP CHALLENGER [%s]" % active_room_code
+		if ratk != 1 or not player_ref:
+			return
+		if player_ref.get("dash_vfx"):
+			var fwd: Vector3 = -td.global_transform.basis.z
+			player_ref.get("dash_vfx").call("spawn_slash_arc", td.global_position + Vector3(0, 1.1, 0), fwd, 25.0, Color(1.0, 0.25, 0.15))
+		if player_ref.global_position.distance_to(td.global_position) <= 5.2 and int(player_ref.get("state")) != 6:
+			var lethal: bool = bool(player_ref.call("take_damage", 65.0))
+			var knock: Vector3 = (player_ref.global_position - td.global_position).normalized() * 12.0 + Vector3(0, 3.0, 0)
+			if lethal:
+				player_ref.call("trigger_ragdoll_ko", 1.4, knock * 1.5)
+			else:
+				player_ref.call("apply_hitstun", 0.28, knock)
+
 func _process(delta: float) -> void:
 	if pvp_status_lbl: pvp_status_lbl.text = "Status: " + p2p_status
 	if dome_timer > 0.0:
@@ -467,84 +590,14 @@ func _process(delta: float) -> void:
 				is_joining = false
 				p2p_status = "Connection timed out for Room '%s'. Tap [ JOIN ] to retry." % pending_join_code
 
-		# 3. Poll incoming UDP packets on Port 7778
-		while udp_beacon.get_available_packet_count() > 0:
+		# 3. Poll incoming UDP packets on Port 7778. Bounded per frame: a flood or a
+		# burst of retransmits must never stall the frame; leftovers drain next tick.
+		var budget: int = P2P_MAX_PACKETS_PER_FRAME
+		while budget > 0 and udp_beacon.get_available_packet_count() > 0:
+			budget -= 1
 			var raw_pkt: PackedByteArray = udp_beacon.get_packet()
 			var sender_ip: String = udp_beacon.get_packet_ip()
-			var m: String = raw_pkt.get_string_from_utf8()
-
-			if m.begins_with("P2PROOM:"):
-				var sp: PackedStringArray = m.split(":")
-				if sp.size() >= 4:
-					var r_code: String = sp[1]
-					var is_lck: bool = (sp[2] == "1")
-					var r_ip: String = sender_ip if not sender_ip.is_empty() else sp[3]
-					if r_ip != local_ip and r_ip != "127.0.0.1" and not (is_p2p_host and r_code == active_room_code):
-						discovered_rooms[r_code] = {"ip": r_ip, "locked": is_lck}
-						if is_joining and r_code.to_upper() == pending_join_code.to_upper():
-							peer_ip = r_ip
-							_send_join_packet()
-						elif not is_p2p_host and not is_p2p_connected and not is_joining:
-							if room_code_edit and (room_code_edit.text == default_room_code or room_code_edit.text.is_empty()):
-								room_code_edit.text = r_code
-							var l_txt: String = " [PASSWORD LOCKED]" if is_lck else " [OPEN]"
-							p2p_status = "FOUND ROOM '%s'%s! Tap [ JOIN ]" % [r_code, l_txt]
-
-			elif m.begins_with("P2PJOIN:") and is_p2p_host:
-				var sp_j: PackedStringArray = m.split(":")
-				if sp_j.size() >= 3:
-					var req_code: String = sp_j[1].to_upper()
-					var req_pass: String = sp_j[2]
-					if req_code == active_room_code.to_upper():
-						if not active_room_pass.is_empty() and req_pass != active_room_pass:
-							udp_beacon.set_dest_address(sender_ip, 7778)
-							udp_beacon.put_packet(("P2PDENY:" + active_room_code + ":ACCESS DENIED — WRONG PASSWORD!").to_utf8_buffer())
-						else:
-							udp_beacon.set_dest_address(sender_ip, 7778)
-							udp_beacon.put_packet(("P2PACCEPT:" + active_room_code).to_utf8_buffer())
-							if not is_p2p_connected:
-								_on_link_established(sender_ip, active_room_code)
-
-			elif m.begins_with("P2PACCEPT:") and (is_joining or not is_p2p_connected) and not is_p2p_host:
-				var acc_code: String = m.split(":")[1]
-				if acc_code.to_upper() == pending_join_code.to_upper():
-					_on_link_established(sender_ip, acc_code)
-
-			elif m.begins_with("P2PDENY:") and is_joining and not is_p2p_host:
-				var sp_d: PackedStringArray = m.split(":")
-				if sp_d.size() >= 3 and sp_d[1].to_upper() == pending_join_code.to_upper():
-					is_joining = false
-					is_p2p_connected = false
-					p2p_status = sp_d[2]
-
-			elif m.begins_with("P2PSYNC:") and is_p2p_connected and sender_ip == peer_ip:
-				var sp_s: PackedStringArray = m.split(":")
-				if sp_s.size() >= 7 and combat_ref:
-					var rx: float = float(sp_s[1])
-					var ry: float = float(sp_s[2])
-					var rz: float = float(sp_s[3])
-					var ryaw: float = float(sp_s[4])
-					var rhp: float = float(sp_s[5])
-					var ratk: int = int(sp_s[6])
-					var ts: Dictionary = combat_ref.get("target_stats")
-					if not ts.is_empty():
-						var td: Node3D = ts.keys()[0] as Node3D
-						if is_instance_valid(td):
-							td.global_position = td.global_position.lerp(Vector3(rx, ry, rz), 0.65)
-							td.rotation.y = ryaw
-							ts[td]["hp"] = rhp
-							ts[td]["boss_name"] = "PVP CHALLENGER [%s]" % active_room_code
-							if ratk == 1 and player_ref:
-								if player_ref.get("dash_vfx"):
-									var fwd: Vector3 = -td.global_transform.basis.z
-									player_ref.get("dash_vfx").call("spawn_slash_arc", td.global_position + Vector3(0, 1.1, 0), fwd, 25.0, Color(1.0, 0.25, 0.15))
-								if player_ref.global_position.distance_to(td.global_position) <= 5.2 and int(player_ref.get("state")) != 6:
-									var lethal: bool = bool(player_ref.call("take_damage", 65.0))
-									var knock: Vector3 = (player_ref.global_position - td.global_position).normalized() * 12.0 + Vector3(0, 3.0, 0)
-									if lethal:
-										player_ref.call("trigger_ragdoll_ko", 1.4, knock * 1.5)
-									else:
-										player_ref.call("apply_hitstun", 0.28, knock)
+			_handle_udp_packet(raw_pkt.get_string_from_utf8(), sender_ip)
 
 		# 4. Send throttled 30Hz Direct UDP State + Attack Sync to Connected Challenger
 		p2p_send_accum += delta

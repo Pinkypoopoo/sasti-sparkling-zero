@@ -975,7 +975,10 @@ func spawn_story_rival(nd: Dictionary) -> void:
 	if not is_instance_valid(primary_td): return
 
 	var s: Dictionary = target_stats[primary_td]
-	var max_h := float(nd.get("rival_hp", 1800.0))
+	# Story nodes are authored JSON: every optional field below is type-checked so a
+	# partial node (or a hand-edited one) spawns a sane rival instead of erroring.
+	var raw_hp = nd.get("rival_hp", 1800.0)
+	var max_h: float = clampf(float(raw_hp) if typeof(raw_hp) in [TYPE_INT, TYPE_FLOAT] else 1800.0, 1.0, 99999.0)
 	s["max_hp"] = max_h
 	s["hp"] = max_h
 	s["posture"] = 0.0
@@ -989,14 +992,16 @@ func spawn_story_rival(nd: Dictionary) -> void:
 	slowmo_until_ms = 0
 	_boss_anim(s, "slash_up")
 
-	var r_scale := float(nd.get("rival_scale", 1.08))
+	var raw_scale = nd.get("rival_scale", 1.08)
+	var r_scale: float = clampf(float(raw_scale) if typeof(raw_scale) in [TYPE_INT, TYPE_FLOAT] else 1.08, 0.5, 2.0)
 	primary_td.scale = Vector3.ONE * r_scale
 	var fwd := -player.visual_root.global_transform.basis.z if player.visual_root else -player.global_transform.basis.z
 	primary_td.global_position = player.global_position + Vector3(fwd.x, 0.0, fwd.z).normalized() * 7.5
 	primary_td.global_position.y = 1.0
 
 	var boss_model := primary_td.get_node_or_null("BossVeilModel")
-	var slots: Dictionary = nd.get("rival_slots", {})
+	var raw_slots = nd.get("rival_slots", {})
+	var slots: Dictionary = raw_slots if typeof(raw_slots) == TYPE_DICTIONARY else {}
 	if boss_model and not slots.is_empty():
 		player._set_slot_visibility_recursive(boss_model, slots)
 

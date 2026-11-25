@@ -272,4 +272,51 @@ Not verified: no Blender in this sandbox (5.2 LTS absent), so `export_handcrafte
 py_compile- and AST-checked only — its bpy calls have never executed. The B-channel spec change
 is a look change on cloth and veil that nobody has seen yet.
 
+### 2026-11-16 · Buffy (Freebuff) — V5 Task 5: merged saves, P5 tap, UDP 7778 hardening
+
+Branch `Pinkypoopoo-patch-1`, rebased on `93e9ac6`. `main` untouched (`0c80d97`).
+Gate: **VERIFY_PASSED**, 7 gates, 71 signatures, 116 combat asserts, zero warnings.
+
+Book 3 audit — both writers already merged, but the key was wrong:
+- `combat_data.save_to_disk()` and `world_story.save_state()` both do read-modify-write,
+  so neither could erase the other. Verified with a round-trip test, not rebuilt.
+- **Real bug: the story section was written as `"story"`, while
+  `.agents/rules/world-story.md` and the task contract both specify `"story_state"`.** Now
+  written as `story_state`, read from `story_state` with a one-time fallback to `story`, and
+  the legacy key is erased on save so the two can never diverge.
+- Crash paths removed in the story loader: `_origin_start()` replaces an `as Dictionary` cast
+  that returned null and then called `.get()` on it; `make_choice()` now type-checks that
+  `choices` is an array and the chosen entry is a dictionary; `requires_flags` /
+  `grants_unlocks` are type-checked (a malformed gate opens the choice rather than locking
+  the player out).
+- `gesture_combat.spawn_story_rival()` type-checks `rival_hp` (clamped 1..99999),
+  `rival_scale` (0.5..2.0) and `rival_slots` (non-dict becomes empty), so a partial node
+  spawns a sane rival instead of erroring.
+
+Book 4 audit:
+- `_handle_p5_blade_tap()` already calls `set_input_as_handled()` first; the comment there
+  records why (the tap was also reaching `btn_menu`, which closed the menu again). Now
+  asserted for real: one tap flips the row's state AND `get_viewport().is_input_handled()`
+  is true afterwards.
+- 8 tabs, `[ MENU ]`, the 10 Hz HUD throttle and the 4-tier scaler are untouched; the gate
+  still reports 8 tabs and zero warnings.
+- PvP: port 7778 and `P2P_SEND_HZ = 30.0` (0.0333 s accumulator) confirmed. No cyclic
+  `class_name` hints - the module only declares its own; gate 2b now fails on any
+  `PlayerController` reappearing in `flame_p5_pvp.gd`.
+
+UDP hardening (`flame_p5_pvp.gd`):
+- The inline packet parser was extracted to `_handle_udp_packet(m, sender_ip)` with every
+  branch size-checked, plus `_join_verdict()` so the password lock is unit-testable without
+  a socket ("IGNORE" wrong room / "DENY" wrong password / "ACCEPT").
+- Bounded: 64 packets per frame (a flood used to spin the whole `while` in one tick),
+  `discovered_rooms` capped at 16, room codes capped at 16 chars, packets over 512 chars
+  dropped, `nan`/`inf` rejected via `_safe_float`, sync coordinates clamped to +/-5000 m and
+  reported hp to 0..99999, denial text truncated to 96 chars.
+
+Verified: 116 asserts (was 100) plus a new merged-save round trip in `story_test.gd`
+(backing up and restoring the real profile around it). Not verified: no two-device UDP match
+was run — hostile packets are proven safe only by calling `_handle_udp_packet()` directly
+with `udp_beacon == null`, and the 30 Hz cadence is asserted from the constant, not measured
+on a wire.
+
 === END AI HANDOFF PACKET ===

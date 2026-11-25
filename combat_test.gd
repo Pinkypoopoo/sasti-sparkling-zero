@@ -375,6 +375,76 @@ func _run() -> void:
 	player.visual_root.rotate_y(-0.35)
 	player.face_sdf_active = false
 
+	# --- 18. V5 Task 5: merged saves, single-tap menu, UDP hardening ----------
+	var t5_save: String = player.data_store.SAVE_PATH
+	var t5_had := FileAccess.file_exists(t5_save)
+	var t5_backup := FileAccess.get_file_as_string(t5_save) if t5_had else ""
+	var t5_seed := FileAccess.open(t5_save, FileAccess.WRITE)
+	if t5_seed:
+		t5_seed.store_string(JSON.stringify({
+			"story_state": {"schema_version": 1, "active_origin_id": "Profile_3",
+				"current_node_id": "node_megastructure_descent",
+				"story_flags": {"fought_inquisitor": true},
+				"completed_nodes": ["node_start_sanctuary"]},
+			"hand_written_key": 7}))
+		t5_seed.close()
+	player.data_store.save_to_disk(player, combat)
+	var t5_after_combat = JSON.parse_string(FileAccess.get_file_as_string(t5_save))
+	var t5_acd: Dictionary = t5_after_combat if typeof(t5_after_combat) == TYPE_DICTIONARY else {}
+	check(t5_acd.has("tuning") and t5_acd.has("story_state"), "a combat save keeps story_state and writes tuning")
+	var t5_raw_state = t5_acd.get("story_state", {})
+	var t5_acstate: Dictionary = t5_raw_state if typeof(t5_raw_state) == TYPE_DICTIONARY else {}
+	check(bool((t5_acstate.get("story_flags", {}) as Dictionary).get("fought_inquisitor", false)), "story flags survive a combat save")
+	check(int(t5_acd.get("hand_written_key", 0)) == 7, "unknown profile keys survive a combat save")
+
+	var t5_ws = load("res://world_story.gd").new()
+	t5_ws.load_story_data()
+	t5_ws.load_state()
+	check(bool(t5_ws.get("schema_ok")) and bool(t5_ws.story_flags.get("fought_inquisitor", false)), "the story loader reads story_state back")
+	t5_ws.story_flags["after_playtest"] = true
+	t5_ws.save_state()
+	var t5_after_story = JSON.parse_string(FileAccess.get_file_as_string(t5_save))
+	var t5_asd: Dictionary = t5_after_story if typeof(t5_after_story) == TYPE_DICTIONARY else {}
+	check(t5_asd.has("tuning") and t5_asd.has("story_state"), "a story save keeps tuning and story_state")
+	check(not t5_asd.has("story"), "the legacy 'story' key is no longer written")
+	t5_ws.free()
+
+	# Single-tap P5 menu: the tap is consumed before the row runs.
+	var t5_menu = studio.fp_mod if studio else null
+	check(t5_menu != null, "the P5 module is attached to the Dev Studio")
+	if t5_menu:
+		t5_menu.set("p5_pause_active", true)
+		var t5_vp := studio.get_viewport()
+		var t5_lock_before: bool = player.is_locked_on
+		var t5_row1: Rect2 = studio._p5_row_rect(1)
+		studio._handle_p5_blade_tap(t5_row1.get_center())
+		check(player.is_locked_on != t5_lock_before, "one tap on a menu row runs its action")
+		check(t5_vp.is_input_handled(), "the tap is consumed before the row action executes")
+		t5_menu.set("p5_pause_active", false)
+
+		# UDP 7778: 30 Hz throttle, password lock, hostile datagrams.
+		check(is_equal_approx(float(t5_menu.get("P2P_SEND_HZ")), 30.0), "PvP state sync is throttled to 30 Hz")
+		check(absf(1.0 / float(t5_menu.get("P2P_SEND_HZ")) - 0.0333) < 0.001, "the 30 Hz accumulator step is 0.033 s")
+		t5_menu.set("active_room_code", "SZ100")
+		t5_menu.set("active_room_pass", "secret")
+		check(t5_menu._join_verdict("sz100", "secret") == "ACCEPT", "a correct room code + password links")
+		check(t5_menu._join_verdict("sz100", "nope") == "DENY", "a wrong password is denied")
+		check(t5_menu._join_verdict("SZ999", "secret") == "IGNORE", "a wrong room code is ignored")
+		check(not bool(t5_menu.get("is_p2p_connected")), "no link is opened by a verdict alone")
+		t5_menu.call("_handle_udp_packet", "", "1.2.3.4")
+		t5_menu.call("_handle_udp_packet", "P2PSYNC", "1.2.3.4")
+		t5_menu.call("_handle_udp_packet", "P2PSYNC:nan:inf:1e30:0:0:0", "9.9.9.9")
+		t5_menu.call("_handle_udp_packet", "P2PJOIN:", "1.2.3.4")
+		t5_menu.call("_handle_udp_packet", "P2PROOM:" + "X".repeat(400), "1.2.3.4")
+		t5_menu.call("_handle_udp_packet", "P2PDENY:", "1.2.3.4")
+		check(not bool(t5_menu.get("is_p2p_connected")) and str(t5_menu.get("peer_ip")) == "", "malformed packets never open a match")
+
+	if t5_had:
+		var t5_restore := FileAccess.open(t5_save, FileAccess.WRITE)
+		if t5_restore:
+			t5_restore.store_string(t5_backup)
+			t5_restore.close()
+
 	# Leave no test tuning behind for the next run.
 	player.data_store.reset_tuning()
 	player.data_store.refresh_auto_quality()
