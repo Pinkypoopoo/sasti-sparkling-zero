@@ -112,6 +112,8 @@ var cam_shake_trauma: float = 0.0
 const WALL_RUN_MAX_TIME: float = 2.4
 const WALL_RUN_MIN_SPEED: float = 11.0
 const WALL_RUN_STICK: float = 3.5
+# How far below the forward ledge point a landing surface may be.
+const LEDGE_FLOOR_DEPTH: float = 2.4
 
 var is_wall_running: bool = false
 var wall_run_normal: Vector3 = Vector3.ZERO
@@ -423,7 +425,7 @@ func apply_quality_tier() -> void:
 		dash_vfx.debris_cap = int(prof["debris"])
 		if not afterimage_enabled:
 			dash_vfx.clear_afterimages()
-		dash_vfx.set_water_enabled(data_store.tuning_bool("water_floor_enabled", false), data_store.tuning_get("water_wave_height", 0.12))
+		_push_water()
 	_push_fx_budget()
 	_applied_tier = tier
 	print("QUALITY_TIER_APPLIED: %s scale=%.2f debris=%d" % [str(prof["label"]), scale, int(prof["debris"])])
@@ -431,6 +433,19 @@ func apply_quality_tier() -> void:
 # VFX budget: tab-8 toggles + the active tier's cap, pushed to dash_vfx. Called
 # every tick next to set_water_enabled() so the checkboxes are live with no
 # extra polling state and no rebuild of the tab.
+# Water is tier-gated: LOW never renders it (a 240x240 plane at 32x32
+# subdivisions is not free on an Adreno 618), MID and up get the full 3-band
+# shader with both contact ripples. Toggle + height + ripple come from tab 8.
+func _push_water() -> void:
+	if not (data_store and dash_vfx):
+		return
+	var tier: int = clampi(int(round(data_store.tuning_get("quality_tier", 2.0))), 0, CombatData.QUALITY_TIERS.size() - 1)
+	var want: bool = data_store.tuning_bool("water_floor_enabled", false) and tier >= 1
+	dash_vfx.set_water_enabled(
+		want,
+		data_store.tuning_get("water_wave_height", 0.12),
+		data_store.tuning_get("water_ripple_strength", 1.0))
+
 func _push_fx_budget() -> void:
 	if not (data_store and dash_vfx):
 		return
@@ -775,7 +790,23 @@ func _ledge_vault_clear() -> bool:
 		q.exclude = [get_rid()]
 		if not space.intersect_ray(q).is_empty():
 			return false
-	return true
+	# Forward rays are also clear when running horizontally past the SIDE of a
+	# pillar into open air, which used to launch a vault into the void. Require a
+	# real landing surface below the forward clearance point.
+	var lip: Vector3 = global_position + Vector3(0.0, 1.1, 0.0) + fwd * 0.75
+	return _has_floor_below(lip, LEDGE_FLOOR_DEPTH)
+
+# True when a mostly-up-facing surface sits within `depth` below `from_point`.
+func _has_floor_below(from_point: Vector3, depth: float = 2.4) -> bool:
+	var space := get_world_3d().direct_space_state
+	if space == null:
+		return false
+	var q := PhysicsRayQueryParameters3D.create(from_point, from_point + Vector3.DOWN * depth)
+	q.exclude = [get_rid()]
+	var hit := space.intersect_ray(q)
+	if hit.is_empty():
+		return false
+	return (hit["normal"] as Vector3).y > 0.5
 
 func _vault_onto_ledge() -> void:
 	var fwd := wall_run_forward
@@ -1237,7 +1268,7 @@ func _physics_process(delta: float) -> void:
 		apply_quality_tier()
 	# The water checkbox + wave height in Tab 8 are live, no tier change needed.
 	if data_store and dash_vfx:
-		dash_vfx.set_water_enabled(data_store.tuning_bool("water_floor_enabled", false), data_store.tuning_get("water_wave_height", 0.12))
+		_push_water()
 		_push_fx_budget()
 	if face_sdf_active:
 		_push_head_basis()

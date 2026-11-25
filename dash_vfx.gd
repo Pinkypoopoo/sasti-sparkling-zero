@@ -38,6 +38,9 @@ var water_mat: ShaderMaterial = null
 var water_enabled: bool = false
 var water_boss_pos: Vector3 = Vector3(9999.0, 0.0, 9999.0)
 var _water_height_applied: float = -1.0
+var _water_ripple_applied: float = -1.0
+var _water_player_applied: Vector3 = Vector3(1e9, 1e9, 1e9)
+var _water_boss_applied: Vector3 = Vector3(1e9, 1e9, 1e9)
 var cel_smoke_pool: Array[Dictionary] = []
 var cel_smoke_idx: int = 0
 
@@ -375,6 +378,7 @@ render_mode unshaded, cull_disabled, depth_draw_opaque;
 uniform float wave_height : hint_range(0.0, 0.65) = 0.12;
 uniform vec3 player_pos = vec3(0.0);
 uniform vec3 boss_pos = vec3(9999.0);
+uniform float ripple_str : hint_range(0.0, 2.0) = 1.0;
 uniform vec4 trough_col : source_color = vec4(0.020, 0.035, 0.078, 1.0);
 uniform vec4 mid_col : source_color = vec4(0.063, 0.145, 0.298, 1.0);
 uniform vec4 crest_col : source_color = vec4(0.361, 0.902, 1.0, 1.0);
@@ -403,8 +407,8 @@ void fragment() {
 	vec3 col = trough_col.rgb;
 	if (t >= 0.54) { col = mid_col.rgb; }
 	if (t >= 0.82) { col = crest_col.rgb; }
-	col += crest_col.rgb * contact_ring(v_wpos.xz, player_pos.xz, 1.0, 6.5) * 0.85;
-	col += crest_col.rgb * contact_ring(v_wpos.xz, boss_pos.xz, 0.7, 8.5) * 0.55;
+	col += crest_col.rgb * contact_ring(v_wpos.xz, player_pos.xz, 1.0, 6.5) * 0.85 * ripple_str;
+	col += crest_col.rgb * contact_ring(v_wpos.xz, boss_pos.xz, 0.7, 8.5) * 0.55 * ripple_str;
 	ALBEDO = col;
 }
 """
@@ -429,7 +433,7 @@ func _setup_water_floor() -> void:
 
 # Called once per physics tick by the player, so it must be change-driven: a
 # blind set_shader_parameter every tick is a RenderingServer dirty-mark per frame.
-func set_water_enabled(on: bool, wave_height: float = 0.12) -> void:
+func set_water_enabled(on: bool, wave_height: float = 0.12, ripple_strength: float = 1.0) -> void:
 	if not water_mesh:
 		return
 	if water_enabled != on:
@@ -439,12 +443,23 @@ func set_water_enabled(on: bool, wave_height: float = 0.12) -> void:
 	if water_mat and not is_equal_approx(h, _water_height_applied):
 		_water_height_applied = h
 		water_mat.set_shader_parameter("wave_height", h)
+	var r := clampf(ripple_strength, 0.0, 2.0)
+	if water_mat and not is_equal_approx(r, _water_ripple_applied):
+		_water_ripple_applied = r
+		water_mat.set_shader_parameter("ripple_str", r)
 
+# Change-driven, like set_water_enabled(): a blind set_shader_parameter every tick
+# is a RenderingServer dirty-mark per frame, and these two only move when a
+# fighter actually walks or lands.
 func _update_water_floor(player_pos: Vector3) -> void:
 	if not water_enabled or not water_mat:
 		return
-	water_mat.set_shader_parameter("player_pos", player_pos)
-	water_mat.set_shader_parameter("boss_pos", water_boss_pos)
+	if player_pos.distance_squared_to(_water_player_applied) > 0.0001:
+		_water_player_applied = player_pos
+		water_mat.set_shader_parameter("player_pos", player_pos)
+	if water_boss_pos.distance_squared_to(_water_boss_applied) > 0.0001:
+		_water_boss_applied = water_boss_pos
+		water_mat.set_shader_parameter("boss_pos", water_boss_pos)
 
 # =============================================================================
 #  2-TONE CEL SMOKE  (video_4.mp4 — @NOBI_2D, 00:03–00:05)

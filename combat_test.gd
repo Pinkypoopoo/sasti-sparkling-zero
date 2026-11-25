@@ -276,6 +276,9 @@ func _run() -> void:
 	player.dash_vfx.screen_slash.timer = 0.0
 	combat.trigger_impact_slash(Vector3(0, 2, -4), -30.0, 1.2)
 	check(player.dash_vfx.screen_slash.timer > 0.0, "a crit / Z-Vanish / KO slash fires the CanvasLayer effect")
+	check(player.dash_vfx.screen_slash.visible, "the fired slash is visible so it redraws every frame")
+	player.dash_vfx.screen_slash._process(0.5)
+	check(player.dash_vfx.screen_slash.timer == 0.0 and not player.dash_vfx.screen_slash.visible, "the idle slash hides and stops redrawing")
 	player.data_store.tuning["impact_slash_enabled"] = false
 	player._push_fx_budget()
 	player.dash_vfx.screen_slash.timer = 0.0
@@ -305,6 +308,41 @@ func _run() -> void:
 		p["timer"] = 0.0
 	player.data_store.reset_tuning()
 	player._push_fx_budget()
+
+	# --- 16. V5 Task 3: 3-band water floor + ledge floor confirmation ---------
+	player.data_store.reset_tuning()
+	check(CombatData.TUNING_BOOLS.has("water_floor_enabled"), "water floor toggle is a tab-8 checkbox")
+	check(CombatData.QUALITY_TIERS.size() == 4, "quality tiers still resolve for water gating")
+	check(is_equal_approx(float(CombatData.TUNING_DEFAULTS.get("water_ripple_strength", -1.0)), 1.0), "water ripple strength exists in tuning defaults")
+	check(CombatData.TUNING_SPEC.has("water_wave_height") and CombatData.TUNING_SPEC.has("water_ripple_strength"), "water wave + ripple are tab-8 sliders")
+	player.data_store.tuning["auto_quality"] = false
+	player.data_store.tuning["quality_tier"] = 1
+	player.data_store.tuning["water_floor_enabled"] = true
+	player.apply_quality_tier()
+	check(player.dash_vfx.water_enabled and player.dash_vfx.water_mesh.visible, "MID tier renders the water floor when the toggle is on")
+	player.dash_vfx._update_water_floor(Vector3(3.0, 0.0, -7.0))
+	var pp = player.dash_vfx.water_mat.get_shader_parameter("player_pos")
+	check(pp is Vector3 and (pp as Vector3).distance_to(Vector3(3.0, 0.0, -7.0)) < 0.001, "player_pos reaches the water shader")
+	player.dash_vfx.water_boss_pos = Vector3(-4.0, 0.0, 9.0)
+	player.dash_vfx._update_water_floor(Vector3(3.0, 0.0, -7.0))
+	var bp = player.dash_vfx.water_mat.get_shader_parameter("boss_pos")
+	check(bp is Vector3 and (bp as Vector3).distance_to(Vector3(-4.0, 0.0, 9.0)) < 0.001, "boss_pos reaches the water shader")
+	player.data_store.tuning["quality_tier"] = 0
+	player.apply_quality_tier()
+	check(not player.dash_vfx.water_enabled and not player.dash_vfx.water_mesh.visible, "LOW tier disables the water floor entirely")
+	player.data_store.reset_tuning()
+	player.apply_quality_tier()
+
+	# Ledge floor confirmation: open air must refuse, a real surface must accept.
+	check(not player._has_floor_below(Vector3(300.0, 80.0, 300.0), 2.4), "no floor is found below open air")
+	check(player._has_floor_below(Vector3(0.0, 1.2, 0.0), 2.4), "the arena floor counts as a landing surface")
+	var restore_pos: Vector3 = player.global_position
+	var restore_fwd: Vector3 = player.wall_run_forward
+	player.wall_run_forward = Vector3.RIGHT
+	player.global_position = Vector3(300.0, 80.0, 300.0)
+	check(not player._ledge_vault_clear(), "running past a pillar side edge into open air refuses the vault")
+	player.global_position = restore_pos
+	player.wall_run_forward = restore_fwd
 
 	# Leave no test tuning behind for the next run.
 	player.data_store.reset_tuning()
