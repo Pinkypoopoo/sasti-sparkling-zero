@@ -196,6 +196,8 @@ func _run() -> void:
 
 	# --- 13. V5 Task 1: parkour wall-run gate + solid pillars ------------------
 	player.data_store.reset_tuning()
+	check(CombatData.TUNING_DEFAULTS.has("wall_run_enabled") and bool(CombatData.TUNING_DEFAULTS["wall_run_enabled"]), "wall_run_enabled exists in tuning defaults, default on")
+	check(is_equal_approx(player.WALL_RUN_MIN_SPEED, 11.0), "wall-run speed gate is 11.0")
 	check(player.wall_run_gate(true, 0.0, true, 4.0, false), "wall-run: sprinting into a vertical wall engages")
 	check(player.wall_run_gate(true, 0.0, false, 14.0, false), "wall-run: fast airborne contact engages without sprint")
 	check(not player.wall_run_gate(true, 0.0, false, 3.0, false), "wall-run: slow contact is refused")
@@ -205,6 +207,7 @@ func _run() -> void:
 	player.data_store.tuning["wall_run_enabled"] = false
 	check(not player.wall_run_gate(true, 0.0, true, 20.0, false), "wall-run: the tab-8 toggle disables it entirely")
 	player.data_store.tuning["wall_run_enabled"] = true
+	check(player.data_store.tuning_bool("wall_run_enabled", false), "wall_run_enabled toggles back on cleanly")
 	check(is_equal_approx(player.data_store.tuning_get("wall_kick_force", 0.0), 18.0), "wall kick-off force is a saved knob")
 	check(is_equal_approx(player.data_store.tuning_get("wall_run_gravity_scale", 0.0), 0.15), "wall-run gravity scale is a saved knob")
 

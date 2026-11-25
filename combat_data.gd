@@ -23,7 +23,7 @@ const TUNING_SPEC: Dictionary = {
 	"ko_slowmo_scale":     [0.05, 1.0,   0.05, "KO Slow-Mo Speed"],
 	"ko_slowmo_time":      [0.0,  2.0,   0.05, "KO Slow-Mo (s)"],
 	"hurt_vignette":       [0.0,  1.0,   0.05, "Hurt Vignette"],
-		"dmg_number_size":     [0.5,  2.0, 0.1,  "Damage Number Size"],
+	"dmg_number_size":     [0.5,  2.0, 0.1,  "Damage Number Size"],
 	"quality_tier":        [0.0,  3.0, 1.0,  "Quality Tier (0 LOW-3 ULTRA)"],
 	"render_scale":        [0.5,  1.0, 0.01, "Render Scale"],
 	"sdf_face_softness":   [0.01, 0.25, 0.01, "SDF Face Softness"],

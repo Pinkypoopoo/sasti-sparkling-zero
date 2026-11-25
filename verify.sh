@@ -101,6 +101,9 @@ REQUIRED_SIGNATURES=(
     "_apply_wall_run_velocity:character_body_3d.gd"
     "wall_run_enabled:combat_data.gd"
     "wall_kick_force:combat_data.gd"
+    "WALL_RUN_MIN_SPEED:character_body_3d.gd"
+    "_ledge_vault_clear:character_body_3d.gd"
+    "_vault_onto_ledge:character_body_3d.gd"
     "water_floor_enabled:combat_data.gd"
     "water_wave_height:combat_data.gd"
     "set_water_enabled:dash_vfx.gd"
@@ -134,7 +137,15 @@ fi
 if ! grep -q "func _physics_process" gesture_combat.gd; then
     fail "gesture_combat.gd lost its _physics_process: enemies and projectiles would run at render rate and speed up with refresh rate"
 fi
-ok "interpolation on, no physics bone bodies, combat on the physics tick"
+# Wall-running must never tilt the capsule: only VisualRoot + the camera roll.
+if grep -nE '^[[:space:]]*up_direction[[:space:]]*=' character_body_3d.gd | grep -vq 'Vector3\.UP'; then
+    fail "up_direction is reassigned away from Vector3.UP (character_body_3d.gd): a tilted capsule slides down the wall"
+fi
+grep -q 'deg_to_rad(-8.0 \* wall_run_side)' character_body_3d.gd \
+    || fail "wall-run camera roll lost its 8 degree limit"
+grep -q '_ledge_vault_clear()' character_body_3d.gd \
+    || fail "auto ledge-vault lost its chest/head clearance raycast"
+ok "interpolation on, no physics bone bodies, combat on the physics tick, capsule stays upright"
 
 # GDScript hygiene: these are compiler WARNINGS, so they never fail a headless boot
 # and they were shipped twice already (snapped/scale shadowing in the phone log).

@@ -164,6 +164,9 @@ var _quality_afterimage_ok: bool = true
 var _applied_tier: int = -99
 
 func _ready() -> void:
+	# Never tilt the capsule. Wall-running rolls VisualRoot and the camera only;
+	# a tilted up_direction would make move_and_slide() slide down the wall.
+	up_direction = Vector3.UP
 	DirAccess.make_dir_recursive_absolute("user://models")
 	DirAccess.make_dir_recursive_absolute("user://vfx")
 	DirAccess.make_dir_recursive_absolute("user://assets")
@@ -645,6 +648,9 @@ func _tick_wall_run(delta: float, mv_vec: Vector2, sprint_held: bool) -> void:
 			_end_wall_run(0.22)
 		elif wall_run_timer > WALL_RUN_MAX_TIME:
 			_end_wall_run(0.4)
+		elif mv_vec.length() < 0.15 and not sprint_held:
+			# Intent dropped: the player let go of the stick, so stop hugging the wall.
+			_end_wall_run(0.2)
 		return
 	if wall_run_latch > 0.0:
 		return
@@ -713,18 +719,11 @@ func _after_wall_move(delta: float) -> void:
 	# Auto ledge-vault: the wall ended while we were still climbing, so we just
 	# cleared its top edge. Hop over it instead of dropping down the face.
 	if not is_on_wall():
-		if velocity.y > 0.5:
-			var fwd := wall_run_forward
-			velocity.y = 11.5
-			velocity.x += fwd.x * 14.0
-			velocity.z += fwd.z * 14.0
-			_end_wall_run(0.0)
-			wall_run_latch = 0.12
-			jump_count = 1
-			if dash_vfx:
-				dash_vfx.play_sfx("vanish")
-				dash_vfx.spawn_cel_smoke(global_position + Vector3(0.0, 1.0, 0.0), 5, Vector3.UP, 0.8)
-				dash_vfx.spawn_step_sigil(global_position + Vector3(0.0, 0.2, 0.0), Color(0.55, 0.92, 1.0), 1.2)
+		# Auto ledge-vault, gated by real clearance: chest and head both open in
+		# front means we cleared the lip and have somewhere to land. Without the
+		# check the vault launched the player into overhangs and low arches.
+		if velocity.y > 0.5 and _ledge_vault_clear():
+			_vault_onto_ledge()
 		else:
 			_end_wall_run(0.2)
 		return
@@ -740,6 +739,42 @@ func _end_wall_run(latch: float = 0.25) -> void:
 	wall_run_latch = latch
 	wall_run_side = 0.0
 	camera_roll_target = 0.0
+
+# Chest-height and head-height rays forward from the body. Both must be open:
+# the first proves we are above the wall lip, the second proves there is air to
+# vault into rather than a ceiling. All physics layers, own body excluded.
+func _ledge_vault_clear() -> bool:
+	var fwd := wall_run_forward
+	fwd.y = 0.0
+	if fwd.length_squared() < 0.01:
+		return false
+	fwd = fwd.normalized()
+	var space := get_world_3d().direct_space_state
+	if space == null:
+		return false
+	for h in [1.1, 2.2]:
+		var from: Vector3 = global_position + Vector3(0.0, float(h), 0.0)
+		var q := PhysicsRayQueryParameters3D.create(from, from + fwd * 0.75)
+		q.exclude = [get_rid()]
+		if not space.intersect_ray(q).is_empty():
+			return false
+	return true
+
+func _vault_onto_ledge() -> void:
+	var fwd := wall_run_forward
+	fwd.y = 0.0
+	fwd = fwd.normalized() if fwd.length_squared() > 0.01 else -wall_run_normal
+	velocity.x = fwd.x * 14.0
+	velocity.y = 11.5
+	velocity.z = fwd.z * 14.0
+	state = MoveState.AIR
+	_end_wall_run(0.0)
+	wall_run_latch = 0.12
+	jump_count = 1
+	if dash_vfx:
+		dash_vfx.play_sfx("vanish")
+		dash_vfx.spawn_cel_smoke(global_position + Vector3(0.0, 1.0, 0.0), 5, Vector3.UP, 0.8)
+		dash_vfx.spawn_step_sigil(global_position + Vector3(0.0, 0.2, 0.0), Color(0.55, 0.92, 1.0), 1.2)
 
 func trigger_weapon_windup(dir: Vector2) -> void:
 	if weapon_pivot:
