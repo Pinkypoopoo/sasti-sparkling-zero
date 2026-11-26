@@ -471,6 +471,14 @@ func _cycle_region() -> void:
 			fmat.albedo_color = Color(0.38, 0.32, 0.26)
 			if player and player.dash_vfx and player.dash_vfx.stone_mat:
 				player.dash_vfx.stone_mat.albedo_color = Color(0.52, 0.44, 0.36)
+	# V6 Task 2A: curated props ride the same switch as palette + floor. Region 2's
+	# obsidian sanctum is flooded through the existing anime water plane; the
+	# quality_tier >= 1 gate stays inside _push_water(), so LOW is always dry and fast.
+	if player and player.dash_vfx:
+		player.dash_vfx.load_curated_region(region_idx)
+	if player and player.data_store:
+		player.data_store.tuning["water_floor_enabled"] = region_idx == 2
+		player._push_water()
 	if floor_mesh:
 		floor_mesh.material_override = fmat
 

@@ -505,6 +505,68 @@ func _run() -> void:
 	player.apply_quality_tier()
 	check(int(player.get_viewport().msaa_3d) == int(CombatData.QUALITY_TIERS[2]["msaa"]), "the MSAA enum cast still applies the tier value")
 
+	# --- 20. V6 Task 2A: curated 3-region arena layouts ----------------------
+	player.data_store.reset_tuning()
+	var t7_layouts: Dictionary = player.dash_vfx.CURATED_REGION_LAYOUTS
+	check(t7_layouts.size() == 3 and t7_layouts.has(0) and t7_layouts.has(1) and t7_layouts.has(2), "all three regions own a curated prop layout")
+	player.dash_vfx.load_curated_region(0)
+	var t7_kids0 := 0
+	for c in player.dash_vfx.get_children():
+		if not c.is_queued_for_deletion():
+			t7_kids0 += 1
+	studio.region_idx = 2
+	var t7_counts: Array[int] = []
+	var t7_paint: Array[Color] = []
+	var t7_bad := 0
+	var t7_prev: Color = player.dash_vfx.stone_mat.albedo_color
+	for pass_i in range(2):
+		for want in range(3):
+			studio._cycle_region()
+			var props: int = player.dash_vfx.curated_prop_count()
+			if int(studio.region_idx) != want or props != (t7_layouts[want] as Array).size():
+				t7_bad += 1
+			var live := 0
+			for p in player.dash_vfx.curated_region_props:
+				if is_instance_valid(p.get("root", null)):
+					live += 1
+			if live != props:
+				t7_bad += 1
+			if pass_i == 0:
+				if t7_paint.size() > 0 and player.dash_vfx.stone_mat.albedo_color.is_equal_approx(t7_prev):
+					t7_bad += 1
+				t7_prev = player.dash_vfx.stone_mat.albedo_color
+				t7_paint.append(t7_prev)
+				t7_counts.append(props)
+	check(t7_bad == 0, "regions 0/1/2 spawn exactly their curated props, live, in cycle order")
+	check(t7_paint.size() == 3 and not t7_paint[0].is_equal_approx(t7_paint[1]) and not t7_paint[1].is_equal_approx(t7_paint[2]), "each curated region swaps the arena palette")
+	check(t7_counts[0] > t7_counts[1] and t7_counts[1] > 0 and t7_counts[2] > 0, "the three layouts are distinct prop sets")
+	studio.region_idx = 2
+	studio._cycle_region()
+	var t7_kids1 := 0
+	for c in player.dash_vfx.get_children():
+		if not c.is_queued_for_deletion():
+			t7_kids1 += 1
+	check(t7_kids1 == t7_kids0, "repeated region switches free every curated prop (no orphan nodes)")
+	# GOTHIC_ECLIPSE floods through the existing plane; the LOW-tier gate is untouched.
+	studio.region_idx = 1
+	studio._cycle_region()
+	player.data_store.tuning["auto_quality"] = false
+	player.data_store.tuning["quality_tier"] = 0
+	player.apply_quality_tier()
+	check(not player.dash_vfx.water_enabled and not player.dash_vfx.water_mesh.visible, "GOTHIC_ECLIPSE on LOW keeps the water floor hidden")
+	player.data_store.tuning["quality_tier"] = 2
+	player.apply_quality_tier()
+	check(player.dash_vfx.water_enabled and player.dash_vfx.water_mesh.visible, "GOTHIC_ECLIPSE on MID+ floods the sanctum")
+	var t7_before: int = player.dash_vfx.destructible_pillars.size()
+	player.dash_vfx.spawn_arena_block("BLAME_MONOLITH", Vector3(-60, 0, 60), 0.0, true)
+	check(player.dash_vfx.destructible_pillars.size() == t7_before + 1, "Tab 6 blocks still place on top of a curated region")
+	check(player.dash_vfx.curated_prop_count() == (t7_layouts[2] as Array).size(), "a Tab 6 block is never counted as curated")
+	player.dash_vfx.remove_nearest_block(Vector3(-60, 0, 60), 4.5)
+	check(player.dash_vfx.curated_prop_count() == (t7_layouts[2] as Array).size(), "removing a Tab 6 block leaves the curated sanctum intact")
+	player.dash_vfx.clear_curated_region()
+	check(player.dash_vfx.curated_prop_count() == 0, "clear_curated_region() leaves no curated props behind")
+	player.dash_vfx.load_curated_region(0)
+
 	# Leave no test tuning behind for the next run.
 	player.data_store.reset_tuning()
 	player.data_store.refresh_auto_quality()

@@ -135,6 +135,57 @@ var sfx_noise_mix: float = 0.0
 # unbounded build session could tank a phone.
 const MAX_USER_BLOCKS: int = 120
 
+# =============================================================================
+#  V6 TASK 2A - CURATED 3-REGION ARENA LAYOUTS
+#  Deterministic per-region prop tables, built through spawn_arena_block() so
+#  every curated piece stays solid, destructible and painted by stone_mat (the
+#  region palette). Spec order is [kind, x, y, z, rot_y_deg]; positions are
+#  snapped to the 2 m grid like Tab 6 blocks. Plain data on purpose, so the gate
+#  can assert an exact prop count per region.
+# =============================================================================
+const CURATED_REGION_LAYOUTS: Dictionary = {
+	# 0 INK_CATHEDRAL - symmetrical nave: wall-runnable pillars, ruined arches.
+	0: [
+		["GOTHIC_PILLAR", -12.0, 0.0, -10.0, 0.0],
+		["GOTHIC_PILLAR", 12.0, 0.0, -10.0, 0.0],
+		["GOTHIC_PILLAR", -22.0, 0.0, -14.0, 0.0],
+		["GOTHIC_PILLAR", 22.0, 0.0, -14.0, 0.0],
+		["GOTHIC_PILLAR", -16.0, 0.0, -24.0, 0.0],
+		["GOTHIC_PILLAR", 16.0, 0.0, -24.0, 0.0],
+		["GOTHIC_PILLAR", -8.0, 0.0, -32.0, 0.0],
+		["GOTHIC_PILLAR", 8.0, 0.0, -32.0, 0.0],
+		["RUINED_ARCH", -32.0, 0.0, -40.0, 90.0],
+		["RUINED_ARCH", 32.0, 0.0, -40.0, 90.0],
+		["RUINED_ARCH", -32.0, 0.0, 6.0, 90.0],
+		["RUINED_ARCH", 32.0, 0.0, 6.0, 90.0],
+	],
+	# 1 BLAME_MEGASTRUC - staggered monoliths + raised ledges for wall-run kick-offs.
+	1: [
+		["BLAME_MONOLITH", -24.0, 0.0, -16.0, 0.0],
+		["BLAME_MONOLITH", -8.0, 0.0, -32.0, 0.0],
+		["BLAME_MONOLITH", 8.0, 4.0, -16.0, 0.0],
+		["BLAME_MONOLITH", 24.0, 0.0, -32.0, 0.0],
+		["RUINED_ARCH", 0.0, 8.0, -46.0, 0.0],
+		["ANIME_FLORA_PATCH", -30.0, 0.0, -6.0, 0.0],
+		["ANIME_FLORA_PATCH", 30.0, 0.0, -6.0, 0.0],
+	],
+	# 2 GOTHIC_ECLIPSE - obsidian ruined-arch sanctum built for the flooded floor.
+	2: [
+		["RUINED_ARCH", -18.0, 0.0, -22.0, 0.0],
+		["RUINED_ARCH", 18.0, 0.0, -22.0, 0.0],
+		["RUINED_ARCH", 0.0, 0.0, -6.0, 90.0],
+		["GOTHIC_PILLAR", -26.0, 0.0, -4.0, 0.0],
+		["GOTHIC_PILLAR", 26.0, 0.0, -4.0, 0.0],
+		["ANIME_FLORA_PATCH", -12.0, 0.0, 10.0, 0.0],
+		["ANIME_FLORA_PATCH", 12.0, 0.0, 10.0, 0.0],
+	],
+}
+
+# Curated props live apart from Tab 6's custom_block_nodes: a region switch must
+# never eat the player's build, and a saved build must never eat the region.
+var curated_region_props: Array[Dictionary] = []
+var curated_region_idx: int = 0
+
 func _ready() -> void:
 	_setup_synth_audio()
 	_setup_afterimage_pool()
@@ -329,14 +380,9 @@ void fragment() {
 }
 """
 
-	var pillar_coords: Array[Vector3] = [
-		Vector3(-12, 0, -10), Vector3(12, 0, -10),
-		Vector3(-16, 0, -24), Vector3(16, 0, -24),
-		Vector3(-8, 0, -32), Vector3(8, 0, -32),
-		Vector3(-22, 0, -14), Vector3(22, 0, -14)
-	]
-	for pos in pillar_coords:
-		spawn_arena_block("GOTHIC_PILLAR", pos, 0.0, false)
+	# V6 Task 2A: the INK_CATHEDRAL nave moved into CURATED_REGION_LAYOUTS, so boot
+	# and the region cycler build the arena through one code path.
+	load_curated_region(0)
 
 	var chunk_mesh := BoxMesh.new()
 	chunk_mesh.size = Vector3(0.75, 0.55, 0.95)
@@ -596,6 +642,39 @@ func _update_cel_smoke(delta: float) -> void:
 		if float(p["timer"]) <= 0.0:
 			mi.visible = false
 
+# --- V6 Task 2A: curated region arena load / clear ---------------------------
+# Builds one region's curated arena and returns the prop count, so callers (and
+# the gate) can assert the layout actually landed. Curated entries are flagged
+# and never recorded as user blocks.
+func load_curated_region(region_idx: int) -> int:
+	clear_curated_region()
+	curated_region_idx = region_idx
+	for spec in CURATED_REGION_LAYOUTS.get(region_idx, []):
+		var before: int = destructible_pillars.size()
+		var pos := Vector3(float(spec[1]), float(spec[2]), float(spec[3]))
+		spawn_arena_block(str(spec[0]), pos, float(spec[4]), false)
+		if destructible_pillars.size() > before:
+			destructible_pillars[before]["curated"] = true
+			curated_region_props.append(destructible_pillars[before])
+	return curated_region_props.size()
+
+func curated_prop_count() -> int:
+	return curated_region_props.size()
+
+# Detach + free() (not queue_free): a deferred free would leave the outgoing
+# region's StaticBody3D RIDs alive at headless exit, which the gate reads as a leak.
+func clear_curated_region() -> void:
+	for i in range(destructible_pillars.size() - 1, -1, -1):
+		if not bool(destructible_pillars[i].get("curated", false)):
+			continue
+		var root: Node = destructible_pillars[i].get("root", null)
+		if is_instance_valid(root) and not root.is_queued_for_deletion():
+			if root.get_parent() == self:
+				remove_child(root)
+			root.free()
+		destructible_pillars.remove_at(i)
+	curated_region_props.clear()
+
 # --- Minecraft-Style Modular Block & MultiMesh Flora Spawner ---
 func spawn_arena_block(kind: String, pos: Vector3, rot_y_deg: float = 0.0, record_user: bool = true) -> void:
 	if record_user and custom_block_nodes.size() >= MAX_USER_BLOCKS:
@@ -682,6 +761,11 @@ func spawn_arena_block(kind: String, pos: Vector3, rot_y_deg: float = 0.0, recor
 	if has_collision:
 		solid.add_child(solid_shape)
 		b_root.add_child(solid)
+	else:
+		# Never parented, so nothing else would ever free them: a flora patch used
+		# to leak one StaticBody3D + shape per spawn at exit.
+		solid.free()
+		solid_shape.free()
 
 	var entry := {"kind": kind, "pos": snap_pos, "rot": rot_y_deg, "root": b_root, "upper": upper_holder, "intact": true, "user_placed": record_user, "solid": solid if has_collision else null, "solid_shape": solid_shape if has_collision else null}
 	destructible_pillars.append(entry)

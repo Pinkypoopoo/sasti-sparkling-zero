@@ -87,43 +87,6 @@ Answer in §4 with a dated entry. These are decisions, not research tasks.
 
 ## 4. Message log
 
-### 2026-11-16 · Buffy (Freebuff) — V5 Task 2: CanvasLayer impact slash, ring, tier-capped cel smoke
-
-Branch `Pinkypoopoo-patch-1`, based on `f7b60ec`. `main` untouched (`0c80d97`).
-Gate: **VERIFY_PASSED**, 7 gates, 68 signatures, 76 combat asserts, zero GDScript warnings.
-
-Audit first (the earlier V5 commit already had most of this; do not rebuild it):
-- `gesture_combat.trigger_impact_slash()` existed at `IMPACT_SLASH_TIME = 0.16 s` and already
-  fired on a crit, on posture break, on KO (`_kill_rival`) and on super parry.
-- The 2D drawing (white impact frame, diagonal ink slash, expanding double ring, 4-point star
-  flare) existed in `dev_studio._draw_impact_slash()`.
-- `dash_vfx.spawn_cel_smoke()` existed with a 14-quad pooled 2-tone `CEL_SMOKE_SHADER`, already
-  called on hard landings, dash bursts, wall-run start, wall kick-off and the ledge vault.
-
-Gaps closed (this commit)
-1. The slash now renders on a real `CanvasLayer` (`dash_vfx.ImpactSlashLayer`, layer 20) via an
-   inner `ScreenSlash extends Control`, instead of inside the DevStudio Control's `_draw()`.
-   Same vectors, but now guaranteed above the 3D world and the HUD. `dev_studio._draw_impact_slash()`
-   and its call site are removed; the white impact frame (`impact_flash_timer`) still draws from
-   the HUD.
-2. Z-Vanish counter never fired a slash. `_check_active_parry_against_enemies()` only spawned a
-   sigil; it now triggers the slash, which is one of the triggers the spec named and was missing.
-3. Four tab-8 knobs added, auto-generated so no UI code: `impact_slash_enabled`,
-   `impact_slash_intensity`, `cel_smoke_enabled`, `cel_smoke_density`.
-4. Cel smoke respects the 4-tier budget: `dash_vfx.fx_cap` tracks the tier debris cap
-   (LOW 8 / MID 16 / HIGH 28 / ULTRA 28); `spawn_cel_smoke()` refuses when full or disabled and
-   scales puff count by density. On LOW the singularity ring and star flare are skipped, leaving
-   the slash core, so a phone pays 3 lines instead of 3 lines + 2 arcs + 4 flares.
-5. `character_body_3d._push_fx_budget()` pushes tier + knob state to `dash_vfx` every physics tick
-   next to `set_water_enabled()`, so the checkboxes are live with no extra polling state.
-
-Verified: 76 asserts (was 67). New ones cover all four defaults, the CanvasLayer, firing, the
-toggle disabling it, smoke refusing while off, and the cap bounding the puff count. Gate 7/7 with
-real GLB import and the character contract, boot warning scan empty, shader untouched.
-Not verified: no on-device run (no GPU or phone here) — slash/ring timing and the smoke read are
-unjudged, and `_draw()` never executes because the dummy renderer has no canvas, so the asserts
-prove state and lifetime, not pixels.
-
 ### 2026-11-16 · Buffy (Freebuff) — V5 Task 3: water floor audit + vault side-edge fix
 
 Branch `Pinkypoopoo-patch-1`, rebased on `ad3c4c0`. `main` untouched (`0c80d97`).
@@ -324,4 +287,55 @@ mobile theme with >= 44 px controls, Tab 8 still auto-generated).
 OPEN: no on-device visual pass (pill ergonomics, sunlight contrast, real clipboard); Blender 5.2
 exporter still unrun.
 NEXT: playtest the panel on a phone, then continue V6.
+=== END AI HANDOFF PACKET ===
+
+### 2026-11-26 · Buffy (Freebuff) — V6 Task 2A: curated 3-region arena layouts
+
+Branch `Pinkypoopoo-patch-1`, based on `9c20947`. `main` untouched (`0c80d97`).
+Gate: **VERIFY_PASSED**, 7 gates, 79 signatures, 147 combat asserts, zero GDScript warnings
+(`--check-only` on `dash_vfx.gd` / `dev_studio.gd` / `combat_test.gd` silent, boot scan empty).
+
+`dash_vfx.gd` — no new file; data + helpers only:
+- `CURATED_REGION_LAYOUTS` maps 0 `INK_CATHEDRAL` (12 props: the 8 nave pillars + 4 ruined arches),
+  1 `BLAME_MEGASTRUC` (7: 4 staggered monoliths, one raised to 4 m, an 8 m arch, 2 flora patches)
+  and 2 `GOTHIC_ECLIPSE` (7: 3 arches, 2 pillars, 2 flora). Specs are `[kind, x, y, z, rot]` and go
+  through `spawn_arena_block()`, so every curated piece is solid, destructible and palette-driven.
+- `load_curated_region(idx) -> int`, `clear_curated_region()`, `curated_prop_count()`. Curated
+  entries are flagged `curated` and tracked in `curated_region_props`, never in
+  `custom_block_nodes`, so a region switch cannot eat a Tab 6 build and a saved build cannot eat
+  the region.
+- `clear_curated_region()` walks `destructible_pillars` backwards, detaches the root
+  (`remove_child`) and `free()`s it — not `queue_free`, which would leave the outgoing region's
+  Jolt bodies alive at exit. Tab 6 `spawn_arena_block()` still layers on any loaded region.
+- `_setup_destructible_arena()` no longer carries the hardcoded 8-pillar loop; it calls
+  `load_curated_region(0)`, so boot and the cycler build the arena through one path.
+
+Bug found on the way (pre-existing, only reachable through curated flora): `spawn_arena_block()`
+allocated the `StaticBody3D` + `CollisionShape3D` for every kind but parented them only when the
+kind collides, so each `ANIME_FLORA_PATCH` leaked one body + shape at exit — exactly the
+2 × `P10JoltBody3D` leaks the gate reported. Now freed when `has_collision` is false.
+
+`dev_studio.gd` — `_cycle_region()` (also reached by the story tab's region jump) loads the curated
+layout after the palette swap, then sets `water_floor_enabled = (region_idx == 2)` and calls the
+existing `player._push_water()`. GOTHIC_ECLIPSE therefore floods, while the `quality_tier >= 1`
+gate stays where it was: LOW is dry, MID/HIGH/ULTRA get the plane. No new `WorldEnvironment`, no new
+mesh, no shortcut gate.
+
+Verified (headless, `combat_test.gd` §20, 11 new asserts): the three layouts exist; cycling 0→1→2
+twice spawns exactly each layout's prop count with live roots; each region swaps `stone_mat`;
+returning to region 0 leaves the same non-queued child count (no orphan nodes); region 2 keeps water
+hidden on LOW and shows it on MID; a Tab 6 monolith places on top, is never counted as curated, and
+removing it leaves the sanctum intact; `clear_curated_region()` empties the set.
+Not verified: no visual run — nave spacing, the raised monolith ledges, the obsidian sanctum read
+and the flooded floor are unjudged (headless has no canvas or GPU).
+
+=== AI HANDOFF PACKET ===
+REPO: Pinkypoopoo/sasti-sparkling-zero
+BRANCH: Pinkypoopoo-patch-1 (HEAD for this entry: V6 Task 2A)
+DONE: curated 3-region arena layouts in dash_vfx (12/7/7 props, load/clear/count, curated tracked
+apart from Tab 6), region-2 water through the existing tier-gated _push_water(), 11 new asserts,
+flora StaticBody leak fixed.
+OPEN: no on-device visual pass (layout spacing, sanctum read, flooded floor); Blender 5.2 exporter
+still unrun. Task 2B (story_nodes.json / story_test.gd) untouched.
+NEXT: Task 2B story regions.
 === END AI HANDOFF PACKET ===
