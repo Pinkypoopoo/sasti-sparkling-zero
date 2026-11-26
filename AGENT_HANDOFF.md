@@ -87,61 +87,6 @@ Answer in §4 with a dated entry. These are decisions, not research tasks.
 
 ## 4. Message log
 
-### [2026-11-26] Buffy (Freebuff) — V5 Task 1: Intent-Gated Wall-Running, Wall Kick-Off, and Auto Ledge-Vault
-
-Branch `Pinkypoopoo-patch-1`. `main` untouched (`0c80d97`). Gate: **VERIFY_PASSED** (8 tabs, 64 signatures, invariants, import, boot, smoke, combat loop, story schema).
-
-- Verified `wall_run_enabled` tuning spec/defaults/bools in `combat_data.gd`, intent gating in `character_body_3d.gd` (`is_on_wall()`, `absf(wall_normal.y) < 0.35`, speed > 11.0 or sprint held, not busy), up_direction fixed to Vector3.UP with VisualRoot ±9° and camera ±8° roll, reduced gravity wall tangent movement, jump wall kick-off with re-attach cooldown, auto ledge-vault clearance checks, and clean cancellation on attack/hitstun/slowdown/loss of wall contact.
-- Verified regression test in `combat_test.gd` (item 13).
-- Ran `bash verify.sh` -> `VERIFY_PASSED` with 0 errors and 0 warnings.
-
-=== AI HANDOFF PACKET ===
-REPO: Pinkypoopoo/sasti-sparkling-zero
-BRANCH: Pinkypoopoo-patch-1
-DONE: V5 Task 1 Wall-Running, Wall Kick-Off, and Auto Ledge-Vault verified against all gates and combat tests.
-OPEN: none for this task.
-NEXT: continue V5 tasks or M3 ranked arena.
-=== END AI HANDOFF PACKET ===
-
-
-
-### 2026-11-16 · Buffy (Freebuff) — V5 Task 1 wall-run: audit + 3 fixes
-
-Branch `Pinkypoopoo-patch-1`. `main` untouched (`0c80d97`).
-
-Wall-running was already implemented in `4148982`, so this entry records an audit against the V5
-Task 1 spec instead of a rebuild. **Gate: VERIFY_PASSED, 7 gates, 64 signatures, 67 combat asserts,
-zero GDScript warnings.**
-
-Already satisfied and re-verified (do not rebuild): `wall_run_enabled` in `TUNING_BOOLS` +
-`TUNING_DEFAULTS` (default true); `wall_run_speed` / `wall_run_gravity_scale` / `wall_kick_force` in
-`TUNING_SPEC` so tab 8 generates them with no UI code; the intent gate (`is_on_wall()`,
-`absf(normal.y) < 0.35`, busy = hitstun/dash/windup/defeated); tangent movement with reduced gravity
-plus a `WALL_RUN_STICK` inward push so contact survives; jump kick-off along the wall normal with a
-0.35 s latch; smooth `±8°` camera roll (`camera.rotation.z` lerp) with `VisualRoot` `±9°`; clean
-cancel on attack, hitstun, time-out and contact loss.
-
-Closed gaps (this commit)
-1. `up_direction = Vector3.UP` is now set explicitly in `_ready()` and enforced by a new gate 2b
-   invariant: the capsule must never tilt, only `VisualRoot` and the camera roll.
-2. Auto ledge-vault is clearance-gated: `_ledge_vault_clear()` raycasts forward at chest (1.1 m) and
-   head (2.2 m) height and both must be open before `_vault_onto_ledge()` fires. The old version
-   vaulted on raw contact loss, so it launched the player into overhangs and low arches.
-3. The run cancels when the player drops all stick input and is not sprinting (intent release),
-   completing the "slows down" cancel rule.
-
-Deliberate deviation, with the measurement: the spec reads "holding Sprint/Dash *with* speed >
-11.0". The gate is `sprint_held or h_speed > 11.0`, not `and`. Requiring both makes sprinting into a
-wall unengageable, because `move_and_slide()` absorbs the normal component on contact and the
-tangential speed at that instant is small (the sprint-into-wall test case is `h_speed = 4.0`). The OR
-is what makes the primary input work. Asserted in `combat_test.gd` 13.
-
-Verified: gate 7/7 with real GLB import and the character contract; 67 asserts (was 58) including
-`wall_run_enabled` present-and-on in `TUNING_DEFAULTS`, the 11.0 gate, and a toggle round-trip; boot
-warning scan empty; shader still compiles.
-Not verified: no on-device run (no GPU or phone here) — the feel of the run, the vault arc height and
-the ±8° roll are unjudged, and `_ledge_vault_clear()` only ever raycast into empty space headless.
-
 ### 2026-11-16 · Buffy (Freebuff) — V5 Task 2: CanvasLayer impact slash, ring, tier-capped cel smoke
 
 Branch `Pinkypoopoo-patch-1`, based on `f7b60ec`. `main` untouched (`0c80d97`).
@@ -319,4 +264,64 @@ was run — hostile packets are proven safe only by calling `_handle_udp_packet(
 with `udp_beacon == null`, and the 30 Hz cadence is asserted from the constant, not measured
 on a wire.
 
+=== END AI HANDOFF PACKET ===
+
+### 2026-11-26 · Buffy (Freebuff) — V6 Task 1: touch-first Dev Studio + 4.7.2 warning cleanup
+
+Branch `Pinkypoopoo-patch-1`, based on `79da49b`. `main` untouched (`0c80d97`).
+Gate: **VERIFY_PASSED**, 7 gates, 79 signatures, 137 combat asserts, zero GDScript warnings
+(`--check-only` on `dev_studio.gd` / `character_body_3d.gd` / `combat_test.gd` silent, 120-frame
+boot scan empty).
+
+Godot 4.7.2 editor-debugger warnings (all four, `character_body_3d.gd`):
+1. `var scale` in `apply_quality_tier()` renamed `render_scale_applied` — it shadowed `Node3D.scale`.
+   Gate 2b's shadow regex now also matches *typed* locals (`var scale: float = ...`), which is why
+   this one shipped twice: the old pattern only caught `var scale =`.
+2. `vp.msaa_3d = int(prof["msaa"])` now casts `as Viewport.MSAA`; gate 2b fails any bare
+   `msaa_3d/msaa_2d = int(...)` without the cast.
+3. `_update_ragdoll_bones(dt)` → `_dt` (the pose is a function of `stepped_time`, the delta was dead).
+   Gate 2b pins the signature.
+4. Interpolated-camera warning: the rig (`CameraPivot`, `SpringArm3D`, `Camera3D`) is written every
+   *render* frame in `_process()`, so it now opts out with
+   `physics_interpolation_mode = PHYSICS_INTERPOLATION_MODE_OFF`. Per-render follow/FOV/roll stay
+   smooth and the parent capsule still interpolates the rig's base transform. Chosen over moving the
+   camera into `_physics_process`, which would quantise 120 Hz camera motion to 60 Hz.
+
+Touch-first Dev Studio (`dev_studio.gd`) — all 8 tabs, Tab 8 auto-generation, `[ MENU ]` and the
+single-tap P5 menu untouched:
+- `tab_container.tabs_visible = false`; a 2x4 `GridContainer` of `MOBILE_TAB_LABELS` pills (48 px
+  tall, expand-fill, toggle highlight) replaces it. `_select_tab()` / `_sync_tab_pills()` keep the
+  pills and `current_tab` in lockstep, including the P5 menu's "open Dev Studio at tab N" rows.
+- Panel is now full-bleed (8 px inset) instead of a fixed 820x500 box, with a full-rect
+  `ColorRect` backdrop on `MOUSE_FILTER_STOP` plus `dev_panel.mouse_filter = STOP`, so no tap
+  reaches the MOVE/ATK orbs underneath.
+- Header quick controls: live `FPS · ms · time scale · tier` readout on the existing 10 Hz throttle;
+  `[ PAUSE / RESUME ]` (`get_tree().paused`, studio is `PROCESS_MODE_ALWAYS`) with a `PAUSED` badge;
+  `[ GOD MODE ]` pill wired to `immortal_mode`; `[ COPY ALL ]` → clipboard + `user://balance_values.txt`
+  with an on-panel toast; 56x48 `X`.
+- `_build_mobile_theme()`: obsidian `StyleBoxFlat` card (1 px border, 12 px radius), button/OptionButton
+  pills, dark-vs-crimson CheckBox pills, 14 px track + 30 px round grabber texture for HSliders.
+  `_apply_mobile_widgets()` walks each tab (and the rebuilt Tab 8) setting `>= 44 px` heights and
+  prefixing every boolean with `[ ON ]` / `[ OFF ]`, so Tab 8 inherits the theme with no per-key code.
+  Tab scrolls are vertical-only with 10 px separation; closing the panel always resumes the tree.
+- Behaviour change worth knowing: `_toggle_dev_panel()` now force-resumes on close, so the game can
+  never be left frozen with the resume button off-screen.
+
+Verified (headless, `combat_test.gd` 19): 8 pills each reach their tab (helper + real `pressed`
+signal), Tab 8 sliders/booleans >= 44 px, `PROCESS_MODE_ALWAYS` + pause/resume round trip with badge,
+GOD MODE on/off mirrors `immortal_mode`, `_export_all_values()` formats `enemy_damage = 77`, writes
+`user://balance_values.txt`, shows the toast, camera rig interpolation mode is OFF, MSAA cast still
+applies the tier value.
+Not verified: no on-device run — pill/slider ergonomics, the crimson CheckBox contrast in sunlight and
+the clipboard (headless has no clipboard feature, so only the file path is asserted) are unjudged.
+
+=== AI HANDOFF PACKET ===
+REPO: Pinkypoopoo/sasti-sparkling-zero
+BRANCH: Pinkypoopoo-patch-1 (HEAD for this entry: V6 Task 1)
+DONE: 4 x 4.7.2 editor-debugger warnings fixed + gate-blocked; Dev Studio rebuilt touch-first
+(tab bar hidden, 2x4 pill grid, full-bleed panel + backdrop, telemetry header, pause/god/copy,
+mobile theme with >= 44 px controls, Tab 8 still auto-generated).
+OPEN: no on-device visual pass (pill ergonomics, sunlight contrast, real clipboard); Blender 5.2
+exporter still unrun.
+NEXT: playtest the panel on a phone, then continue V6.
 === END AI HANDOFF PACKET ===

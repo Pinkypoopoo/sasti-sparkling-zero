@@ -200,6 +200,16 @@ func _ready() -> void:
 	_build_sdf_face_texture()
 	apply_quality_tier()
 
+	# The camera rig is driven every RENDER frame in _process() (spring follow, FOV
+	# kick, wall-run roll). With physics interpolation enabled, writing an
+	# interpolated Camera3D outside _physics_process makes 4.7 log
+	# "[Physics interpolation] Interpolated Camera3D triggered from outside physics
+	# process". Opting the rig out keeps the 120 Hz smoothness (the parent capsule
+	# still interpolates the rig's base transform) and silences the warning.
+	for cam_node in [camera_pivot, spring_arm, camera]:
+		if cam_node:
+			(cam_node as Node).physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF
+
 	if not DisplayServer.is_touchscreen_available():
 		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 	else:
@@ -420,11 +430,13 @@ func apply_quality_tier() -> void:
 	if not data_store: return
 	var tier: int = clampi(int(round(data_store.tuning_get("quality_tier", 2.0))), 0, CombatData.QUALITY_TIERS.size() - 1)
 	var prof: Dictionary = data_store.tier_profile(tier)
-	var scale: float = clampf(data_store.tuning_get("render_scale", float(prof["scale"])), 0.5, 1.0)
+	# NOT `var scale`: that shadows Node3D.scale (SHADOWED_VARIABLE_BASE_CLASS).
+	var render_scale_applied: float = clampf(data_store.tuning_get("render_scale", float(prof["scale"])), 0.5, 1.0)
 	var vp := get_viewport()
 	if vp:
-		vp.scaling_3d_scale = scale
-		vp.msaa_3d = int(prof["msaa"])
+		vp.scaling_3d_scale = render_scale_applied
+		# Bare int -> enum is INT_AS_ENUM_WITHOUT_CAST; msaa is a Viewport.MSAA.
+		vp.msaa_3d = int(prof["msaa"]) as Viewport.MSAA
 	var sun := get_node_or_null("../DirectionalLight3D") as DirectionalLight3D
 	if sun:
 		sun.shadow_enabled = bool(prof["shadow"])
@@ -443,7 +455,7 @@ func apply_quality_tier() -> void:
 		_push_water()
 	_push_fx_budget()
 	_applied_tier = tier
-	print("QUALITY_TIER_APPLIED: %s scale=%.2f debris=%d" % [str(prof["label"]), scale, int(prof["debris"])])
+	print("QUALITY_TIER_APPLIED: %s scale=%.2f debris=%d" % [str(prof["label"]), render_scale_applied, int(prof["debris"])])
 
 # VFX budget: tab-8 toggles + the active tier's cap, pushed to dash_vfx. Called
 # every tick next to set_water_enabled() so the checkboxes are live with no
@@ -888,7 +900,9 @@ func trigger_ragdoll_ko(duration: float = 1.15, impulse: Vector3 = Vector3(0, 11
 	if dash_vfx:
 		dash_vfx.play_sfx("shatter")
 
-func _update_ragdoll_bones(dt: float) -> void:
+# The frame delta is unused: the pose is a pure function of stepped_time, which is
+# why the argument is underscored (UNUSED_PARAMETER otherwise).
+func _update_ragdoll_bones(_dt: float) -> void:
 	if not active_skeleton or ragdoll_bones.is_empty(): return
 	for rb in ragdoll_bones:
 		var mult: float = rb["m"]

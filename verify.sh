@@ -123,6 +123,15 @@ REQUIRED_SIGNATURES=(
     "Slot_VeilCloak_:tools/build_character.py"
     "_apply_wall_run_velocity:character_body_3d.gd"
     "CHARACTER_TEST_PASS:character_test.gd"
+    # V6: touch-first Dev Studio (hidden tab bar, 2x4 pill grid, pause/god/copy)
+    "MOBILE_TAB_LABELS:dev_studio.gd"
+    "_select_tab:dev_studio.gd"
+    "_sync_tab_pills:dev_studio.gd"
+    "_build_mobile_theme:dev_studio.gd"
+    "_apply_mobile_widgets:dev_studio.gd"
+    "_set_paused:dev_studio.gd"
+    "_set_sandbox_immortal:dev_studio.gd"
+    "_export_all_values:dev_studio.gd"
 )
 for item in "${REQUIRED_SIGNATURES[@]}"; do
     sig="${item%%:*}"
@@ -173,7 +182,9 @@ ok "hand-crafted art: no .blend in models/, art/.gdignore present, exporter comp
 
 # GDScript hygiene: these are compiler WARNINGS, so they never fail a headless boot
 # and they were shipped twice already (snapped/scale shadowing in the phone log).
-SHADOW_HITS="$(grep -nE '^[[:space:]]*var[[:space:]]+(snapped|snappedf|scale|rotation|position|basis|transform|visible|velocity|lerp|clamp|abs|sign|min|max|str|range|print)[[:space:]]*:?=' ./*.gd 2>/dev/null || true)"
+# The pattern also matches typed locals ("var scale: float = ...") - the second
+# SHADOWED_VARIABLE_BASE_CLASS report from the 4.7.2 editor debugger.
+SHADOW_HITS="$(grep -nE '^[[:space:]]*var[[:space:]]+(snapped|snappedf|scale|rotation|position|basis|transform|visible|velocity|lerp|clamp|abs|sign|min|max|str|range|print)([[:space:]]*:[^=]*)?[[:space:]]*=' ./*.gd 2>/dev/null || true)"
 if [ -n "$SHADOW_HITS" ]; then
     echo "$SHADOW_HITS"
     fail "a local variable shadows a built-in (SHADOWED_VARIABLE): rename it"
@@ -182,7 +193,19 @@ fi
 if grep -nE 'dash_style[[:space:]]*=[[:space:]]*int\(' ./*.gd 2>/dev/null | grep -v 'as DashStyle'; then
     fail "int assigned to an enum without an \`as DashStyle\` cast (INT_AS_ENUM_WITHOUT_CAST)"
 fi
-ok "no shadowed built-ins, no bare int-to-enum cast"
+# Same rule for native engine enums (Viewport.MSAA is what 4.7.2 flagged).
+if grep -nE '(msaa_3d|msaa_2d)[[:space:]]*=[[:space:]]*int\(' ./*.gd 2>/dev/null | grep -v 'as Viewport\.'; then
+    fail "int assigned to a Viewport MSAA enum without an \`as Viewport.MSAA\` cast (INT_AS_ENUM_WITHOUT_CAST)"
+fi
+# UNUSED_PARAMETER: the ragdoll pose is a function of stepped_time, not the frame
+# delta, so the argument must stay underscored or 4.7.2 warns on every boot.
+grep -q 'func _update_ragdoll_bones(_dt: float)' character_body_3d.gd \
+    || fail "character_body_3d.gd: _update_ragdoll_bones() must keep its unused frame arg as _dt (UNUSED_PARAMETER)"
+# The camera rig is written from _process(); leaving it interpolated makes 4.7 log
+# "[Physics interpolation] Interpolated Camera3D triggered from outside physics process".
+grep -q 'PHYSICS_INTERPOLATION_MODE_OFF' character_body_3d.gd \
+    || fail "character_body_3d.gd: the camera rig must opt out of physics interpolation or the Camera3D interpolation warning returns"
+ok "no shadowed built-ins, no bare int-to-enum cast, camera rig off interpolation"
 
 # Every agent must leave a handoff entry (protocol rule, enforced here so it
 # cannot be skipped by the next model in the chain).

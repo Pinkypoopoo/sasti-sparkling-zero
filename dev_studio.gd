@@ -27,6 +27,27 @@ var story_choices_box: VBoxContainer = null
 
 const REGION_NAMES: Array[String] = ["INK_CATHEDRAL", "BLAME_MEGASTRUC", "GOTHIC_ECLIPSE"]
 
+# --- Mobile touch layout -----------------------------------------------------
+# The 8 sections keep their engine tab names (verify.sh + combat_test assert them)
+# but the tiny native tab bar is hidden and replaced by this 2 x 4 pill grid.
+const MOBILE_TAB_LABELS: Array[String] = [
+	"1 · CAMERA", "2 · PROFILE", "3 · MOVES", "4 · SPELLS",
+	"5 · SHADERS", "6 · WORLD", "7 · STORY", "8 · TUNING"
+]
+const TOUCH_ROW_H: float = 44.0
+const TOUCH_PILL_H: float = 48.0
+const BALANCE_PATH: String = "user://balance_values.txt"
+
+var tab_pills: Array[Button] = []
+var pause_button: Button = null
+var pause_badge: Label = null
+var god_button: Button = null
+var copy_button: Button = null
+var panel_telemetry: Label = null
+var toast_label: Label = null
+var dev_backdrop: ColorRect = null
+var toast_timer: float = 0.0
+
 var telemetry_accum: float = 0.0
 var panel_hz_cached: int = 60
 var combat_feel_vb: VBoxContainer = null
@@ -37,6 +58,9 @@ var result_visible: bool = false
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# The panel must keep ticking (telemetry, toast, pause badge) while
+	# get_tree().paused freezes the duel, so sliders can be tuned live.
+	process_mode = Node.PROCESS_MODE_ALWAYS
 	RenderingServer.viewport_set_measure_render_time(get_viewport().get_viewport_rid(), true)
 	panel_hz_cached = _screen_max_hz()
 	_build_ui()
@@ -61,10 +85,18 @@ func _input(event: InputEvent) -> void:
 
 func _toggle_dev_panel() -> void:
 	dev_panel.visible = not dev_panel.visible
+	if dev_backdrop:
+		dev_backdrop.visible = dev_panel.visible
 	if dev_panel.visible:
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
-	elif not DisplayServer.is_touchscreen_available():
-		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+		_apply_mobile_widgets(tab_container)
+		_sync_tab_pills(tab_container.current_tab)
+	else:
+		# Closing the panel must never leave the duel frozen with no resume button.
+		_set_paused(false)
+		_show_toast("")
+		if not DisplayServer.is_touchscreen_available():
+			Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 
 func _build_ui() -> void:
 	telemetry = Label.new()
@@ -91,34 +123,110 @@ func _build_ui() -> void:
 
 	_build_result_overlay()
 
+	# Backdrop blocker: while the panel is open it consumes every touch, so a tap
+	# can never fall through to the MOVE / ATK orbs drawn underneath.
+	dev_backdrop = ColorRect.new()
+	dev_backdrop.color = Color(0.0, 0.0, 0.0, 0.55)
+	dev_backdrop.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	dev_backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
+	dev_backdrop.visible = false
+	add_child(dev_backdrop)
+
 	dev_panel = PanelContainer.new()
 	dev_panel.visible = false
-	dev_panel.anchor_left = 0.5
-	dev_panel.anchor_top = 0.5
-	dev_panel.anchor_right = 0.5
-	dev_panel.anchor_bottom = 0.5
-	dev_panel.offset_left = -410
-	dev_panel.offset_top = -250
-	dev_panel.offset_right = 410
-	dev_panel.offset_bottom = 250
+	# Full-bleed on a phone instead of a fixed 820x500 box: every control stays
+	# inside the thumb arc and nothing is clipped by a narrow portrait viewport.
+	dev_panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	dev_panel.offset_left = 8
+	dev_panel.offset_top = 8
+	dev_panel.offset_right = -8
+	dev_panel.offset_bottom = -8
+	dev_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	dev_panel.theme = _build_mobile_theme()
 	add_child(dev_panel)
 
 	var root_vbox := VBoxContainer.new()
+	root_vbox.add_theme_constant_override("separation", 8)
 	dev_panel.add_child(root_vbox)
 
 	var header := HBoxContainer.new()
+	header.add_theme_constant_override("separation", 10)
 	var title := Label.new()
-	title.text = "  SASTI SPARKLING ZERO — MODULAR DEV STUDIO"
+	title.text = "SASTI SPARKLING ZERO — DEV STUDIO"
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	title.add_theme_font_size_override("font_size", 17)
 	header.add_child(title)
 	var close_b := Button.new()
-	close_b.text = " [ X ] "
+	close_b.text = "X"
+	close_b.custom_minimum_size = Vector2(56, TOUCH_PILL_H)
+	close_b.focus_mode = Control.FOCUS_NONE
 	close_b.pressed.connect(_toggle_dev_panel)
 	header.add_child(close_b)
 	root_vbox.add_child(header)
 
+	# --- Telemetry & quick controls ----------------------------------------
+	var tel_row := HBoxContainer.new()
+	tel_row.add_theme_constant_override("separation", 10)
+	panel_telemetry = Label.new()
+	panel_telemetry.text = "FPS - · - ms · TS 1.00 · -"
+	panel_telemetry.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	panel_telemetry.add_theme_color_override("font_color", Color(0.25, 0.98, 0.75))
+	panel_telemetry.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	tel_row.add_child(panel_telemetry)
+	pause_badge = Label.new()
+	pause_badge.text = "PAUSED"
+	pause_badge.visible = false
+	pause_badge.add_theme_color_override("font_color", Color(1.0, 0.22, 0.3))
+	pause_badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	tel_row.add_child(pause_badge)
+	root_vbox.add_child(tel_row)
+
+	var quick := GridContainer.new()
+	quick.columns = 3
+	quick.add_theme_constant_override("h_separation", 8)
+	quick.add_theme_constant_override("v_separation", 8)
+	pause_button = Button.new()
+	pause_button.text = "[ PAUSE ]"
+	pause_button.custom_minimum_size = Vector2(0, TOUCH_PILL_H)
+	pause_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	pause_button.focus_mode = Control.FOCUS_NONE
+	pause_button.pressed.connect(_toggle_pause)
+	quick.add_child(pause_button)
+	god_button = Button.new()
+	god_button.text = "[ GOD MODE ]"
+	god_button.toggle_mode = true
+	god_button.custom_minimum_size = Vector2(0, TOUCH_PILL_H)
+	god_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	god_button.focus_mode = Control.FOCUS_NONE
+	god_button.toggled.connect(_set_sandbox_immortal)
+	quick.add_child(god_button)
+	copy_button = Button.new()
+	copy_button.text = "[ COPY ALL ]"
+	copy_button.custom_minimum_size = Vector2(0, TOUCH_PILL_H)
+	copy_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	copy_button.focus_mode = Control.FOCUS_NONE
+	copy_button.pressed.connect(_export_all_values)
+	quick.add_child(copy_button)
+	root_vbox.add_child(quick)
+
+	toast_label = Label.new()
+	toast_label.text = ""
+	toast_label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3))
+	toast_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root_vbox.add_child(toast_label)
+
+	# 2 x 4 thumb-sized category grid. Every one of the 8 sections is exactly one
+	# tap away, with no horizontal < > arrow scrolling on a phone.
+	var pill_grid := GridContainer.new()
+	pill_grid.columns = 4
+	pill_grid.add_theme_constant_override("h_separation", 8)
+	pill_grid.add_theme_constant_override("v_separation", 8)
+	root_vbox.add_child(pill_grid)
+
 	tab_container = TabContainer.new()
+	tab_container.tabs_visible = false
 	tab_container.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	tab_container.tab_changed.connect(_sync_tab_pills)
 	root_vbox.add_child(tab_container)
 
 	_build_tab_physics()
@@ -129,6 +237,22 @@ func _build_ui() -> void:
 	_build_tab_world_and_char()
 	_build_tab_world_map()
 	_build_tab_combat_feel()
+
+	for i in range(tab_container.get_tab_count()):
+		var pill := Button.new()
+		pill.text = MOBILE_TAB_LABELS[i] if i < MOBILE_TAB_LABELS.size() else tab_container.get_tab_title(i)
+		pill.toggle_mode = true
+		pill.focus_mode = Control.FOCUS_NONE
+		pill.custom_minimum_size = Vector2(0, TOUCH_PILL_H)
+		pill.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		pill.add_theme_font_size_override("font_size", 14)
+		var idx := i
+		pill.pressed.connect(func(): _select_tab(idx))
+		pill_grid.add_child(pill)
+		tab_pills.append(pill)
+	_select_tab(0)
+	_apply_mobile_widgets(tab_container)
+	_set_sandbox_immortal(_sandbox_immortal())
 
 func _build_result_overlay() -> void:
 	result_overlay = PanelContainer.new()
@@ -186,7 +310,9 @@ func _on_retry_pressed() -> void:
 
 func _on_tune_pressed() -> void:
 	dev_panel.visible = true
-	tab_container.current_tab = 7
+	if dev_backdrop:
+		dev_backdrop.visible = true
+	_select_tab(7)
 
 func _sync_result_overlay() -> void:
 	if not result_overlay or not combat: return
@@ -279,6 +405,9 @@ func _fill_combat_feel(vb: VBoxContainer) -> void:
 	b_save.text = " [ SAVE LOADOUT + TUNING ] "
 	b_save.pressed.connect(_save_loadout)
 	vb.add_child(b_save)
+
+	# The auto-generated rows inherit the chunky mobile theme from the panel.
+	_apply_mobile_widgets(vb)
 
 func _reset_combat_feel() -> void:
 	if not player or not player.data_store or not combat_feel_vb: return
@@ -386,12 +515,250 @@ func _save_loadout() -> void:
 		player.data_store.save_to_disk(player, combat)
 		if combat: combat.last_combat_action = "SAVED TO JSON!"
 
+# =============================================================================
+#  MOBILE TOUCH THEME
+#  Obsidian card, 1 px crisp border, 10 px radius, >= 44 px tall controls. A
+#  phone never has to hit a 14 px checkbox or a hairline spinner again.
+# =============================================================================
+func _build_mobile_theme() -> Theme:
+	var t := Theme.new()
+	var card := _flat_box(Color(0.045, 0.045, 0.058, 0.97), Color(0.26, 0.28, 0.36), 12)
+	card.set_content_margin_all(14)
+	card.shadow_color = Color(0.0, 0.0, 0.0, 0.6)
+	card.shadow_size = 10
+	t.set_stylebox("panel", "PanelContainer", card)
+
+	for btn_type in ["Button", "OptionButton"]:
+		t.set_stylebox("normal", btn_type, _flat_box(Color(0.10, 0.10, 0.13), Color(0.30, 0.32, 0.42), 10))
+		t.set_stylebox("hover", btn_type, _flat_box(Color(0.15, 0.15, 0.20), Color(0.62, 0.64, 0.78), 10))
+		t.set_stylebox("pressed", btn_type, _flat_box(Color(0.86, 0.10, 0.16), Color(1.0, 0.32, 0.36), 10))
+		t.set_stylebox("disabled", btn_type, _flat_box(Color(0.07, 0.07, 0.09), Color(0.20, 0.21, 0.26), 10))
+		t.set_stylebox("focus", btn_type, StyleBoxEmpty.new())
+		t.set_color("font_color", btn_type, Color(0.93, 0.94, 0.98))
+		t.set_color("font_hover_color", btn_type, Color(1.0, 1.0, 1.0))
+		t.set_color("font_pressed_color", btn_type, Color(1.0, 1.0, 1.0))
+		t.set_font_size("font_size", btn_type, 16)
+
+	# Booleans read as big toggles: dark pill when OFF, crimson pill when ON.
+	for chk_state in ["normal", "hover", "pressed", "hover_pressed", "disabled"]:
+		var lit: bool = chk_state in ["pressed", "hover_pressed"]
+		var bg: Color = Color(0.58, 0.06, 0.12) if lit else Color(0.09, 0.09, 0.12)
+		var bd: Color = Color(1.0, 0.35, 0.40) if lit else Color(0.30, 0.32, 0.42)
+		var sb := _flat_box(bg, bd, 10)
+		sb.content_margin_left = 12.0
+		sb.content_margin_right = 12.0
+		sb.content_margin_top = 8.0
+		sb.content_margin_bottom = 8.0
+		t.set_stylebox(chk_state, "CheckBox", sb)
+	t.set_color("font_color", "CheckBox", Color(0.88, 0.90, 0.96))
+	t.set_color("font_pressed_color", "CheckBox", Color(1.0, 0.96, 0.96))
+	t.set_color("font_hover_pressed_color", "CheckBox", Color(1.0, 1.0, 1.0))
+	t.set_font_size("font_size", "CheckBox", 16)
+
+	# Sliders: thick coloured track + a 30 px round grabber you can actually grab.
+	var track := _flat_box(Color(0.14, 0.14, 0.19), Color(0.26, 0.28, 0.36), 7)
+	track.content_margin_top = 7.0
+	track.content_margin_bottom = 7.0
+	t.set_stylebox("slider", "HSlider", track)
+	var fill := _flat_box(Color(0.90, 0.13, 0.20), Color(1.0, 0.36, 0.40), 7)
+	fill.content_margin_top = 7.0
+	fill.content_margin_bottom = 7.0
+	t.set_stylebox("grabber_area", "HSlider", fill)
+	t.set_stylebox("grabber_area_highlight", "HSlider", fill)
+	var grab := _make_grabber_texture()
+	t.set_icon("grabber", "HSlider", grab)
+	t.set_icon("grabber_highlight", "HSlider", grab)
+	t.set_icon("grabber_disabled", "HSlider", grab)
+
+	var line := _flat_box(Color(0.08, 0.08, 0.11), Color(0.30, 0.32, 0.42), 8)
+	line.set_content_margin_all(6)
+	t.set_stylebox("normal", "LineEdit", line)
+	t.set_stylebox("focus", "LineEdit", _flat_box(Color(0.10, 0.10, 0.14), Color(0.90, 0.20, 0.26), 8))
+	t.set_font_size("font_size", "LineEdit", 16)
+	t.set_color("font_color", "LineEdit", Color(0.92, 0.93, 0.98))
+
+	t.set_stylebox("panel", "ScrollContainer", StyleBoxEmpty.new())
+	t.set_font_size("font_size", "Label", 15)
+	t.set_color("font_color", "Label", Color(0.90, 0.91, 0.96))
+	t.set_constant("separation", "HBoxContainer", 10)
+	t.set_constant("separation", "VBoxContainer", 8)
+	return t
+
+func _flat_box(bg: Color, border: Color, radius: int) -> StyleBoxFlat:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = bg
+	sb.border_color = border
+	sb.set_border_width_all(1)
+	sb.set_corner_radius_all(radius)
+	return sb
+
+# 30x30 anti-aliased disc, used as the HSlider grabber icon.
+func _make_grabber_texture() -> ImageTexture:
+	var s := 30
+	var img := Image.create(s, s, false, Image.FORMAT_RGBA8)
+	var c := Vector2(float(s), float(s)) * 0.5
+	var r := float(s) * 0.5 - 1.0
+	for y in range(s):
+		for x in range(s):
+			var d := Vector2(float(x) + 0.5, float(y) + 0.5).distance_to(c)
+			var a := clampf(r - d + 1.0, 0.0, 1.0)
+			img.set_pixel(x, y, Color(0.97, 0.98, 1.0, a))
+	return ImageTexture.create_from_image(img)
+
+# Walks a freshly built tab (or the rebuilt Tab 8) and stamps the touch sizes on
+# every widget, including the auto-generated sliders. No per-key UI code.
+func _apply_mobile_widgets(n: Node) -> void:
+	if n == null:
+		return
+	if n is HSlider:
+		(n as HSlider).custom_minimum_size.y = TOUCH_ROW_H
+	elif n is OptionButton:
+		(n as OptionButton).custom_minimum_size.y = TOUCH_ROW_H
+	elif n is CheckBox:
+		var cb := n as CheckBox
+		cb.custom_minimum_size.y = TOUCH_ROW_H
+		_style_toggle_label(cb)
+		if not cb.has_meta("touch_wired"):
+			cb.set_meta("touch_wired", true)
+			cb.toggled.connect(_refresh_toggle_label.bind(cb))
+	elif n is Button:
+		(n as Button).custom_minimum_size.y = TOUCH_PILL_H
+	elif n is SpinBox:
+		(n as SpinBox).custom_minimum_size = Vector2(116, TOUCH_ROW_H)
+	elif n is LineEdit:
+		(n as LineEdit).custom_minimum_size.y = TOUCH_ROW_H
+	for c in n.get_children():
+		_apply_mobile_widgets(c)
+
+# ON / OFF is spelled out on the pill itself, so the state is unmistakable on a
+# sun-lit phone screen even before you read the crimson fill.
+func _style_toggle_label(cb: CheckBox) -> void:
+	var base: String = str(cb.get_meta("base_label", ""))
+	if base.is_empty():
+		base = cb.text.strip_edges()
+		cb.set_meta("base_label", base)
+	cb.text = ("[ ON ]  " if cb.button_pressed else "[ OFF ]  ") + base
+
+func _refresh_toggle_label(_on: bool, cb: CheckBox) -> void:
+	_style_toggle_label(cb)
+
+# =============================================================================
+#  HEADER QUICK CONTROLS
+# =============================================================================
+func _select_tab(idx: int) -> void:
+	if tab_container == null or tab_container.get_tab_count() <= 0:
+		return
+	tab_container.current_tab = clampi(idx, 0, tab_container.get_tab_count() - 1)
+	_sync_tab_pills(tab_container.current_tab)
+
+func _sync_tab_pills(_idx: int = -1) -> void:
+	if tab_container == null:
+		return
+	for i in range(tab_pills.size()):
+		var pill: Button = tab_pills[i]
+		if pill:
+			pill.set_pressed_no_signal(i == tab_container.current_tab)
+
+func _set_paused(on: bool) -> void:
+	var tree := get_tree()
+	if tree:
+		tree.paused = on
+	if pause_button:
+		pause_button.text = "[ RESUME ]" if on else "[ PAUSE ]"
+	if pause_badge:
+		pause_badge.visible = on
+
+func _toggle_pause() -> void:
+	_set_paused(not get_tree().paused)
+
+func _sandbox_immortal() -> bool:
+	return bool(player and player.data_store and player.data_store.tuning_bool("immortal_mode", false))
+
+# God Mode pill target. The saved knob is immortal_mode (Tab 8 Sandbox Immortal);
+# this is the one-tap shortcut the header exposes.
+func _set_sandbox_immortal(on: bool) -> void:
+	if player and player.data_store:
+		player.data_store.tuning["immortal_mode"] = on
+	if god_button and god_button.button_pressed != on:
+		god_button.set_pressed_no_signal(on)
+
+func _toggle_sandbox_immortal() -> void:
+	_set_sandbox_immortal(not _sandbox_immortal())
+
+func _show_toast(msg: String) -> void:
+	if toast_label == null:
+		return
+	toast_label.text = msg
+	toast_timer = 3.0 if not msg.is_empty() else 0.0
+
+# "COPY ALL": one tap dumps every live tuning + combat number to the system
+# clipboard and to user://balance_values.txt, so a playtest note survives the app.
+func _export_all_values() -> String:
+	var lines := PackedStringArray()
+	lines.append("# SASTI SPARKLING ZERO - live balance values")
+	lines.append("# %s" % Time.get_datetime_string_from_system())
+	if player and player.data_store:
+		var ds = player.data_store
+		lines.append("")
+		lines.append("[tuning]")
+		for k in ds.TUNING_SPEC.keys():
+			lines.append("%s = %s" % [str(k), _fmt_num(ds.tuning_get(str(k), float(ds.TUNING_SPEC[k][0])))])
+		for bk in ds.TUNING_BOOLS.keys():
+			lines.append("%s = %s" % [str(bk), "true" if ds.tuning_bool(str(bk)) else "false"])
+		lines.append("")
+		lines.append("[profile]")
+		var tier: int = ds.quality_tier_index()
+		lines.append("quality_tier = %d (%s)" % [tier, ds.tier_label(tier)])
+		lines.append("render_scale = %s" % _fmt_num(ds.tuning_get("render_scale", 1.0)))
+		lines.append("active_profile = %s" % player.active_race_name)
+	if player:
+		lines.append("")
+		lines.append("[player]")
+		for prop in ["run_speed", "sprint_speed", "dash_speed", "dash_duration", "base_fov",
+				"anim_step_fps", "cel_cut_threshold", "outline_width", "rim_strength"]:
+			lines.append("%s = %s" % [prop, _fmt_num(float(player.get(prop)))])
+	if combat:
+		lines.append("")
+		lines.append("[ai]")
+		for prop in ["ai_telegraph_time", "ai_attack_cooldown", "ai_adaptation_rate"]:
+			lines.append("%s = %s" % [prop, _fmt_num(float(combat.get(prop)))])
+	var txt: String = "\n".join(lines) + "\n"
+
+	var clipboard_ok: bool = false
+	if DisplayServer.has_feature(DisplayServer.FEATURE_CLIPBOARD):
+		DisplayServer.clipboard_set(txt)
+		clipboard_ok = true
+	var f := FileAccess.open(BALANCE_PATH, FileAccess.WRITE)
+	var file_ok := false
+	if f:
+		f.store_string(txt)
+		f.close()
+		file_ok = true
+	if clipboard_ok and file_ok:
+		_show_toast("Copied to clipboard & user://balance_values.txt")
+	elif file_ok:
+		_show_toast("Saved user://balance_values.txt")
+	else:
+		_show_toast("Export failed: check app storage")
+	return txt
+
+func _fmt_num(v: float) -> String:
+	if is_equal_approx(v, roundf(v)):
+		return str(int(round(v)))
+	return "%.3f" % v
+
 func _make_scroll_tab(tab_name: String) -> VBoxContainer:
 	var sc := ScrollContainer.new()
 	sc.name = tab_name
+	# Vertical drag only: a horizontal scroll inside a phone panel would compete
+	# with the slider drags, and there is nothing to scroll sideways.
+	sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	sc.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	sc.follow_focus = true
 	tab_container.add_child(sc)
 	var vb := VBoxContainer.new()
 	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vb.add_theme_constant_override("separation", 10)
 	sc.add_child(vb)
 	return vb
 
@@ -723,6 +1090,10 @@ func _build_tab_world_and_char() -> void:
 	_add_row(vb, combat, "build_rot_deg", 0.0, 270.0, 45.0)
 
 func _process(delta: float) -> void:
+	if toast_timer > 0.0:
+		toast_timer = maxf(0.0, toast_timer - delta)
+		if toast_timer == 0.0:
+			_show_toast("")
 	_sync_result_overlay()
 	if not player or not combat: return
 	# The overlay used to re-shape every string and redraw the whole HUD on EVERY
@@ -738,6 +1109,20 @@ func _process(delta: float) -> void:
 
 func _refresh_telemetry() -> void:
 	var fps := Engine.get_frames_per_second()
+	# Panel header readout: refreshed on the same 10 Hz throttle as the HUD text.
+	var tier_txt := "-"
+	if player and player.data_store:
+		var tier_i: int = player.data_store.quality_tier_index()
+		tier_txt = "%d %s" % [tier_i, player.data_store.tier_label(tier_i)]
+	var paused_now: bool = get_tree() != null and get_tree().paused
+	if panel_telemetry:
+		panel_telemetry.text = "FPS %d · %.1f ms · TS %.2f · %s%s" % [
+			fps, 1000.0 / maxf(1.0, float(fps)), Engine.time_scale, tier_txt,
+			"  ·  PAUSED" if paused_now else ""]
+	if pause_badge:
+		pause_badge.visible = paused_now
+	if god_button:
+		god_button.set_pressed_no_signal(_sandbox_immortal())
 	var gpu_ms := RenderingServer.viewport_get_measured_render_time_gpu(get_viewport().get_viewport_rid())
 	var cpu_ms := Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0
 	var st_name: String = PlayerController.MoveState.keys()[player.state]
@@ -998,19 +1383,23 @@ func _p5_menu_action(idx: int) -> void:
 		10:
 			fp_mod.call("toggle_p5_pause")
 			dev_panel.visible = true
-			tab_container.current_tab = 0
+			if dev_backdrop: dev_backdrop.visible = true
+			_select_tab(0)
 		11:
 			fp_mod.call("toggle_p5_pause")
 			dev_panel.visible = true
-			tab_container.current_tab = 5
+			if dev_backdrop: dev_backdrop.visible = true
+			_select_tab(5)
 		12:
 			fp_mod.call("toggle_p5_pause")
 			dev_panel.visible = true
-			tab_container.current_tab = 6
+			if dev_backdrop: dev_backdrop.visible = true
+			_select_tab(6)
 		13:
 			fp_mod.call("toggle_p5_pause")
 			dev_panel.visible = true
-			tab_container.current_tab = 7
+			if dev_backdrop: dev_backdrop.visible = true
+			_select_tab(7)
 		14:
 			_cycle_quality_tier()
 		15:

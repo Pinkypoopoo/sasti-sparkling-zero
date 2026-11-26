@@ -445,6 +445,66 @@ func _run() -> void:
 			t5_restore.store_string(t5_backup)
 			t5_restore.close()
 
+	# --- 19. V6 Task 1: touch-first Dev Studio + 4.7.2 editor warnings ---------
+	check(studio.tab_container.tabs_visible == false, "the tiny native tab bar is hidden")
+	check(studio.tab_pills.size() == 8, "the mobile category grid exposes all 8 sections")
+	check(studio.dev_panel.theme != null, "the dev panel carries the mobile touch theme")
+	var t6_tabs_ok := true
+	for i in range(8):
+		studio._select_tab(i)
+		if int(studio.tab_container.current_tab) != i:
+			t6_tabs_ok = false
+		if not (studio.tab_pills[i] as Button).button_pressed:
+			t6_tabs_ok = false
+	check(t6_tabs_ok, "one tap on any category pill reaches its tab (no arrow scrolling)")
+	studio._select_tab(7)
+	(studio.tab_pills[0] as Button).pressed.emit()
+	check(int(studio.tab_container.current_tab) == 0, "pressing a category pill switches the tab")
+	studio._select_tab(7)
+
+	var t6_sliders_ok := true
+	var t6_slider_count := 0
+	for row in studio.combat_feel_vb.get_children():
+		for c in row.get_children():
+			if c is HSlider:
+				t6_slider_count += 1
+				if (c as HSlider).custom_minimum_size.y < 44.0:
+					t6_sliders_ok = false
+			elif c is CheckBox and (c as CheckBox).custom_minimum_size.y < 44.0:
+				t6_sliders_ok = false
+	check(t6_slider_count > 0 and t6_sliders_ok, "auto-generated tab-8 sliders are thumb-sized (>= 44 px)")
+
+	check(studio.process_mode == Node.PROCESS_MODE_ALWAYS, "the Dev Studio keeps ticking while the tree is paused")
+	studio._set_paused(true)
+	check(studio.get_tree().paused, "PAUSE freezes gameplay")
+	check(studio.pause_badge.visible and studio.pause_button.text.contains("RESUME"), "the PAUSED badge and the RESUME label are shown")
+	studio._toggle_pause()
+	check(not studio.get_tree().paused and not studio.pause_badge.visible, "tapping the pill again resumes gameplay")
+
+	studio._set_sandbox_immortal(true)
+	check(player.data_store.tuning_bool("immortal_mode", false) and studio.god_button.button_pressed, "GOD MODE drives sandbox immortal")
+	studio._toggle_sandbox_immortal()
+	check(not player.data_store.tuning_bool("immortal_mode", true) and not studio.god_button.button_pressed, "GOD MODE toggles sandbox immortal back off")
+
+	player.data_store.tuning["enemy_damage"] = 77.0
+	studio.toast_label.text = ""
+	var t6_export: String = studio._export_all_values()
+	check(t6_export.contains("enemy_damage = 77") and t6_export.contains("immortal_mode ="), "COPY ALL formats every live tuning value")
+	check(t6_export.contains("[profile]") and t6_export.contains("[player]"), "COPY ALL includes the profile and player sections")
+	check(FileAccess.file_exists(studio.BALANCE_PATH), "COPY ALL writes user://balance_values.txt")
+	check(FileAccess.get_file_as_string(studio.BALANCE_PATH).contains("enemy_damage = 77"), "the exported file holds the live values")
+	check(studio.toast_label.text.contains("balance_values.txt"), "COPY ALL shows an on-panel confirmation")
+	DirAccess.remove_absolute(studio.BALANCE_PATH)
+	player.data_store.reset_tuning()
+
+	# 4.7.2 editor-debugger warnings: no `var scale` shadow, no bare enum int,
+	# no unused ragdoll arg, no interpolated Camera3D written from _process().
+	check(player.camera.physics_interpolation_mode == Node.PHYSICS_INTERPOLATION_MODE_OFF, "the Camera3D opts out of physics interpolation (no render-tick warning)")
+	check(player.camera_pivot.physics_interpolation_mode == Node.PHYSICS_INTERPOLATION_MODE_OFF and player.spring_arm.physics_interpolation_mode == Node.PHYSICS_INTERPOLATION_MODE_OFF, "the whole camera rig opts out, so the follow stays smooth")
+	player.data_store.tuning["quality_tier"] = 2
+	player.apply_quality_tier()
+	check(int(player.get_viewport().msaa_3d) == int(CombatData.QUALITY_TIERS[2]["msaa"]), "the MSAA enum cast still applies the tier value")
+
 	# Leave no test tuning behind for the next run.
 	player.data_store.reset_tuning()
 	player.data_store.refresh_auto_quality()

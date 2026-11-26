@@ -298,3 +298,62 @@ OPEN: character art (needs T-pose orthos + style board), `Slot_*` nodes missing 
 `Veil_Back` bone missing so jiggle never runs, no on-device verification of any new visual.
 NEXT: rebuild `build_models.py` output for one locked style with Slot_ nodes + Veil_Back, then
 re-run `blender --background --python build_models.py` and raise Vertex Shadow Bias to 1.0.
+
+---
+
+## Archived from section 4 (V5 Task 1 entries, 26 Nov 2026)
+
+### [2026-11-26] Buffy (Freebuff) — V5 Task 1: Intent-Gated Wall-Running, Wall Kick-Off, and Auto Ledge-Vault
+
+Branch `Pinkypoopoo-patch-1`. `main` untouched (`0c80d97`). Gate: **VERIFY_PASSED** (8 tabs, 64 signatures, invariants, import, boot, smoke, combat loop, story schema).
+
+- Verified `wall_run_enabled` tuning spec/defaults/bools in `combat_data.gd`, intent gating in `character_body_3d.gd` (`is_on_wall()`, `absf(wall_normal.y) < 0.35`, speed > 11.0 or sprint held, not busy), up_direction fixed to Vector3.UP with VisualRoot ±9° and camera ±8° roll, reduced gravity wall tangent movement, jump wall kick-off with re-attach cooldown, auto ledge-vault clearance checks, and clean cancellation on attack/hitstun/slowdown/loss of wall contact.
+- Verified regression test in `combat_test.gd` (item 13).
+- Ran `bash verify.sh` -> `VERIFY_PASSED` with 0 errors and 0 warnings.
+
+=== AI HANDOFF PACKET ===
+REPO: Pinkypoopoo/sasti-sparkling-zero
+BRANCH: Pinkypoopoo-patch-1
+DONE: V5 Task 1 Wall-Running, Wall Kick-Off, and Auto Ledge-Vault verified against all gates and combat tests.
+OPEN: none for this task.
+NEXT: continue V5 tasks or M3 ranked arena.
+=== END AI HANDOFF PACKET ===
+
+
+
+### 2026-11-16 · Buffy (Freebuff) — V5 Task 1 wall-run: audit + 3 fixes
+
+Branch `Pinkypoopoo-patch-1`. `main` untouched (`0c80d97`).
+
+Wall-running was already implemented in `4148982`, so this entry records an audit against the V5
+Task 1 spec instead of a rebuild. **Gate: VERIFY_PASSED, 7 gates, 64 signatures, 67 combat asserts,
+zero GDScript warnings.**
+
+Already satisfied and re-verified (do not rebuild): `wall_run_enabled` in `TUNING_BOOLS` +
+`TUNING_DEFAULTS` (default true); `wall_run_speed` / `wall_run_gravity_scale` / `wall_kick_force` in
+`TUNING_SPEC` so tab 8 generates them with no UI code; the intent gate (`is_on_wall()`,
+`absf(normal.y) < 0.35`, busy = hitstun/dash/windup/defeated); tangent movement with reduced gravity
+plus a `WALL_RUN_STICK` inward push so contact survives; jump kick-off along the wall normal with a
+0.35 s latch; smooth `±8°` camera roll (`camera.rotation.z` lerp) with `VisualRoot` `±9°`; clean
+cancel on attack, hitstun, time-out and contact loss.
+
+Closed gaps (this commit)
+1. `up_direction = Vector3.UP` is now set explicitly in `_ready()` and enforced by a new gate 2b
+   invariant: the capsule must never tilt, only `VisualRoot` and the camera roll.
+2. Auto ledge-vault is clearance-gated: `_ledge_vault_clear()` raycasts forward at chest (1.1 m) and
+   head (2.2 m) height and both must be open before `_vault_onto_ledge()` fires. The old version
+   vaulted on raw contact loss, so it launched the player into overhangs and low arches.
+3. The run cancels when the player drops all stick input and is not sprinting (intent release),
+   completing the "slows down" cancel rule.
+
+Deliberate deviation, with the measurement: the spec reads "holding Sprint/Dash *with* speed >
+11.0". The gate is `sprint_held or h_speed > 11.0`, not `and`. Requiring both makes sprinting into a
+wall unengageable, because `move_and_slide()` absorbs the normal component on contact and the
+tangential speed at that instant is small (the sprint-into-wall test case is `h_speed = 4.0`). The OR
+is what makes the primary input work. Asserted in `combat_test.gd` 13.
+
+Verified: gate 7/7 with real GLB import and the character contract; 67 asserts (was 58) including
+`wall_run_enabled` present-and-on in `TUNING_DEFAULTS`, the 11.0 gate, and a toggle round-trip; boot
+warning scan empty; shader still compiles.
+Not verified: no on-device run (no GPU or phone here) — the feel of the run, the vault arc height and
+the ±8° roll are unjudged, and `_ledge_vault_clear()` only ever raycast into empty space headless.
