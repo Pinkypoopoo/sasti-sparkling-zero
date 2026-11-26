@@ -269,7 +269,7 @@ on a wire.
 ### 2026-11-26 · Buffy (Freebuff) — V6 Task 1: touch-first Dev Studio + 4.7.2 warning cleanup
 
 Branch `Pinkypoopoo-patch-1`, based on `79da49b`. `main` untouched (`0c80d97`).
-Gate: **VERIFY_PASSED**, 7 gates, 79 signatures, 137 combat asserts, zero GDScript warnings
+Gate: **VERIFY_PASSED**, 7 gates, 79 signatures, 136 combat asserts, zero GDScript warnings
 (`--check-only` on `dev_studio.gd` / `character_body_3d.gd` / `combat_test.gd` silent, 120-frame
 boot scan empty).
 
