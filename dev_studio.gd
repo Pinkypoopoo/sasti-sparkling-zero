@@ -69,6 +69,7 @@ func _ready() -> void:
 	fp_mod.name = "FlameP5PvPModule"
 	add_child(fp_mod)
 	fp_mod.call("setup_module", player, combat, self)
+	_attach_pvp_rematch_button()
 	_sync_seinen_visibility()
 
 func _input(event: InputEvent) -> void:
@@ -83,6 +84,29 @@ func _input(event: InputEvent) -> void:
 				Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 			elif not DisplayServer.is_touchscreen_available():
 				Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+
+# V7 Task 2: chunky rematch trigger inside the existing PvP lobby panel, so a
+# finished round can be restarted without adding a 9th dev tab.
+func _attach_pvp_rematch_button() -> void:
+	if fp_mod == null:
+		return
+	var modal: Control = fp_mod.get("pvp_modal") as Control
+	if modal == null or modal.get_child_count() == 0:
+		return
+	var box: VBoxContainer = modal.get_child(0) as VBoxContainer
+	if box == null or box.has_node("PvpRematchButton"):
+		return
+	var rematch: Button = Button.new()
+	rematch.name = "PvpRematchButton"
+	rematch.text = "[ REQUEST REMATCH ]"
+	rematch.custom_minimum_size = Vector2(0, TOUCH_ROW_H)
+	rematch.focus_mode = Control.FOCUS_NONE
+	rematch.modulate = Color(1.0, 0.92, 0.45)
+	rematch.pressed.connect(func():
+		if fp_mod != null and fp_mod.has_method("request_rematch"):
+			fp_mod.call("request_rematch")
+	)
+	box.add_child(rematch)
 
 func _toggle_dev_panel() -> void:
 	dev_panel.visible = not dev_panel.visible
@@ -1214,7 +1238,18 @@ func get_hud_snapshot() -> Dictionary:
 			"best_rank": "", "vertical_slice_cleared": false,
 			"origin_title": "", "story_rival": false, "story_rivals_defeated_count": 0,
 		},
+		"pvp": {
+			"active": false, "room_code": "", "round_state": "IDLE", "local_wins": 0,
+			"remote_wins": 0, "local_hp_ratio": 1.0, "remote_hp_ratio": 1.0,
+			"remote_name": "", "local_rematch_ready": false, "remote_rematch_ready": false,
+		},
 	}
+	# V7 Task 2: PvP telemetry is owned by the module's RefCounted state.
+	var raw_pvp = fp_mod.get("match_state") if fp_mod != null else null
+	if raw_pvp != null and raw_pvp.has_method("to_hud_dict"):
+		var pvp_dict = raw_pvp.call("to_hud_dict")
+		if typeof(pvp_dict) == TYPE_DICTIONARY:
+			snap["pvp"] = pvp_dict
 	if not (player and combat):
 		return snap
 	snap["player"] = {
@@ -1330,44 +1365,70 @@ func _draw_seinen_hud(snap: Dictionary) -> void:
 	var bw: float = minf(440.0, vp.x * 0.42)
 	var bx: float = clampf(vp.x * 0.5 - bw * 0.5, margin, maxf(margin, player_max_x - bw))
 	var by: float = 16.0
-	draw_string(font, Vector2(bx, by + 9.0), str(snap["world"]["region_title"]), HORIZONTAL_ALIGNMENT_LEFT, bw, 10, SEINEN_INK_GOLD)
 	var callout_y: float = by + 66.0
-	if bool(bstat["present"]):
-		var phase: int = int(bstat["phase"])
-		var accent: Color = SEINEN_INK_CRIMSON if phase >= 2 else SEINEN_INK_BORDER
-		draw_string(font, Vector2(bx, by + 26.0), str(bstat["name"]), HORIZONTAL_ALIGNMENT_LEFT, bw * 0.62, 14, SEINEN_INK_BONE)
-		if bool(bstat["story_rival"]):
-			# Authored story-choice rival: crimson ink on gold so it never reads as
-			# a generic regional guardian.
-			var sr_w: float = 132.0
-			_draw_ink_panel(Vector2(bx + bw - sr_w, by + 13.0), Vector2(sr_w, 16.0), SEINEN_INK_GOLD)
-			draw_string(font, Vector2(bx + bw - sr_w, by + 25.0), "[ STORY RIVAL ]", HORIZONTAL_ALIGNMENT_CENTER, sr_w, 10, SEINEN_INK_CRIMSON)
-		else:
-			draw_string(font, Vector2(bx, by + 26.0), "[ %s ]" % str(bstat["archetype"]), HORIZONTAL_ALIGNMENT_RIGHT, bw, 10, SEINEN_INK_DIM)
-		_draw_ink_bar(Vector2(bx, by + 32.0), Vector2(bw, 18.0), float(bstat["hp_ratio"]), SEINEN_INK_CRIMSON.lerp(SEINEN_INK_GOLD, 0.3), accent)
-		_draw_ink_bar(Vector2(bx, by + 54.0), Vector2(bw, 8.0), float(bstat["posture_ratio"]), SEINEN_INK_GOLD, Color(accent.r, accent.g, accent.b, 0.55))
-		if phase >= 2:
-			_draw_ink_panel(Vector2(bx, by + 66.0), Vector2(210.0, 18.0), SEINEN_INK_CRIMSON)
-			draw_string(font, Vector2(bx, by + 79.0), "PHASE II — AWAKENED", HORIZONTAL_ALIGNMENT_CENTER, 210.0, 10, SEINEN_INK_BONE)
-			callout_y = by + 90.0
+	var pvp: Dictionary = snap["pvp"]
+	var pvp_on: bool = bool(pvp["active"])
+	if pvp_on:
+		# --- V7 Task 2: PvP Duel Bar (opponent, room, round score, HP) -------
+		var code_w: float = 104.0
+		draw_string(font, Vector2(bx, by + 9.0), "PVP DUEL — %s" % str(pvp["remote_name"]), HORIZONTAL_ALIGNMENT_LEFT, bw - code_w - 8.0, 11, SEINEN_INK_GOLD)
+		_draw_ink_panel(Vector2(bx + bw - code_w, by - 3.0), Vector2(code_w, 16.0), SEINEN_INK_BORDER)
+		draw_string(font, Vector2(bx + bw - code_w, by + 9.0), "ROOM %s" % str(pvp["room_code"]), HORIZONTAL_ALIGNMENT_CENTER, code_w, 9, SEINEN_INK_BONE)
+		_draw_ink_bar(Vector2(bx, by + 18.0), Vector2(bw, 16.0), float(pvp["remote_hp_ratio"]), SEINEN_INK_CRIMSON, SEINEN_INK_CRIMSON)
+		draw_string(font, Vector2(bx + 8.0, by + 29.0), "REMOTE VITAL %d%%" % int(round(float(pvp["remote_hp_ratio"]) * 100.0)), HORIZONTAL_ALIGNMENT_LEFT, bw - 16.0, 9, SEINEN_INK_BONE)
+		_draw_ink_bar(Vector2(bx, by + 36.0), Vector2(bw * 0.82, 8.0), float(pvp["local_hp_ratio"]), SEINEN_INK_GOLD, Color(SEINEN_INK_BORDER.r, SEINEN_INK_BORDER.g, SEINEN_INK_BORDER.b, 0.55))
+		draw_string(font, Vector2(bx, by + 60.0), "LOCAL %d — %d REMOTE" % [int(pvp["local_wins"]), int(pvp["remote_wins"])], HORIZONTAL_ALIGNMENT_LEFT, bw, 12, SEINEN_INK_BONE)
+		callout_y = by + 70.0
+	else:
+		draw_string(font, Vector2(bx, by + 9.0), str(snap["world"]["region_title"]), HORIZONTAL_ALIGNMENT_LEFT, bw, 10, SEINEN_INK_GOLD)
+		callout_y = by + 66.0
+		if bool(bstat["present"]):
+			var phase: int = int(bstat["phase"])
+			var accent: Color = SEINEN_INK_CRIMSON if phase >= 2 else SEINEN_INK_BORDER
+			draw_string(font, Vector2(bx, by + 26.0), str(bstat["name"]), HORIZONTAL_ALIGNMENT_LEFT, bw * 0.62, 14, SEINEN_INK_BONE)
+			if bool(bstat["story_rival"]):
+				# Authored story-choice rival: crimson ink on gold so it never reads as
+				# a generic regional guardian.
+				var sr_w: float = 132.0
+				_draw_ink_panel(Vector2(bx + bw - sr_w, by + 13.0), Vector2(sr_w, 16.0), SEINEN_INK_GOLD)
+				draw_string(font, Vector2(bx + bw - sr_w, by + 25.0), "[ STORY RIVAL ]", HORIZONTAL_ALIGNMENT_CENTER, sr_w, 10, SEINEN_INK_CRIMSON)
+			else:
+				draw_string(font, Vector2(bx, by + 26.0), "[ %s ]" % str(bstat["archetype"]), HORIZONTAL_ALIGNMENT_RIGHT, bw, 10, SEINEN_INK_DIM)
+			_draw_ink_bar(Vector2(bx, by + 32.0), Vector2(bw, 18.0), float(bstat["hp_ratio"]), SEINEN_INK_CRIMSON.lerp(SEINEN_INK_GOLD, 0.3), accent)
+			_draw_ink_bar(Vector2(bx, by + 54.0), Vector2(bw, 8.0), float(bstat["posture_ratio"]), SEINEN_INK_GOLD, Color(accent.r, accent.g, accent.b, 0.55))
+			if phase >= 2:
+				_draw_ink_panel(Vector2(bx, by + 66.0), Vector2(210.0, 18.0), SEINEN_INK_CRIMSON)
+				draw_string(font, Vector2(bx, by + 79.0), "PHASE II — AWAKENED", HORIZONTAL_ALIGNMENT_CENTER, 210.0, 10, SEINEN_INK_BONE)
+				callout_y = by + 90.0
 
 	# --- Combat callout pill (centred below the boss bar) --------------------
 	var label: String = ""
 	var label_border: Color = SEINEN_INK_BONE
 	var label_col: Color = SEINEN_INK_BONE
-	var tk: String = str(bstat["telegraph_kind"])
-	if bool(bstat["staggered"]):
-		label = "STAGGERED — STRIKE FOR FINISHER!"
-		label_border = SEINEN_INK_GOLD
-		label_col = SEINEN_INK_GOLD
-	elif tk == "UNBLOCKABLE":
-		label = "UNBLOCKABLE — DODGE!"
-		label_border = SEINEN_INK_CRIMSON
-		label_col = Color(1.0, 0.86, 0.82)
-	elif tk == "PARRIABLE":
-		label = "PARRIABLE"
-		label_border = SEINEN_INK_BONE
-		label_col = SEINEN_INK_GOLD
+	if pvp_on:
+		var pvp_round: String = str(pvp["round_state"])
+		if pvp_round == "KO":
+			label = "WAITING FOR OPPONENT..." if bool(pvp["local_rematch_ready"]) else "ROUND OVER — TAP REMATCH"
+			label_border = SEINEN_INK_GOLD
+			label_col = SEINEN_INK_GOLD
+		elif pvp_round == "REMATCH_READY":
+			label = "WAITING FOR OPPONENT..."
+			label_border = SEINEN_INK_BORDER
+			label_col = SEINEN_INK_BONE
+	else:
+		var tk: String = str(bstat["telegraph_kind"])
+		if bool(bstat["staggered"]):
+			label = "STAGGERED — STRIKE FOR FINISHER!"
+			label_border = SEINEN_INK_GOLD
+			label_col = SEINEN_INK_GOLD
+		elif tk == "UNBLOCKABLE":
+			label = "UNBLOCKABLE — DODGE!"
+			label_border = SEINEN_INK_CRIMSON
+			label_col = Color(1.0, 0.86, 0.82)
+		elif tk == "PARRIABLE":
+			label = "PARRIABLE"
+			label_border = SEINEN_INK_BONE
+			label_col = SEINEN_INK_GOLD
 	if not label.is_empty():
 		var cw: float = minf(360.0, vp.x * 0.52)
 		var cx: float = clampf(vp.x * 0.5 - cw * 0.5, margin, maxf(margin, player_max_x - cw))

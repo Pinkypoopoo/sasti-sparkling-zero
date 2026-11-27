@@ -1234,6 +1234,70 @@ func _run() -> void:
 	player._refresh_shortcut_visuals()
 	t12_story.reset_progression_flags()
 
+	# --- 27. V7 Task 2: decoupled PvP state, rounds, rematch handshake -------
+	var t14_mod = studio.fp_mod
+	check(t14_mod != null and t14_mod.get("match_state") is RefCounted, "PvpMatchState is a RefCounted")
+	check(not FileAccess.get_file_as_string("res://flame_p5_pvp.gd").contains("PlayerController"), "the PvP module keeps zero player-controller coupling")
+
+	# Offline: the HUD reports an inactive match.
+	t14_mod.call("disconnect_p2p")
+	var t14_off: Dictionary = studio.get_hud_snapshot()["pvp"]
+	check(not bool(t14_off["active"]) and str(t14_off["round_state"]) == "IDLE", "the PvP HUD snapshot is inactive when offline")
+
+	# Linking a room starts a live ACTIVE round.
+	t14_mod.call("_on_link_established", "10.0.0.9", "SZ777")
+	var t14_on: Dictionary = studio.get_hud_snapshot()["pvp"]
+	check(bool(t14_on["active"]) and str(t14_on["room_code"]) == "SZ777" and str(t14_on["round_state"]) == "ACTIVE", "a linked room activates the PvP HUD state")
+
+	# Headless never binds a socket, so the guarded receive path needs one here.
+	t14_mod.set("udp_beacon", PacketPeerUDP.new())
+	var t14_peer: String = str(t14_mod.get("peer_ip"))
+	var t14_td: Node3D = combat.target_stats.keys()[0] as Node3D
+	var t14_max: float = float(combat.target_stats[t14_td].get("max_hp", 1500.0))
+	t14_mod.call("_handle_udp_packet", "P2PSYNC:1.0:1.0:1.0:0.0:1500:0:0.400:0:0", t14_peer)
+	var t14_hp: Dictionary = studio.get_hud_snapshot()["pvp"]
+	check(absf(float(t14_hp["remote_hp_ratio"]) - 0.4) < 0.001 and absf(float(combat.target_stats[t14_td]["hp"]) - t14_max * 0.4) < 1.0, "an incoming sync carries the opponent HP ratio onto the rival")
+	t14_mod.call("_handle_udp_packet", "P2PSYNC:0:0:0:0:1500:0:9.0:0:0", t14_peer)
+	check(float(studio.get_hud_snapshot()["pvp"]["remote_hp_ratio"]) <= 1.0 and float(combat.target_stats[t14_td]["hp"]) <= t14_max, "an out-of-range HP ratio is clamped, never trusted")
+
+	# Room/password guards survive the richer packet.
+	t14_mod.set("active_room_pass", "secret")
+	check(str(t14_mod.call("_join_verdict", "SZ999", "secret")) == "IGNORE" and str(t14_mod.call("_join_verdict", "SZ777", "nope")) == "DENY" and str(t14_mod.call("_join_verdict", "sz777", "secret")) == "ACCEPT", "wrong-room and wrong-password joins are still rejected")
+	t14_mod.set("active_room_pass", "")
+
+	# KO is one-shot: repeated packets cannot double-count the round.
+	t14_mod.call("_handle_udp_packet", "P2PSYNC:0:0:0:0:0:0:0.000:1:0", t14_peer)
+	var t14_ko: Dictionary = studio.get_hud_snapshot()["pvp"]
+	check(str(t14_ko["round_state"]) == "KO" and int(t14_ko["local_wins"]) == 1 and int(t14_ko["remote_wins"]) == 0, "an opponent KO at 0% HP scores one local round win")
+	t14_mod.call("_handle_udp_packet", "P2PSYNC:0:0:0:0:0:0:0.000:1:0", t14_peer)
+	t14_mod.call("_handle_udp_packet", "P2PSYNC:0:0:0:0:0:0:0.000:1:0", t14_peer)
+	check(int(studio.get_hud_snapshot()["pvp"]["local_wins"]) == 1, "repeated KO packets never double-count the round")
+
+	# Two-sided rematch handshake: fresh round, fresh HP, safe separation.
+	check(bool(t14_mod.call("request_rematch")), "a local rematch request is accepted after a KO")
+	var t14_wait: Dictionary = studio.get_hud_snapshot()["pvp"]
+	check(str(t14_wait["round_state"]) == "REMATCH_READY" and bool(t14_wait["local_rematch_ready"]) and not bool(t14_wait["remote_rematch_ready"]), "a one-sided rematch waits for the opponent")
+	player.hp = 1.0
+	t14_mod.call("_handle_udp_packet", "P2PSYNC:0:0:0:0:1500:0:1.000:0:1", t14_peer)
+	var t14_next: Dictionary = studio.get_hud_snapshot()["pvp"]
+	check(str(t14_next["round_state"]) == "ACTIVE" and not bool(t14_next["local_rematch_ready"]) and not bool(t14_next["remote_rematch_ready"]), "the two-sided handshake starts the next round and clears both flags")
+	check(is_equal_approx(player.hp, player.max_hp) and absf(float(t14_next["local_hp_ratio"]) - 1.0) < 0.001, "... restores the local fighter and its HP ratio")
+	var t14_rival: Node3D = combat.primary_rival()
+	check(is_instance_valid(t14_rival) and player.global_position.distance_to(t14_rival.global_position) >= 7.0, "... and respawns the rival at >= 7 m separation")
+
+	t14_mod.call("disconnect_p2p")
+	t14_mod.set("udp_beacon", null)
+	check(not bool(studio.get_hud_snapshot()["pvp"]["active"]), "disconnecting clears the PvP HUD state")
+
+	# Leave no V7 Task 2 state behind.
+	player.hp = player.max_hp
+	player.hitstun_timer = 0.0
+	player.is_locked_on = false
+	player.lock_target = null
+	combat.reset_duel()
+	studio.travel_to_region(0)
+	player._refresh_shortcut_visuals()
+
 	# Leave no test tuning behind for the next run.
 	player.data_store.reset_tuning()
 	player.data_store.refresh_auto_quality()

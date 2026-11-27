@@ -721,3 +721,70 @@ OPEN: no on-device visual pass (beacon readability, gate scale, banner placement
 exporter still unrun.
 NEXT: playtest the gates on a phone, then continue V6.
 === END AI HANDOFF PACKET ===
+
+---
+
+### 2026-11-27 · Buffy (Freebuff) — V6 Task 3: 2-phase rival boss, regional telegraphs, stagger finishers
+
+Branch `Pinkypoopoo-patch-1`, based on `45ef77d`. `main` untouched (`0c80d97`).
+Gate: **VERIFY_PASSED**, 7 gates, 79 signatures, 185 combat asserts, zero GDScript warnings
+(`--check-only` on `combat_data.gd` / `gesture_combat.gd` / `dev_studio.gd` /
+`character_body_3d.gd` / `combat_test.gd` silent), zero RID/orphan leaks.
+
+`combat_data.gd` — three lines, no UI code: `boss_phase2_enabled: true` in `TUNING_BOOLS` +
+`TUNING_DEFAULTS`, and `boss_phase2_speed_mult: [1.0, 1.6, 0.02, "Boss Phase 2 Speed x"]` in
+`TUNING_SPEC` with default `1.22`. Tab 8 generated the checkbox and slider itself.
+
+`gesture_combat.gd` — one boss brain, three regional reads:
+- `BOSS_PROFILES` — 0 `INK_DUELIST` (speed 1.0, telegraph 1.0, 3-hit combo, phase-2 THRUST),
+  1 `BLAME_RUSHDOWN` (1.24 / 0.82, 3-hit, LUNGE), 2 `GOTHIC_SANCTUM` (0.86 / 1.3, 2-hit, SLAM).
+  `apply_region_boss_profile()` is called from `DevStudio._apply_region()`, so palette, curated
+  props, gates and the rival's cadence all change in one beat. It rewrites the rival name only
+  when `story_override` is false, so a story-authored rival keeps its name, scale and slots.
+- Phase 2: `apply_damage()` checks `hp <= 50% of max` once (`boss_phase == 1` and the bool on).
+  `_awaken_phase_two()` fires `trigger_impact_slash` + the pooled `spawn_cel_smoke` (so the cue
+  respects the active GPU tier cap), bumps `phase2_awakenings`, and `_boss_cadence()` applies
+  `boss_phase2_speed_mult` to wind-up, recovery, pursuit speed and lunge together — never one half.
+- Telegraphs: `_begin_telegraph()` stamps `PARRIABLE` with a **gold/white** sigil and body tint on
+  regions 0/1, and every second wind-up in region 2 phase 2 becomes `UNBLOCKABLE` with a **crimson**
+  sigil/tint. `_resolve_enemy_strike_on_player()` lets a raised guard negate `PARRIABLE`, but an
+  `UNBLOCKABLE` slam breaks the guard (damage + `GUARD BROKEN — UNBLOCKABLE SLAM!`); a live Sonic
+  Sway window (`player.sway_timer`), a parry window and a dash all still avoid it.
+- Stagger finisher: posture break now goes through `_break_posture()` -> 2.0 s `STAGGERED`. A melee
+  hit inside that window is a finisher: `2.0x` damage, impact slash + cel smoke + hitstop, the
+  window is consumed, and a 1.1 s `stagger_immunity` chain-lock empties the posture bar so it
+  cannot infinitely re-break.
+- Mirrors `boss_phase`, `region_archetype` and `telegraph_kind` on the primary duelist each physics
+  tick, with `current_boss_phase()` / `current_region_archetype()` / `current_telegraph_kind()` for
+  HUD and tests. All three reset in `reset_duel()`, `spawn_story_rival()` and on region travel.
+
+`dev_studio.gd` — one call in `_apply_region()` (`combat.apply_region_boss_profile(region_idx)`),
+after the curated layout loads.
+
+`character_body_3d.gd` — shortcut arrival now uses `SHORTCUT_RIVAL_SEPARATION = 7.0` m instead of a
+hardcoded 6.0, so the pair never lands on the exact threshold.
+
+Verified (headless, `combat_test.gd` §22, 22 new asserts -> 185): both tuning knobs exist with the
+required defaults/range and update live; a hit crossing 50% HP awakens phase 2 exactly once and
+further damage never re-fires it; retry returns to phase 1 and `boss_phase2_enabled = false` never
+awakens; regions 0/1/2 assign INK_DUELIST / BLAME_RUSHDOWN / GOTHIC_SANCTUM and region 2 owns the
+SLAM; shortcut travel leaves player and rival 7 m apart and resets phase + stagger; `UNBLOCKABLE`
+breaks a raised guard while `PARRIABLE`, dash and a timed Sonic Sway all still avoid it; a posture
+break opens exactly 2.0 s `STAGGERED`, the next strike lands >= 1.9x the baseline damage, exits
+`STAGGERED`, empties posture and arms the chain-lock.
+Not verified: no visual or on-device run — the gold-vs-crimson telegraph read, the phase-2 smoke
+burst and the 2 s stagger weight are unjudged, and the headless dummy renderer never draws the
+sigil rings.
+
+=== AI HANDOFF PACKET ===
+REPO: Pinkypoopoo/sasti-sparkling-zero
+BRANCH: Pinkypoopoo-patch-1 (HEAD for this entry: V6 Task 3)
+DONE: 2-phase rival boss at 50% HP with a pooled-VFX awakening cue and a TUNING_SPEC speed
+multiplier; three regional boss profiles (INK duelist / BLAME rushdown / GOTHIC guardian) applied
+with the curated arena; gold PARRIABLE vs crimson UNBLOCKABLE telegraphs, guard-fail on the slam;
+2 s posture-break stagger with a 2x-damage finisher and a chain-lock; 7 m travel separation;
+22 new asserts.
+OPEN: no on-device visual pass (telegraph readability, awakening burst, stagger feel); Blender 5.2
+exporter still unrun.
+NEXT: playtest the fight on a phone, then continue V6.
+=== END AI HANDOFF PACKET ===

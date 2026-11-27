@@ -76,6 +76,66 @@ const P2P_MAX_PACKET_CHARS: int = 512
 const P2P_MAX_SYNC_COORD: float = 5000.0
 var p2p_send_accum: float = 0.0
 
+# --- V7 Task 2: pure, decoupled match state ---------------------------------
+# Telemetry and round bookkeeping live here and never touch a fighting
+# character: the module feeds ratios/booleans in and reads a HUD dict out.
+class PvpMatchState extends RefCounted:
+	var active: bool = false
+	var room_code: String = ""
+	var round_state: String = "IDLE"
+	var local_wins: int = 0
+	var remote_wins: int = 0
+	var local_hp_ratio: float = 1.0
+	var remote_hp_ratio: float = 1.0
+	var remote_name: String = "CHALLENGER"
+	var local_rematch_ready: bool = false
+	var remote_rematch_ready: bool = false
+
+	func reset_round() -> void:
+		round_state = "ACTIVE" if active else "IDLE"
+		local_hp_ratio = 1.0
+		remote_hp_ratio = 1.0
+		local_rematch_ready = false
+		remote_rematch_ready = false
+
+	func reset_match() -> void:
+		active = false
+		room_code = ""
+		round_state = "IDLE"
+		local_wins = 0
+		remote_wins = 0
+		local_hp_ratio = 1.0
+		remote_hp_ratio = 1.0
+		remote_name = "CHALLENGER"
+		local_rematch_ready = false
+		remote_rematch_ready = false
+
+	# Idempotent by construction: only an ACTIVE round can be decided, so a
+	# repeated or replayed KO packet can never double-count the same round.
+	func record_ko(local_won: bool) -> bool:
+		if not active or round_state != "ACTIVE":
+			return false
+		if local_won:
+			local_wins += 1
+			remote_hp_ratio = 0.0
+		else:
+			remote_wins += 1
+			local_hp_ratio = 0.0
+		round_state = "KO"
+		return true
+
+	func to_hud_dict() -> Dictionary:
+		return {
+			"active": active, "room_code": room_code, "round_state": round_state,
+			"local_wins": local_wins, "remote_wins": remote_wins,
+			"local_hp_ratio": local_hp_ratio, "remote_hp_ratio": remote_hp_ratio,
+			"remote_name": remote_name,
+			"local_rematch_ready": local_rematch_ready,
+			"remote_rematch_ready": remote_rematch_ready,
+		}
+
+var match_state: PvpMatchState = PvpMatchState.new()
+
 var player_ref: Node3D = null
 var combat_ref: Node = null
 var studio_ref: Control = null
@@ -412,6 +472,7 @@ func disconnect_p2p() -> void:
 	is_p2p_connected = false
 	is_joining = false
 	peer_ip = ""
+	match_state.reset_match()
 	p2p_status = "SOLO MODE (Disconnected)"
 
 func _on_link_established(remote_ip: String, r_code: String) -> void:
@@ -419,6 +480,9 @@ func _on_link_established(remote_ip: String, r_code: String) -> void:
 	active_room_code = r_code
 	is_joining = false
 	is_p2p_connected = true
+	match_state.active = true
+	match_state.room_code = active_room_code
+	match_state.reset_round()
 	p2p_status = "CONNECTED TO ROOM '%s'! LIVE PVP ACTIVE (30Hz SYNC)" % active_room_code
 	if player_ref:
 		if not bool(player_ref.get("is_locked_on")):
@@ -432,6 +496,57 @@ func _on_link_established(remote_ip: String, r_code: String) -> void:
 		if is_p2p_connected and pvp_modal:
 			pvp_modal.visible = false
 	)
+
+# --- V7 Task 2: round / rematch handshake -----------------------------------
+# Local tap. The flag rides the next throttled sync packet; the round only
+# restarts once both sides ask for it.
+func request_rematch() -> bool:
+	if not match_state.active or match_state.round_state == "ACTIVE":
+		return false
+	match_state.local_rematch_ready = true
+	if match_state.round_state == "KO":
+		match_state.round_state = "REMATCH_READY"
+	_try_start_next_round()
+	return true
+
+# Solo / offline test helper: stand in for a cooperative peer.
+func begin_next_round() -> bool:
+	if not match_state.active:
+		return false
+	match_state.local_rematch_ready = true
+	match_state.remote_rematch_ready = true
+	return _start_next_round()
+
+func _try_start_next_round() -> void:
+	if match_state.round_state == "ACTIVE":
+		return
+	if match_state.local_rematch_ready and match_state.remote_rematch_ready:
+		_start_next_round()
+
+# Both sides agreed: fresh HP, fresh duel, fresh 7.5 m separation.
+func _start_next_round() -> bool:
+	if not match_state.active:
+		return false
+	match_state.reset_round()
+	if combat_ref and combat_ref.has_method("reset_duel"):
+		combat_ref.call("reset_duel")
+	if player_ref:
+		player_ref.set("hp", float(player_ref.get("max_hp")))
+		player_ref.set("hitstun_timer", 0.0)
+		if player_ref.get("is_defeated") != null:
+			player_ref.set("is_defeated", false)
+		var td = combat_ref.call("primary_rival") if combat_ref else null
+		if td is Node3D and is_instance_valid(td):
+			var fwd: Vector3 = -player_ref.global_transform.basis.z
+			var vis: Node3D = player_ref.get("visual_root") as Node3D
+			if vis:
+				fwd = -vis.global_transform.basis.z
+			var rival: Node3D = td
+			rival.global_position = player_ref.global_position + Vector3(fwd.x, 0.0, fwd.z).normalized() * 7.5
+			rival.global_position.y = 1.0
+		if player_ref.get("dash_vfx"):
+			player_ref.get("dash_vfx").call("play_sfx", "clash")
+	return true
 
 # Join decision, extracted so the password lock can be unit-tested without a socket.
 # "IGNORE" = not our room, "DENY" = wrong password, "ACCEPT" = link.
@@ -528,16 +643,40 @@ func _handle_udp_packet(m: String, sender_ip: String) -> void:
 		var ryaw: float = _safe_float(sp_s[4])
 		var rhp: float = clampf(_safe_float(sp_s[5]), 0.0, 99999.0)
 		var ratk: int = 1 if _safe_float(sp_s[6]) >= 0.5 else 0
+		# V7 Task 2 trailing fields are optional: an older peer stops at index 6
+		# and every extra field is range-clamped before it is trusted.
+		var r_ratio: float = 1.0
+		var r_ko: bool = false
+		var r_rematch: bool = false
+		if sp_s.size() > 7:
+			r_ratio = clampf(_safe_float(sp_s[7]), 0.0, 1.0)
+		if sp_s.size() > 8:
+			r_ko = _safe_float(sp_s[8]) >= 0.5
+		if sp_s.size() > 9:
+			r_rematch = _safe_float(sp_s[9]) >= 0.5
 		var ts: Dictionary = combat_ref.get("target_stats")
 		if ts.is_empty():
 			return
 		var td: Node3D = ts.keys()[0] as Node3D
 		if not is_instance_valid(td):
 			return
+		var td_max_hp: float = maxf(1.0, float(ts[td].get("max_hp", 1500.0)))
 		td.global_position = td.global_position.lerp(Vector3(rx, ry, rz), 0.65)
 		td.rotation.y = ryaw
-		ts[td]["hp"] = rhp
+		# The ratio is authoritative when present; raw HP is the legacy fallback.
+		ts[td]["hp"] = r_ratio * td_max_hp if sp_s.size() > 7 else clampf(rhp, 0.0, td_max_hp)
 		ts[td]["boss_name"] = "PVP CHALLENGER [%s]" % active_room_code
+		match_state.remote_name = str(ts[td]["boss_name"])
+		if sp_s.size() > 7:
+			match_state.remote_hp_ratio = r_ratio
+			if r_ratio <= 0.0:
+				match_state.record_ko(true)
+			elif r_ko:
+				match_state.record_ko(false)
+			if r_rematch != match_state.remote_rematch_ready:
+				match_state.remote_rematch_ready = r_rematch
+				if r_rematch:
+					_try_start_next_round()
 		if ratk != 1 or not player_ref:
 			return
 		if player_ref.get("dash_vfx"):
@@ -609,9 +748,26 @@ func _process(delta: float) -> void:
 			var atk_pulse: int = 1 if (is_swinging and not last_sent_swing) else 0
 			last_sent_swing = is_swinging
 			var pos: Vector3 = player_ref.global_position
-			var sync_str: String = "P2PSYNC:%.2f:%.2f:%.2f:%.2f:%.0f:%d" % [pos.x, pos.y, pos.z, yaw, float(player_ref.get("hp")), atk_pulse]
+			# V7 Task 2: own HP ratio, KO signal and rematch flag ride the packet.
+			var l_ratio: float = clampf(float(player_ref.get("hp")) / maxf(1.0, float(player_ref.get("max_hp"))), 0.0, 1.0)
+			match_state.local_hp_ratio = l_ratio
+			var ko_sig: int = 1 if match_state.round_state in ["KO", "REMATCH_READY"] else 0
+			var rm_sig: int = 1 if match_state.local_rematch_ready else 0
+			var sync_str: String = "P2PSYNC:%.2f:%.2f:%.2f:%.2f:%.0f:%d:%.3f:%d:%d" % [pos.x, pos.y, pos.z, yaw, float(player_ref.get("hp")), atk_pulse, l_ratio, ko_sig, rm_sig]
 			udp_beacon.set_dest_address(peer_ip, 7778)
 			udp_beacon.put_packet(sync_str.to_utf8_buffer())
+
+	# --- V7 Task 2: one-shot round KO ---------------------------------------
+	# Both fighters' HP are authoritative and record_ko() only fires from
+	# ACTIVE, so a burst of repeated packets cannot double-count a round.
+	if match_state.active:
+		if player_ref:
+			match_state.local_hp_ratio = clampf(float(player_ref.get("hp")) / maxf(1.0, float(player_ref.get("max_hp"))), 0.0, 1.0)
+		if match_state.round_state == "ACTIVE":
+			if match_state.local_hp_ratio <= 0.0:
+				match_state.record_ko(false)
+			elif match_state.remote_hp_ratio <= 0.0:
+				match_state.record_ko(true)
 
 	if p5_pause_active and player_ref:
 		p5_anim_t += delta
