@@ -1354,6 +1354,18 @@ func _refresh_shortcut_visuals() -> void:
 	var unlock_all: bool = data_store != null and data_store.tuning_bool("unlock_all_shortcuts", false)
 	dash_vfx.refresh_shortcut_gate_visuals(unlock_all, flags)
 
+# --- V6 Task 4: read-only HUD hooks -----------------------------------------
+# 0.0..1.0 fill for the gate dwell bar, and a guard/poise read for the player.
+func shortcut_dwell_ratio() -> float:
+	return clampf(shortcut_dwell / SHORTCUT_GATE_HOLD, 0.0, 1.0)
+
+# The player has no separate posture meter, so poise is read from the recovery
+# window: 1.0 while steady, falling toward 0.0 for the length of a hitstun.
+func guard_ratio() -> float:
+	if hitstun_timer <= 0.0:
+		return 1.0
+	return clampf(1.0 - hitstun_timer / 0.36, 0.0, 1.0)
+
 # Attacking, dashing, hitstun, guarding or being dead all cancel a dwell attempt.
 func _shortcut_busy() -> bool:
 	return is_defeated or state == MoveState.WINDUP or state == MoveState.DASH \

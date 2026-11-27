@@ -410,13 +410,54 @@ func _stagger_finisher_fx(t: Node3D) -> void:
 			player.dash_vfx.spawn_step_sigil(t.global_position + Vector3(0.0, 1.0, 0.0), Color(0.95, 0.82, 1.0), 2.0)
 
 func current_boss_phase() -> int:
+	var td := primary_rival()
+	if td != null and target_stats.has(td):
+		return int((target_stats[td] as Dictionary).get("boss_phase", boss_phase))
 	return boss_phase
 
 func current_region_archetype() -> String:
 	return region_archetype
 
 func current_telegraph_kind() -> String:
+	var td := primary_rival()
+	if td != null and target_stats.has(td):
+		return str((target_stats[td] as Dictionary).get("telegraph_kind", BOSS_TELEGRAPH_NONE))
 	return telegraph_kind
+
+# The duelist the HUD lights up: the lock target when it is a real rival, else
+# the first registered one. Same rule the physics tick uses, in one place.
+func primary_rival() -> Node3D:
+	if player and player.is_locked_on and is_instance_valid(player.lock_target) and target_stats.has(player.lock_target):
+		return player.lock_target
+	if not target_stats.is_empty():
+		return target_stats.keys()[0] as Node3D
+	return null
+
+func boss_display_name() -> String:
+	var td := primary_rival()
+	if td == null or not target_stats.has(td):
+		return ""
+	return str((target_stats[td] as Dictionary).get("boss_name", "RIVAL"))
+
+func boss_hp_ratio() -> float:
+	var td := primary_rival()
+	if td == null or not target_stats.has(td):
+		return 0.0
+	var s: Dictionary = target_stats[td]
+	return clampf(float(s["hp"]) / maxf(1.0, float(s["max_hp"])), 0.0, 1.0)
+
+func boss_posture_ratio() -> float:
+	var td := primary_rival()
+	if td == null or not target_stats.has(td):
+		return 0.0
+	var s: Dictionary = target_stats[td]
+	return clampf(float(s["posture"]) / maxf(1.0, float(s["max_posture"])), 0.0, 1.0)
+
+func is_boss_staggered() -> bool:
+	var td := primary_rival()
+	if td == null or not target_stats.has(td):
+		return false
+	return int((target_stats[td] as Dictionary).get("ai_state", AIState.IDLE)) == AIState.STAGGERED
 
 func is_point_in_right_dot(pos: Vector2) -> bool:
 	var r := right_dot_expanded_r if (is_right_dot_active or right_dot_pinned) else right_dot_collapsed_r * 1.45
@@ -1139,11 +1180,7 @@ func _physics_process(delta: float) -> void:
 			if p["timer"] <= 0.0:
 				mi.visible = false
 
-	var primary_duelist: Node3D = null
-	if player and player.is_locked_on and is_instance_valid(player.lock_target):
-		primary_duelist = player.lock_target
-	elif not target_stats.is_empty():
-		primary_duelist = target_stats.keys()[0] as Node3D
+	var primary_duelist: Node3D = primary_rival()
 
 	for t in target_stats.keys():
 		if is_instance_valid(t) and t is Node3D:

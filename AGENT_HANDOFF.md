@@ -87,55 +87,6 @@ Answer in §4 with a dated entry. These are decisions, not research tasks.
 
 ## 4. Message log
 
-### 2026-11-16 · Buffy (Freebuff) — V5 Task 5: merged saves, P5 tap, UDP 7778 hardening
-
-Branch `Pinkypoopoo-patch-1`, rebased on `93e9ac6`. `main` untouched (`0c80d97`).
-Gate: **VERIFY_PASSED**, 7 gates, 71 signatures, 116 combat asserts, zero warnings.
-
-Book 3 audit — both writers already merged, but the key was wrong:
-- `combat_data.save_to_disk()` and `world_story.save_state()` both do read-modify-write,
-  so neither could erase the other. Verified with a round-trip test, not rebuilt.
-- **Real bug: the story section was written as `"story"`, while
-  `.agents/rules/world-story.md` and the task contract both specify `"story_state"`.** Now
-  written as `story_state`, read from `story_state` with a one-time fallback to `story`, and
-  the legacy key is erased on save so the two can never diverge.
-- Crash paths removed in the story loader: `_origin_start()` replaces an `as Dictionary` cast
-  that returned null and then called `.get()` on it; `make_choice()` now type-checks that
-  `choices` is an array and the chosen entry is a dictionary; `requires_flags` /
-  `grants_unlocks` are type-checked (a malformed gate opens the choice rather than locking
-  the player out).
-- `gesture_combat.spawn_story_rival()` type-checks `rival_hp` (clamped 1..99999),
-  `rival_scale` (0.5..2.0) and `rival_slots` (non-dict becomes empty), so a partial node
-  spawns a sane rival instead of erroring.
-
-Book 4 audit:
-- `_handle_p5_blade_tap()` already calls `set_input_as_handled()` first; the comment there
-  records why (the tap was also reaching `btn_menu`, which closed the menu again). Now
-  asserted for real: one tap flips the row's state AND `get_viewport().is_input_handled()`
-  is true afterwards.
-- 8 tabs, `[ MENU ]`, the 10 Hz HUD throttle and the 4-tier scaler are untouched; the gate
-  still reports 8 tabs and zero warnings.
-- PvP: port 7778 and `P2P_SEND_HZ = 30.0` (0.0333 s accumulator) confirmed. No cyclic
-  `class_name` hints - the module only declares its own; gate 2b now fails on any
-  `PlayerController` reappearing in `flame_p5_pvp.gd`.
-
-UDP hardening (`flame_p5_pvp.gd`):
-- The inline packet parser was extracted to `_handle_udp_packet(m, sender_ip)` with every
-  branch size-checked, plus `_join_verdict()` so the password lock is unit-testable without
-  a socket ("IGNORE" wrong room / "DENY" wrong password / "ACCEPT").
-- Bounded: 64 packets per frame (a flood used to spin the whole `while` in one tick),
-  `discovered_rooms` capped at 16, room codes capped at 16 chars, packets over 512 chars
-  dropped, `nan`/`inf` rejected via `_safe_float`, sync coordinates clamped to +/-5000 m and
-  reported hp to 0..99999, denial text truncated to 96 chars.
-
-Verified: 116 asserts (was 100) plus a new merged-save round trip in `story_test.gd`
-(backing up and restoring the real profile around it). Not verified: no two-device UDP match
-was run — hostile packets are proven safe only by calling `_handle_udp_packet()` directly
-with `udp_beacon == null`, and the 30 Hz cadence is asserted from the constant, not measured
-on a wire.
-
-=== END AI HANDOFF PACKET ===
-
 ### 2026-11-26 · Buffy (Freebuff) — V6 Task 1: touch-first Dev Studio + 4.7.2 warning cleanup
 
 Branch `Pinkypoopoo-patch-1`, based on `79da49b`. `main` untouched (`0c80d97`).
@@ -380,5 +331,72 @@ with the curated arena; gold PARRIABLE vs crimson UNBLOCKABLE telegraphs, guard-
 OPEN: no on-device visual pass (telegraph readability, awakening burst, stagger feel); Blender 5.2
 exporter still unrun.
 NEXT: playtest the fight on a phone, then continue V6.
+=== END AI HANDOFF PACKET ===
+
+### 2026-11-27 · Buffy (Freebuff) — V6 Task 4: Dark Seinen playable HUD + gate dwell readout
+
+Branch `Pinkypoopoo-patch-1`, based on `f87ddc5`. `main` untouched (`0c80d97`).
+Gate: **VERIFY_PASSED**, 7 gates, 79 signatures, 204 combat asserts, zero GDScript warnings
+(`--check-only` on `combat_data.gd` / `character_body_3d.gd` / `gesture_combat.gd` /
+`dev_studio.gd` / `combat_test.gd` silent), zero RID/orphan leaks.
+
+`combat_data.gd` — one bool in `TUNING_BOOLS` + `TUNING_DEFAULTS` (`seinen_hud_enabled: true`).
+Tab 8 builds the checkbox with no UI code, so the cinematic mode is a single tap on a phone.
+
+Read-only hooks (no new gameplay state, nothing written from the HUD):
+- `character_body_3d.shortcut_dwell_ratio()` = dwell / 0.85, clamped; `guard_ratio()` = the
+  player's poise, read from the hitstun recovery window (1.0 steady, falling for 0.36 s after a hit).
+  The player has no separate posture meter, so the HUD derives it instead of inventing one.
+- `gesture_combat.primary_rival()`, `boss_display_name()`, `boss_hp_ratio()`,
+  `boss_posture_ratio()`, `is_boss_staggered()`. `current_boss_phase()` and
+  `current_telegraph_kind()` now read the primary rival's state directly (the physics-tick mirrors
+  remain for anything else), and `_physics_process` picks its `primary_duelist` through the same
+  `primary_rival()` helper, so the HUD and the AI can never disagree about who the boss is.
+
+`dev_studio.gd` — pure data first, then one draw pass:
+- `_seinen_hud_active()` is the single visibility rule: `seinen_hud_enabled`, no full-bleed Dev
+  Studio panel, no P5 pause menu. `_sync_seinen_visibility()` (10 Hz, beside `_refresh_telemetry()`)
+  hides the debug telemetry label while it is on, because that line was the only thing sitting
+  under the player cluster.
+- `get_hud_snapshot()` returns `visible` + `player` (hp ratio, guard ratio, combo) + `boss` (name,
+  phase, archetype, hp ratio, posture ratio, telegraph kind, staggered, present) + `world` (region
+  title from `SHORTCUT_REGION_BANNERS`, gate status, gate dwell ratio). No nodes, no engine reads
+  the HUD would have to guess at.
+- `_draw_seinen_hud()` draws slanted `draw_colored_polygon` ink bars (obsidian fill, bone-white
+  border, crimson/gold accents, 9 px lean): top-left VITAL + GUARD + combo badge; top-centre
+  region title, rival name, `[ ARCHETYPE ]` tag, boss HP (border/accent shifts crimson in phase 2),
+  boss posture, a crimson `PHASE II — AWAKENED` badge, and a centred callout pill that reads
+  `[ STAGGERED — STRIKE FOR FINISHER! ]` (gold) / `[ UNBLOCKABLE — DODGE! ]` (crimson) /
+  `[ PARRIABLE ]` (bone-gold). The dwell bar sits at `vp.y - 136` with `TRAVELING...` above it.
+- Layout safety: the boss cluster is clamped to `vp.x - 176` so it can never reach `[ MENU ]`, the
+  player bar is `min(300, 24% width)` so the two top clusters cannot touch on a phone-width
+  viewport, and every centred element reuses the same clamp. Zero new shaders, zero new nodes.
+- No duplicated readouts: while the cinematic HUD is on, the old bottom-left HP/TOUKI strip and the
+  old `N HIT` combo counter are skipped (they are exactly what the player cluster replaces). The
+  world-anchored per-rival mini bars, damage numbers, hurt vignette, sealed-gate status and region
+  banner still draw as before.
+
+Verified (headless, `combat_test.gd` §23, 19 new asserts -> 204): the bool exists with a `true`
+default; the snapshot reports player HP 0.5, a guard ratio strictly between 0 and 1 at 0.18 s of
+hitstun, and the live combo count; boss HP 0.5 / posture 0.25 plus the `INK_DUELIST` archetype and
+`KATANA…` name; a hit that crosses 50% HP reports `phase == 2`; `PARRIABLE` and `UNBLOCKABLE`
+round-trip; a posture break reports `staggered` with an empty posture bar and `NONE` telegraph;
+0.4 s in an unlocked gate reports `0 < gate_dwell_ratio < 1`, the `SHORTCUT OPEN…` status and the
+`INK CATHEDRAL` title; and `visible` goes false for the bool off, the studio panel open and the P5
+menu open, and true again once both are closed.
+Not verified: no visual run — headless uses the dummy renderer, so `_draw()` never executes and the
+ink-bar geometry, the gold-vs-crimson read, the bar/text fit at real font sizes and the on-phone
+safe margins are all unjudged.
+
+=== AI HANDOFF PACKET ===
+REPO: Pinkypoopoo/sasti-sparkling-zero
+BRANCH: Pinkypoopoo-patch-1 (HEAD for this entry: V6 Task 4)
+DONE: `seinen_hud_enabled` Tab 8 bool; pure-data `get_hud_snapshot()`; slanted Dark Seinen ink HUD
+(player VITAL/GUARD/combo, boss name/archetype/phase-2/HP/posture, stagger/unblockable/parriable
+callout, gate dwell bar) on the 10 Hz throttle; read-only dwell/guard/boss hooks; legacy duplicated
+readouts suppressed while it is on; 19 new asserts.
+OPEN: no on-device visual pass (bar geometry, text fit, safe margins, contrast); Blender 5.2
+exporter still unrun.
+NEXT: look at the HUD on a phone and tune sizes, then continue V6.
 === END AI HANDOFF PACKET ===
 

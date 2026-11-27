@@ -783,6 +783,95 @@ func _run() -> void:
 	player.data_store.tuning["boss_phase2_enabled"] = true
 	player.data_store.tuning["boss_phase2_speed_mult"] = 1.22
 
+	# --- 23. V6 Task 4: Dark Seinen HUD snapshot ----------------------------
+	player.data_store.reset_tuning()
+	check(CombatData.TUNING_BOOLS.has("seinen_hud_enabled") and CombatData.TUNING_DEFAULTS.has("seinen_hud_enabled") and bool(CombatData.TUNING_DEFAULTS["seinen_hud_enabled"]), "seinen_hud_enabled is an auto-generated Tab 8 bool, default on")
+	studio.dev_panel.visible = false
+	studio.dev_backdrop.visible = false
+	studio.fp_mod.set("p5_pause_active", false)
+	studio.travel_to_region(0)
+	combat.reset_duel()
+	player.hp = player.max_hp
+	player.hitstun_timer = 0.0
+	var t10_hud: Dictionary = studio.get_hud_snapshot()
+	check(bool(t10_hud["visible"]), "the Seinen HUD is visible with the studio and pause menu closed")
+
+	# Player cluster numbers.
+	player.hp = player.max_hp * 0.5
+	check(is_equal_approx(float(studio.get_hud_snapshot()["player"]["hp_ratio"]), 0.5), "the snapshot reports the player HP ratio")
+	player.hitstun_timer = 0.18
+	var t10_guard: float = float(studio.get_hud_snapshot()["player"]["posture_ratio"])
+	check(t10_guard > 0.0 and t10_guard < 1.0, "the player guard ratio dips while reeling from a hit")
+	player.hitstun_timer = 0.0
+	player.hp = player.max_hp
+	combat.combo_hits = 4
+	check(int(studio.get_hud_snapshot()["player"]["combo"]) == 4, "the snapshot carries the combo count")
+
+	# Boss cluster numbers, phase and telegraph.
+	var t10_rival: Node3D = combat.target_stats.keys()[0] as Node3D
+	var t10_s: Dictionary = combat.target_stats[t10_rival]
+	t10_s["hp"] = float(t10_s["max_hp"]) * 0.5
+	t10_s["posture"] = float(t10_s["max_posture"]) * 0.25
+	var t10_boss: Dictionary = studio.get_hud_snapshot()["boss"]
+	check(bool(t10_boss["present"]) and is_equal_approx(float(t10_boss["hp_ratio"]), 0.5) and is_equal_approx(float(t10_boss["posture_ratio"]), 0.25), "the snapshot reports boss HP and posture ratios")
+	check(str(t10_boss["archetype"]) == "INK_DUELIST" and str(t10_boss["name"]).begins_with("KATANA"), "the snapshot carries the regional archetype and rival name")
+	combat.apply_damage(t10_rival, 10.0, 0.0, Vector3.ZERO)
+	check(int(studio.get_hud_snapshot()["boss"]["phase"]) == 2, "crossing 50% HP shows PHASE II in the HUD snapshot")
+	t10_s["telegraph_kind"] = "PARRIABLE"
+	check(str(studio.get_hud_snapshot()["boss"]["telegraph_kind"]) == "PARRIABLE", "the snapshot forwards a PARRIABLE wind-up")
+	t10_s["telegraph_kind"] = "UNBLOCKABLE"
+	check(str(studio.get_hud_snapshot()["boss"]["telegraph_kind"]) == "UNBLOCKABLE", "the snapshot forwards an UNBLOCKABLE slam")
+	t10_s["posture"] = float(t10_s["max_posture"]) - 1.0
+	combat.apply_damage(t10_rival, 5.0, 60.0, Vector3.ZERO)
+	var t10_stag: Dictionary = studio.get_hud_snapshot()["boss"]
+	check(bool(t10_stag["staggered"]) and str(t10_stag["telegraph_kind"]) == "NONE" and is_equal_approx(float(t10_stag["posture_ratio"]), 0.0), "a posture break reports staggered with an empty posture bar")
+
+	# World band: region title, gate status and a live dwell ratio.
+	var t10_story = studio.story_mgr
+	t10_story.story_flags["shortcut_blame_unlocked"] = true
+	studio.travel_to_region(0)
+	combat.reset_duel()
+	player._refresh_shortcut_visuals()
+	player.shortcut_arrival_cd = 0.0
+	player.shortcut_dwell = 0.0
+	player.global_position = Vector3(-36.0, 1.6, -2.0)
+	player._tick_shortcut_gates(0.4)
+	var t10_world: Dictionary = studio.get_hud_snapshot()["world"]
+	check(float(t10_world["gate_dwell_ratio"]) > 0.0 and float(t10_world["gate_dwell_ratio"]) < 1.0, "dwelling in an open gate reports a partial travel bar")
+	check(str(t10_world["gate_status"]).begins_with("SHORTCUT OPEN"), "the snapshot forwards the gate status string")
+	check(str(t10_world["region_title"]) == "INK CATHEDRAL", "the snapshot carries the readable region title")
+
+	# Visibility rules: the bool, the studio panel and the P5 menu all hide it.
+	player.data_store.tuning["seinen_hud_enabled"] = false
+	check(not bool(studio.get_hud_snapshot()["visible"]), "seinen_hud_enabled = false hides the HUD")
+	player.data_store.tuning["seinen_hud_enabled"] = true
+	check(bool(studio.get_hud_snapshot()["visible"]), "re-enabling the bool brings the HUD back")
+	studio.dev_panel.visible = true
+	check(not bool(studio.get_hud_snapshot()["visible"]), "the full-bleed Dev Studio panel hides the HUD")
+	studio.dev_panel.visible = false
+	studio.fp_mod.set("p5_pause_active", true)
+	check(not bool(studio.get_hud_snapshot()["visible"]), "the P5 pause menu hides the HUD")
+	studio.fp_mod.set("p5_pause_active", false)
+	check(bool(studio.get_hud_snapshot()["visible"]), "closing both overlays restores the HUD")
+
+	# Leave no V6 Task 4 state behind.
+	player.data_store.tuning["seinen_hud_enabled"] = true
+	player.shortcut_arrival_cd = 0.0
+	player.shortcut_dwell = 0.0
+	player.shortcut_status = ""
+	player.global_position = Vector3(0.0, 1.6, 0.0)
+	player.hp = player.max_hp
+	player.hitstun_timer = 0.0
+	combat.combo_hits = 0
+	combat.combo_timer = 0.0
+	studio.dev_panel.visible = false
+	studio.dev_backdrop.visible = false
+	studio.fp_mod.set("p5_pause_active", false)
+	t10_story.story_flags.erase("shortcut_blame_unlocked")
+	t10_story.save_state()
+	studio.travel_to_region(0)
+	combat.reset_duel()
+
 	# Leave no test tuning behind for the next run.
 	player.data_store.reset_tuning()
 	player.data_store.refresh_auto_quality()

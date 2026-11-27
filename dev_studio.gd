@@ -69,6 +69,7 @@ func _ready() -> void:
 	fp_mod.name = "FlameP5PvPModule"
 	add_child(fp_mod)
 	fp_mod.call("setup_module", player, combat, self)
+	_sync_seinen_visibility()
 
 func _input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch and (event as InputEventScreenTouch).pressed and fp_mod and bool(fp_mod.get("p5_pause_active")):
@@ -1125,6 +1126,7 @@ func _process(delta: float) -> void:
 	if telemetry_accum >= 0.1:
 		telemetry_accum = 0.0
 		_refresh_telemetry()
+		_sync_seinen_visibility()
 		queue_redraw()
 	elif combat.impact_flash_timer > 0.0 or combat.hurt_vignette_timer > 0.0 or combat.impact_slash_timer > 0.0 or player.shortcut_banner_timer > 0.0:
 		queue_redraw()
@@ -1155,8 +1157,176 @@ func _refresh_telemetry() -> void:
 		fps, panel_hz_cached, gpu_ms, cpu_ms, b_tag, player.active_race_name, dash_name, st_name, seq_txt, combat.last_combat_action
 	]
 
+# =============================================================================
+#  V6 Task 4: Dark Seinen Ink playable HUD
+#  Pure data first (get_hud_snapshot), then one _draw() pass on the existing
+#  10 Hz redraw throttle. No nodes, no shaders, no per-frame allocations.
+# =============================================================================
+const SEINEN_INK_BG: Color = Color(0.035, 0.035, 0.045, 0.95)
+const SEINEN_INK_BORDER: Color = Color(0.93, 0.91, 0.86, 0.90)
+const SEINEN_INK_CRIMSON: Color = Color(0.82, 0.09, 0.13)
+const SEINEN_INK_GOLD: Color = Color(1.0, 0.82, 0.30)
+const SEINEN_INK_BONE: Color = Color(0.96, 0.94, 0.88)
+const SEINEN_INK_DIM: Color = Color(0.62, 0.60, 0.57, 0.95)
+const SEINEN_SLANT: float = 9.0
+const SEINEN_MENU_RESERVE: float = 176.0
+
+# The one place the cinematic HUD's visibility rule lives, so the snapshot, the
+# _draw() pass and the dev telemetry label can never disagree.
+func _seinen_hud_active() -> bool:
+	if not (player and combat):
+		return false
+	if not player.data_store or not player.data_store.tuning_bool("seinen_hud_enabled", true):
+		return false
+	if dev_panel and dev_panel.visible:
+		return false
+	if fp_mod and bool(fp_mod.get("p5_pause_active")):
+		return false
+	return true
+
+func _sync_seinen_visibility() -> void:
+	# The debug telemetry line is the only thing that would sit under the player
+	# cluster, so it steps aside while the cinematic HUD is on.
+	if telemetry:
+		telemetry.visible = not _seinen_hud_active()
+
+func get_hud_snapshot() -> Dictionary:
+	var snap: Dictionary = {
+		"visible": _seinen_hud_active(),
+		"player": {"hp_ratio": 0.0, "posture_ratio": 0.0, "combo": 0},
+		"boss": {
+			"name": "", "phase": 1, "archetype": "", "hp_ratio": 0.0,
+			"posture_ratio": 0.0, "telegraph_kind": "NONE", "staggered": false, "present": false,
+		},
+		"world": {"region_title": "", "gate_status": "", "gate_dwell_ratio": 0.0},
+	}
+	if not (player and combat):
+		return snap
+	snap["player"] = {
+		"hp_ratio": clampf(player.hp / maxf(1.0, player.max_hp), 0.0, 1.0),
+		"posture_ratio": player.guard_ratio(),
+		"combo": combat.combo_hits,
+	}
+	var rival: Node3D = combat.primary_rival()
+	snap["boss"] = {
+		"name": combat.boss_display_name() if rival != null else "NO RIVAL",
+		"phase": combat.current_boss_phase(),
+		"archetype": combat.current_region_archetype(),
+		"hp_ratio": combat.boss_hp_ratio(),
+		"posture_ratio": combat.boss_posture_ratio(),
+		"telegraph_kind": combat.current_telegraph_kind(),
+		"staggered": combat.is_boss_staggered(),
+		"present": rival != null,
+	}
+	var ri: int = clampi(int(region_idx), 0, REGION_NAMES.size() - 1)
+	var titles: Array = player.SHORTCUT_REGION_BANNERS
+	var title: String = str(titles[clampi(ri, 0, titles.size() - 1)]) if not titles.is_empty() else str(REGION_NAMES[ri]).replace("_", " ")
+	snap["world"] = {
+		"region_title": title,
+		"gate_status": player.shortcut_status,
+		"gate_dwell_ratio": player.shortcut_dwell_ratio(),
+	}
+	return snap
+
+# A slanted ink quad: the shared silhouette for every bar and badge.
+func _ink_quad(pos: Vector2, size: Vector2, slant: float) -> PackedVector2Array:
+	var s: float = minf(slant, size.x * 0.35)
+	return PackedVector2Array([
+		pos + Vector2(s, 0.0),
+		pos + Vector2(size.x, 0.0),
+		pos + Vector2(size.x - s, size.y),
+		pos + Vector2(0.0, size.y),
+	])
+
+func _draw_ink_bar(pos: Vector2, size: Vector2, ratio: float, fill: Color, border: Color) -> void:
+	draw_colored_polygon(_ink_quad(pos, size, SEINEN_SLANT), border)
+	var inner := Vector2(maxf(0.0, size.x - 2.0), maxf(0.0, size.y - 2.0))
+	draw_colored_polygon(_ink_quad(pos + Vector2(1.0, 1.0), inner, SEINEN_SLANT), SEINEN_INK_BG)
+	var fw: float = inner.x * clampf(ratio, 0.0, 1.0)
+	if fw > 2.0:
+		draw_colored_polygon(_ink_quad(pos + Vector2(2.0, 2.0), Vector2(fw, maxf(2.0, inner.y - 2.0)), SEINEN_SLANT * 0.7), fill)
+
+func _draw_ink_panel(pos: Vector2, size: Vector2, border: Color) -> void:
+	draw_colored_polygon(_ink_quad(pos, size, SEINEN_SLANT * 1.4), border)
+	draw_colored_polygon(_ink_quad(pos + Vector2(2.0, 2.0), Vector2(maxf(0.0, size.x - 4.0), maxf(0.0, size.y - 4.0)), SEINEN_SLANT), SEINEN_INK_BG)
+
+func _draw_seinen_hud(snap: Dictionary) -> void:
+	var vp := get_viewport_rect().size
+	var margin: float = 22.0
+	var font := ThemeDB.fallback_font
+	var player_max_x: float = maxf(margin, vp.x - SEINEN_MENU_RESERVE)
+
+	# --- Player cluster (top-left): VITAL, GUARD, combo badge ----------------
+	# Narrow enough that the top-left cluster can never reach the centred boss
+	# cluster on a phone-width viewport.
+	var pw: float = minf(300.0, vp.x * 0.24)
+	var px: float = margin
+	var py: float = 22.0
+	var pstat: Dictionary = snap["player"]
+	_draw_ink_bar(Vector2(px, py), Vector2(pw, 18.0), float(pstat["hp_ratio"]), SEINEN_INK_CRIMSON, SEINEN_INK_BORDER)
+	draw_string(font, Vector2(px + 10.0, py + 13.0), "VITAL %d%%" % int(round(float(pstat["hp_ratio"]) * 100.0)), HORIZONTAL_ALIGNMENT_LEFT, -1.0, 11, SEINEN_INK_BONE)
+	_draw_ink_bar(Vector2(px, py + 22.0), Vector2(pw * 0.82, 9.0), float(pstat["posture_ratio"]), SEINEN_INK_GOLD, Color(SEINEN_INK_BORDER.r, SEINEN_INK_BORDER.g, SEINEN_INK_BORDER.b, 0.55))
+	draw_string(font, Vector2(px + pw * 0.82 + 8.0, py + 30.0), "GUARD", HORIZONTAL_ALIGNMENT_LEFT, -1.0, 9, SEINEN_INK_DIM)
+	var combo: int = int(pstat["combo"])
+	if combo > 1:
+		var badge_pos := Vector2(px, py + 38.0)
+		_draw_ink_panel(badge_pos, Vector2(84.0, 26.0), SEINEN_INK_GOLD)
+		draw_string(font, badge_pos + Vector2(0.0, 18.0), "%d HIT" % combo, HORIZONTAL_ALIGNMENT_CENTER, 84.0, 14, SEINEN_INK_GOLD)
+
+	# --- Boss cluster (top-centre, always left of [ MENU ]) ------------------
+	var bstat: Dictionary = snap["boss"]
+	var bw: float = minf(440.0, vp.x * 0.42)
+	var bx: float = clampf(vp.x * 0.5 - bw * 0.5, margin, maxf(margin, player_max_x - bw))
+	var by: float = 16.0
+	draw_string(font, Vector2(bx, by + 9.0), str(snap["world"]["region_title"]), HORIZONTAL_ALIGNMENT_LEFT, bw, 10, SEINEN_INK_GOLD)
+	var callout_y: float = by + 66.0
+	if bool(bstat["present"]):
+		var phase: int = int(bstat["phase"])
+		var accent: Color = SEINEN_INK_CRIMSON if phase >= 2 else SEINEN_INK_BORDER
+		draw_string(font, Vector2(bx, by + 26.0), str(bstat["name"]), HORIZONTAL_ALIGNMENT_LEFT, bw * 0.62, 14, SEINEN_INK_BONE)
+		draw_string(font, Vector2(bx, by + 26.0), "[ %s ]" % str(bstat["archetype"]), HORIZONTAL_ALIGNMENT_RIGHT, bw, 10, SEINEN_INK_DIM)
+		_draw_ink_bar(Vector2(bx, by + 32.0), Vector2(bw, 18.0), float(bstat["hp_ratio"]), SEINEN_INK_CRIMSON.lerp(SEINEN_INK_GOLD, 0.3), accent)
+		_draw_ink_bar(Vector2(bx, by + 54.0), Vector2(bw, 8.0), float(bstat["posture_ratio"]), SEINEN_INK_GOLD, Color(accent.r, accent.g, accent.b, 0.55))
+		if phase >= 2:
+			_draw_ink_panel(Vector2(bx, by + 66.0), Vector2(210.0, 18.0), SEINEN_INK_CRIMSON)
+			draw_string(font, Vector2(bx, by + 79.0), "PHASE II — AWAKENED", HORIZONTAL_ALIGNMENT_CENTER, 210.0, 10, SEINEN_INK_BONE)
+			callout_y = by + 90.0
+
+	# --- Combat callout pill (centred below the boss bar) --------------------
+	var label: String = ""
+	var label_border: Color = SEINEN_INK_BONE
+	var label_col: Color = SEINEN_INK_BONE
+	var tk: String = str(bstat["telegraph_kind"])
+	if bool(bstat["staggered"]):
+		label = "STAGGERED — STRIKE FOR FINISHER!"
+		label_border = SEINEN_INK_GOLD
+		label_col = SEINEN_INK_GOLD
+	elif tk == "UNBLOCKABLE":
+		label = "UNBLOCKABLE — DODGE!"
+		label_border = SEINEN_INK_CRIMSON
+		label_col = Color(1.0, 0.86, 0.82)
+	elif tk == "PARRIABLE":
+		label = "PARRIABLE"
+		label_border = SEINEN_INK_BONE
+		label_col = SEINEN_INK_GOLD
+	if not label.is_empty():
+		var cw: float = minf(360.0, vp.x * 0.52)
+		var cx: float = clampf(vp.x * 0.5 - cw * 0.5, margin, maxf(margin, player_max_x - cw))
+		_draw_ink_panel(Vector2(cx, callout_y), Vector2(cw, 26.0), label_border)
+		draw_string(font, Vector2(cx, callout_y + 18.0), label, HORIZONTAL_ALIGNMENT_CENTER, cw, 13, label_col)
+
+	# --- Shortcut dwell bar, above the bottom touch zone --------------------
+	var dwell: float = float(snap["world"]["gate_dwell_ratio"])
+	if dwell > 0.0:
+		var gw: float = minf(320.0, vp.x * 0.5)
+		var gx: float = clampf(vp.x * 0.5 - gw * 0.5, margin, maxf(margin, player_max_x - gw))
+		var gy: float = vp.y - 136.0
+		draw_string(font, Vector2(gx, gy - 7.0), "TRAVELING...", HORIZONTAL_ALIGNMENT_CENTER, gw, 11, SEINEN_INK_GOLD)
+		_draw_ink_bar(Vector2(gx, gy), Vector2(gw, 12.0), dwell, SEINEN_INK_GOLD, SEINEN_INK_BORDER)
+
 func _draw() -> void:
 	if not player or not combat: return
+	var hud := get_hud_snapshot()
 
 	var l_pos := combat.left_dot_pos
 	var l_open := combat.is_left_dot_active or combat.left_dot_pinned
@@ -1188,17 +1358,23 @@ func _draw() -> void:
 		draw_arc(center, player.feint_threshold_px, 0.0, TAU, 48, Color(1.0, 0.85, 0.15, 0.85), 2.5)
 		draw_arc(center, combat.right_dot_expanded_r, 0.0, TAU, 48, Color(1.0, 0.3, 0.35, 0.85), 2.5)
 
-	var hud_p := Vector2(20, get_viewport_rect().size.y - 68)
-	var hp_r := clampf(player.hp / maxf(1.0, player.max_hp), 0.0, 1.0)
-	var mp_r := clampf(player.mana / maxf(1.0, player.max_mana), 0.0, 1.0)
-	draw_rect(Rect2(hud_p, Vector2(240, 18)), Color(0.06, 0.07, 0.1, 0.9))
-	draw_rect(Rect2(hud_p + Vector2(2, 2), Vector2(236 * hp_r, 14)), Color(0.2, 0.85, 0.45))
-	draw_string(ThemeDB.fallback_font, hud_p + Vector2(8, 14), "HP: %d / %d" % [int(player.hp), int(player.max_hp)], HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color.WHITE)
+	# The old bottom-left HP/TOUKI strip only draws while the cinematic HUD is
+	# off, so the same numbers never appear twice on screen.
+	if not bool(hud["visible"]):
+		var hud_p := Vector2(20, get_viewport_rect().size.y - 68)
+		var hp_r := clampf(player.hp / maxf(1.0, player.max_hp), 0.0, 1.0)
+		var mp_r := clampf(player.mana / maxf(1.0, player.max_mana), 0.0, 1.0)
+		draw_rect(Rect2(hud_p, Vector2(240, 18)), Color(0.06, 0.07, 0.1, 0.9))
+		draw_rect(Rect2(hud_p + Vector2(2, 2), Vector2(236 * hp_r, 14)), Color(0.2, 0.85, 0.45))
+		draw_string(ThemeDB.fallback_font, hud_p + Vector2(8, 14), "HP: %d / %d" % [int(player.hp), int(player.max_hp)], HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color.WHITE)
 
-	var mp_p := hud_p + Vector2(0, 22)
-	draw_rect(Rect2(mp_p, Vector2(200, 14)), Color(0.06, 0.07, 0.1, 0.9))
-	draw_rect(Rect2(mp_p + Vector2(2, 2), Vector2(196 * mp_r, 10)), Color(0.95, 0.18, 0.25))
-	draw_string(ThemeDB.fallback_font, mp_p + Vector2(8, 11), "TOUKI: %d / %d (%s)" % [int(player.mana), int(player.max_mana), combat.active_infusion], HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color.WHITE)
+		var mp_p := hud_p + Vector2(0, 22)
+		draw_rect(Rect2(mp_p, Vector2(200, 14)), Color(0.06, 0.07, 0.1, 0.9))
+		draw_rect(Rect2(mp_p + Vector2(2, 2), Vector2(196 * mp_r, 10)), Color(0.95, 0.18, 0.25))
+		draw_string(ThemeDB.fallback_font, mp_p + Vector2(8, 11), "TOUKI: %d / %d (%s)" % [int(player.mana), int(player.max_mana), combat.active_infusion], HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color.WHITE)
+
+	if bool(hud["visible"]):
+		_draw_seinen_hud(hud)
 
 	for t in combat.target_stats.keys():
 		if is_instance_valid(t) and t is Node3D and not player.camera.is_position_behind(t.global_position):
@@ -1242,7 +1418,7 @@ func _draw() -> void:
 			dn_col.a = dn_a
 			draw_string(ThemeDB.fallback_font, dn_sp + Vector2(-16, 0), str(d["text"]), HORIZONTAL_ALIGNMENT_LEFT, -1, dn_fs, dn_col)
 
-	if combat.tune_bool("show_combo_counter", true) and combat.combo_hits >= 2:
+	if not bool(hud["visible"]) and combat.tune_bool("show_combo_counter", true) and combat.combo_hits >= 2:
 		var c_size: int = 30 + mini(18, combat.combo_hits)
 		var c_col := Color(1.0, 0.86, 0.25).lerp(Color(1.0, 0.25, 0.2), clampf(float(combat.combo_hits) / 20.0, 0.0, 1.0))
 		var c_pos := Vector2(get_viewport_rect().size.x * 0.5 - 70.0, 132.0)

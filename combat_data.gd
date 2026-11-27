@@ -54,6 +54,7 @@ const TUNING_BOOLS: Dictionary = {
 	"water_floor_enabled": "Stylized Anime Water Floor",
 	"unlock_all_shortcuts": "Unlock All Shortcut Gates (sandbox)",
 	"boss_phase2_enabled": "Rival Phase 2 at 50% HP",
+	"seinen_hud_enabled": "Dark Seinen Combat HUD",
 }
 
 const TUNING_DEFAULTS: Dictionary = {
@@ -71,6 +72,7 @@ const TUNING_DEFAULTS: Dictionary = {
 	"auto_quality": true, "wall_run_enabled": true, "water_floor_enabled": false,
 	"unlock_all_shortcuts": false,
 	"boss_phase2_enabled": true, "boss_phase2_speed_mult": 1.22,
+	"seinen_hud_enabled": true,
 	"impact_slash_enabled": true, "impact_slash_intensity": 1.0,
 	"water_ripple_strength": 1.0,
 	"cel_smoke_enabled": true, "cel_smoke_density": 1.0,
