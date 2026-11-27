@@ -1112,6 +1112,14 @@ func _build_tab_world_and_char() -> void:
 
 	_add_row(vb, combat, "build_rot_deg", 0.0, 270.0, 45.0)
 
+func _reset_progression() -> void:
+	if story_mgr != null and story_mgr.has_method("reset_progression_flags"):
+		story_mgr.call("reset_progression_flags")
+	if player != null and player.has_method("_refresh_shortcut_visuals"):
+		player.call("_refresh_shortcut_visuals")
+	_show_toast("PROGRESSION RESET — all 3 regions re-lockable")
+	_refresh_story_ui()
+
 func _process(delta: float) -> void:
 	if toast_timer > 0.0:
 		toast_timer = maxf(0.0, toast_timer - delta)
@@ -1199,6 +1207,11 @@ func get_hud_snapshot() -> Dictionary:
 			"posture_ratio": 0.0, "telegraph_kind": "NONE", "staggered": false, "present": false,
 		},
 		"world": {"region_title": "", "gate_status": "", "gate_dwell_ratio": 0.0},
+		"victory": {
+			"active": false, "region_title": "", "rank": "", "score": 0, "elapsed": 0.0,
+			"damage_taken": 0.0, "parries": 0, "finishers": 0, "unlock_note": "",
+			"best_rank": "", "vertical_slice_cleared": false,
+		},
 	}
 	if not (player and combat):
 		return snap
@@ -1225,6 +1238,30 @@ func get_hud_snapshot() -> Dictionary:
 		"region_title": title,
 		"gate_status": player.shortcut_status,
 		"gate_dwell_ratio": player.shortcut_dwell_ratio(),
+	}
+	# V6 Task 6: the victory card reads the same cached summary the KO wrote.
+	var summary: Dictionary = {}
+	if typeof(combat.last_victory_summary) == TYPE_DICTIONARY:
+		summary = combat.last_victory_summary
+	var cleared_region: int = clampi(int(summary.get("region", region_idx)), 0, REGION_NAMES.size() - 1)
+	var mastery: Dictionary = {}
+	if story_mgr != null and story_mgr.has_method("get_region_mastery"):
+		var raw_mastery = story_mgr.call("get_region_mastery", cleared_region)
+		if typeof(raw_mastery) == TYPE_DICTIONARY:
+			mastery = raw_mastery
+	var cleared_title: String = str(titles[clampi(cleared_region, 0, titles.size() - 1)]) if not titles.is_empty() else ""
+	snap["victory"] = {
+		"active": combat.result_state == "VICTORY" and not summary.is_empty(),
+		"region_title": cleared_title,
+		"rank": str(summary.get("rank", "")),
+		"score": int(summary.get("score", 0)),
+		"elapsed": float(summary.get("elapsed", 0.0)),
+		"damage_taken": float(summary.get("damage_taken", 0.0)),
+		"parries": int(summary.get("parries", 0)),
+		"finishers": int(summary.get("finishers", 0)),
+		"unlock_note": str(summary.get("unlock_note", "")),
+		"best_rank": str(mastery.get("best_rank", summary.get("best_rank", ""))),
+		"vertical_slice_cleared": bool(story_mgr.call("is_vertical_slice_cleared")) if (story_mgr != null and story_mgr.has_method("is_vertical_slice_cleared")) else false,
 	}
 	return snap
 
@@ -1323,6 +1360,34 @@ func _draw_seinen_hud(snap: Dictionary) -> void:
 		var gy: float = vp.y - 136.0
 		draw_string(font, Vector2(gx, gy - 7.0), "TRAVELING...", HORIZONTAL_ALIGNMENT_CENTER, gw, 11, SEINEN_INK_GOLD)
 		_draw_ink_bar(Vector2(gx, gy), Vector2(gw, 12.0), dwell, SEINEN_INK_GOLD, SEINEN_INK_BORDER)
+
+	# --- Victory rank stamp (sits clear of the RETRY card and the boss cluster) --
+	var vic: Dictionary = snap["victory"]
+	if bool(vic["active"]):
+		var card_w: float = minf(430.0, vp.x - margin * 2.0)
+		var card_h: float = 176.0
+		var card_y: float = vp.y * 0.5 - 135.0 - card_h - 14.0
+		if card_y < 150.0:
+			card_y = clampf(vp.y * 0.5 + 135.0 + 14.0, 150.0, maxf(150.0, vp.y - card_h - 128.0))
+		var card_x: float = clampf(vp.x * 0.5 - card_w * 0.5, margin, maxf(margin, vp.x - margin - card_w))
+		var stamp: String = str(vic["rank"])
+		var stamp_col: Color = SEINEN_INK_GOLD if stamp == "S" else (SEINEN_INK_BONE if stamp == "A" else SEINEN_INK_CRIMSON)
+		_draw_ink_panel(Vector2(card_x, card_y), Vector2(card_w, card_h), SEINEN_INK_GOLD)
+		draw_string(font, Vector2(card_x + 14.0, card_y + 22.0), "RANK", HORIZONTAL_ALIGNMENT_LEFT, -1.0, 10, SEINEN_INK_DIM)
+		var box := Vector2(card_x + 14.0, card_y + 30.0)
+		_draw_ink_panel(box, Vector2(92.0, 92.0), stamp_col)
+		draw_string(font, box + Vector2(0.0, 70.0), stamp, HORIZONTAL_ALIGNMENT_CENTER, 92.0, 58, stamp_col)
+		draw_string(font, Vector2(card_x + 14.0, card_y + 143.0), "DUEL GRADE", HORIZONTAL_ALIGNMENT_CENTER, 92.0, 9, SEINEN_INK_DIM)
+		var tx: float = card_x + 120.0
+		var tw: float = card_w - 134.0
+		draw_string(font, Vector2(tx, card_y + 24.0), "%s — CLEARED" % str(vic["region_title"]), HORIZONTAL_ALIGNMENT_LEFT, tw, 11, SEINEN_INK_GOLD)
+		draw_string(font, Vector2(tx, card_y + 54.0), "TIME %.1fs  ·  PARRIES %d  ·  FINISHERS %d" % [float(vic["elapsed"]), int(vic["parries"]), int(vic["finishers"])], HORIZONTAL_ALIGNMENT_LEFT, tw, 11, SEINEN_INK_BONE)
+		draw_string(font, Vector2(tx, card_y + 74.0), "DAMAGE TAKEN %d   SCORE %d" % [int(round(float(vic["damage_taken"]))), int(vic["score"])], HORIZONTAL_ALIGNMENT_LEFT, tw, 11, SEINEN_INK_DIM)
+		if not str(vic["best_rank"]).is_empty():
+			draw_string(font, Vector2(tx, card_y + 94.0), "BEST %s" % str(vic["best_rank"]), HORIZONTAL_ALIGNMENT_LEFT, tw, 11, SEINEN_INK_BONE)
+		draw_string(font, Vector2(tx, card_y + 120.0), str(vic["unlock_note"]), HORIZONTAL_ALIGNMENT_LEFT, tw, 12, SEINEN_INK_GOLD)
+		if bool(vic["vertical_slice_cleared"]):
+			draw_string(font, Vector2(tx, card_y + 142.0), "VERTICAL SLICE CLEARED", HORIZONTAL_ALIGNMENT_LEFT, tw, 10, SEINEN_INK_CRIMSON)
 
 func _draw() -> void:
 	if not player or not combat: return
@@ -1446,6 +1511,18 @@ func _build_tab_world_map() -> void:
 	story_mgr = WorldStoryScript.new()
 	story_mgr.name = "WorldStoryManager"
 	add_child(story_mgr)
+
+	# V6 Task 6: replay the 3-region progression without touching tuned sliders.
+	var reset_btn := Button.new()
+	reset_btn.text = "[ RESET PROGRESSION ]"
+	reset_btn.custom_minimum_size = Vector2(0, TOUCH_ROW_H)
+	reset_btn.focus_mode = Control.FOCUS_NONE
+	reset_btn.pressed.connect(_reset_progression)
+	vb.add_child(reset_btn)
+	var reset_note := Label.new()
+	reset_note.text = "Clears the shortcut + finale flags and every per-region rank. Tuned sliders are kept."
+	reset_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vb.add_child(reset_note)
 
 	var orig_lbl := Label.new()
 	orig_lbl.text = "— 1. CHOOSE STARTING CHARACTER ORIGIN (INTERTWINED PATHS) —"

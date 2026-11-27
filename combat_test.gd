@@ -1014,6 +1014,152 @@ func _run() -> void:
 	studio.travel_to_region(0)
 	combat.reset_duel()
 
+	# --- 25. V6 Task 6: regional mastery, S/A/B/C grading -------------------
+	player.data_store.reset_tuning()
+	player.data_store.tuning["enemy_damage"] = 91.0
+	player.data_store.save_to_disk(player, combat)
+	var t12_story = studio.story_mgr
+	t12_story.reset_progression_flags()
+	studio.travel_to_region(0)
+	combat.reset_duel()
+	player.hp = player.max_hp
+	player.hitstun_timer = 0.0
+	check(is_equal_approx(combat.duel_elapsed, 0.0) and is_equal_approx(combat.duel_damage_taken, 0.0) and combat.duel_parries_landed == 0 and combat.duel_stagger_finishers == 0 and combat.last_victory_summary.is_empty(), "a fresh duel starts with clean metrics")
+
+	# Elapsed time ticks on physics only while the duel is live.
+	player.global_position = Vector3(0.0, 1.6, 0.0)
+	player.hitstop_timer = 0.0
+	var t12_elapsed0: float = combat.duel_elapsed
+	for i in range(3):
+		combat._physics_process(0.1)
+	check(combat.duel_elapsed > t12_elapsed0, "duel_elapsed accumulates on the physics tick")
+	combat.result_state = "VICTORY"
+	var t12_frozen: float = combat.duel_elapsed
+	combat._physics_process(0.2)
+	check(is_equal_approx(combat.duel_elapsed, t12_frozen), "... and freezes once the duel is decided")
+	combat.reset_duel()
+
+	# Damage taken, parries and stagger finishers.
+	var t12_rival: Node3D = combat.target_stats.keys()[0] as Node3D
+	var t12_s: Dictionary = combat.target_stats[t12_rival]
+	player.global_position = t12_rival.global_position + Vector3(0.0, 0.0, 3.0)
+	player.hp = player.max_hp
+	player.hitstun_timer = 0.0
+	player.state = PlayerController.MoveState.GROUND
+	player.sway_timer = 0.0
+	combat.sonic_sway_holding = false
+	combat.parry_window_timer = 0.0
+	t12_s["telegraph_kind"] = "NONE"
+	t12_s["ai_state"] = combat.AIState.STRIKE_ACTIVE
+	var t12_hp0: float = player.hp
+	combat._resolve_enemy_strike_on_player(t12_rival, t12_s)
+	check(combat.duel_damage_taken > 0.0 and player.hp < t12_hp0, "duel_damage_taken records the HP a rival strike took")
+	combat.parry_window_timer = 0.4
+	t12_s["ai_state"] = combat.AIState.STRIKE_ACTIVE
+	combat._check_active_parry_against_enemies()
+	check(combat.duel_parries_landed == 1, "a Z-Vanish parry increments the parry metric")
+	combat._trigger_super_parry()
+	check(combat.duel_parries_landed == 2, "a super parry increments it too")
+	var t12_parries: int = combat.duel_parries_landed
+	combat.parry_window_timer = 0.0
+	player.state = PlayerController.MoveState.GUARD
+	t12_s["telegraph_kind"] = "PARRIABLE"
+	combat._resolve_enemy_strike_on_player(t12_rival, t12_s)
+	check(combat.duel_parries_landed == t12_parries + 1, "a guarded Sonic Sway evasion counts as a parry")
+	combat.reset_duel()
+	t12_s["ai_state"] = combat.AIState.STAGGERED
+	t12_s["state_timer"] = 2.0
+	player.lock_target = t12_rival
+	player.is_locked_on = true
+	player.global_position = t12_rival.global_position + Vector3(0.0, 0.0, 2.6)
+	player.state = PlayerController.MoveState.GROUND
+	combat.player_habits.clear()
+	combat._commit_strike(Vector2(0.0, 1.0))
+	check(combat.duel_stagger_finishers == 1, "landing a stagger finisher increments its metric")
+	combat.reset_duel()
+	check(is_equal_approx(combat.duel_elapsed, 0.0) and is_equal_approx(combat.duel_damage_taken, 0.0) and combat.duel_parries_landed == 0 and combat.duel_stagger_finishers == 0 and combat.last_victory_summary.is_empty(), "reset_duel clears every metric and the cached summary")
+
+	# Deterministic grading: clean and fast is S, slow and bloody is C.
+	combat.duel_elapsed = 9.0
+	combat.duel_damage_taken = 0.0
+	combat.duel_parries_landed = 2
+	combat.duel_stagger_finishers = 1
+	var t12_clean: Dictionary = combat.compute_duel_rank()
+	check(str(t12_clean["rank"]) == "S", "a fast, clean parry + finisher clear grades S")
+	combat.duel_elapsed = 35.0
+	combat.duel_damage_taken = 800.0
+	combat.duel_parries_landed = 0
+	combat.duel_stagger_finishers = 0
+	var t12_slow: Dictionary = combat.compute_duel_rank()
+	check(str(t12_slow["rank"]) == "C" and int(t12_slow["score"]) < int(t12_clean["score"]), "a slow, heavy-damage clear grades C")
+	check(is_equal_approx(float(t12_slow["elapsed"]), 35.0) and is_equal_approx(float(t12_slow["damage_taken"]), 800.0), "the rank dictionary reports the metrics it graded")
+	combat.reset_duel()
+
+	# Region 2 clear: finale flag, mastery beside tuning, victory card data.
+	t12_story.reset_progression_flags()
+	studio.travel_to_region(2)
+	combat.reset_duel()
+	combat.duel_elapsed = 8.0
+	combat.duel_damage_taken = 0.0
+	combat.duel_parries_landed = 1
+	combat.duel_stagger_finishers = 1
+	var t12_r2: Node3D = combat.target_stats.keys()[0] as Node3D
+	combat.apply_damage(t12_r2, 99999.0, 0.0, Vector3(0.0, 8.0, 12.0))
+	Engine.time_scale = 1.0
+	check(str(combat.result_state) == "VICTORY" and bool(t12_story.has_flag("eclipse_sanctum_cleared")), "defeating region 2 grants eclipse_sanctum_cleared")
+	check(int(combat.last_victory_summary.get("region", -1)) == 2 and str(combat.last_victory_summary.get("rank", "")) == "S" and str(combat.last_victory_summary.get("unlock_note", "")) == "ECLIPSE SANCTUM MASTERED", "the victory summary carries the region, rank and finale note")
+	var t12_profile: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("user://dev_profile.json"))
+	var t12_state: Dictionary = t12_profile.get("story_state", {})
+	var t12_mastery: Dictionary = t12_state.get("region_mastery", {})
+	check(t12_mastery.has("2") and str((t12_mastery["2"] as Dictionary).get("best_rank", "")) == "S" and is_equal_approx(float(t12_profile.get("tuning", {}).get("enemy_damage", 0.0)), 91.0), "region_mastery persists inside story_state beside tuning")
+	var t12_vic: Dictionary = studio.get_hud_snapshot()["victory"]
+	check(bool(t12_vic["active"]) and str(t12_vic["rank"]) == "S" and int(t12_vic["parries"]) == 1 and int(t12_vic["finishers"]) == 1 and str(t12_vic["unlock_note"]) == "ECLIPSE SANCTUM MASTERED", "the HUD snapshot exposes the victory card data")
+	check(str(t12_vic["best_rank"]) == "S" and not bool(t12_vic["vertical_slice_cleared"]), "the card shows the stored best rank and the unfinished slice state")
+
+	# A worse repeat never downgrades the saved S.
+	combat.reset_duel()
+	combat.duel_elapsed = 40.0
+	combat.duel_damage_taken = 900.0
+	combat.apply_damage(t12_r2, 99999.0, 0.0, Vector3(0.0, 8.0, 12.0))
+	Engine.time_scale = 1.0
+	check(str(t12_story.get_region_mastery(2).get("best_rank", "")) == "S" and int(t12_story.get_region_mastery(2).get("clears", 0)) == 2, "a worse repeat keeps the saved S rank and still counts the clear")
+
+	# All three regional clears complete the vertical slice.
+	t12_story.record_region_victory(0, "A", 14.0)
+	t12_story.record_region_victory(1, "B", 18.0)
+	check(bool(t12_story.has_flag("shortcut_blame_unlocked")) and bool(t12_story.has_flag("shortcut_eclipse_unlocked")) and bool(t12_story.is_vertical_slice_cleared()), "all three regional flags complete the vertical slice")
+
+	# Reset wipes flags + mastery, relocks the gates and keeps tuned values.
+	studio.travel_to_region(0)
+	player._refresh_shortcut_visuals()
+	var t12_locked_before: int = 0
+	for g in player.dash_vfx.shortcut_gates:
+		if bool(g["locked"]):
+			t12_locked_before += 1
+	t12_story.reset_progression_flags()
+	player._refresh_shortcut_visuals()
+	var t12_locked_after: int = 0
+	for g in player.dash_vfx.shortcut_gates:
+		if bool(g["locked"]):
+			t12_locked_after += 1
+	check(t12_locked_before == 0 and t12_locked_after == 2, "reset_progression_flags relocks the shortcut gates")
+	check(not t12_story.has_flag("eclipse_sanctum_cleared") and int(t12_story.get_region_mastery(2).get("clears", 0)) == 0 and not bool(t12_story.is_vertical_slice_cleared()), "reset clears every flag, mastered rank and the slice state")
+	var t12_after: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("user://dev_profile.json"))
+	check(is_equal_approx(float(t12_after.get("tuning", {}).get("enemy_damage", 0.0)), 91.0), "the progression reset never erases tuned values")
+
+	# Leave no V6 Task 6 state behind.
+	player.hp = player.max_hp
+	player.hitstun_timer = 0.0
+	player.state = PlayerController.MoveState.GROUND
+	player.is_locked_on = false
+	player.lock_target = null
+	player.global_position = Vector3(0.0, 1.6, 0.0)
+	Engine.time_scale = 1.0
+	combat.reset_duel()
+	studio.travel_to_region(0)
+	player._refresh_shortcut_visuals()
+	t12_story.reset_progression_flags()
+
 	# Leave no test tuning behind for the next run.
 	player.data_store.reset_tuning()
 	player.data_store.refresh_auto_quality()

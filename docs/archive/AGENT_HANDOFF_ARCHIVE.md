@@ -596,3 +596,56 @@ OPEN: no on-device visual pass (pill ergonomics, sunlight contrast, real clipboa
 exporter still unrun.
 NEXT: playtest the panel on a phone, then continue V6.
 === END AI HANDOFF PACKET ===
+
+---
+
+### 2026-11-26 · Buffy (Freebuff) — V6 Task 2A: curated 3-region arena layouts
+
+Branch `Pinkypoopoo-patch-1`, based on `9c20947`. `main` untouched (`0c80d97`).
+Gate: **VERIFY_PASSED**, 7 gates, 79 signatures, 147 combat asserts, zero GDScript warnings
+(`--check-only` on `dash_vfx.gd` / `dev_studio.gd` / `combat_test.gd` silent, boot scan empty).
+
+`dash_vfx.gd` — no new file; data + helpers only:
+- `CURATED_REGION_LAYOUTS` maps 0 `INK_CATHEDRAL` (12 props: the 8 nave pillars + 4 ruined arches),
+  1 `BLAME_MEGASTRUC` (7: 4 staggered monoliths, one raised to 4 m, an 8 m arch, 2 flora patches)
+  and 2 `GOTHIC_ECLIPSE` (7: 3 arches, 2 pillars, 2 flora). Specs are `[kind, x, y, z, rot]` and go
+  through `spawn_arena_block()`, so every curated piece is solid, destructible and palette-driven.
+- `load_curated_region(idx) -> int`, `clear_curated_region()`, `curated_prop_count()`. Curated
+  entries are flagged `curated` and tracked in `curated_region_props`, never in
+  `custom_block_nodes`, so a region switch cannot eat a Tab 6 build and a saved build cannot eat
+  the region.
+- `clear_curated_region()` walks `destructible_pillars` backwards, detaches the root
+  (`remove_child`) and `free()`s it — not `queue_free`, which would leave the outgoing region's
+  Jolt bodies alive at exit. Tab 6 `spawn_arena_block()` still layers on any loaded region.
+- `_setup_destructible_arena()` no longer carries the hardcoded 8-pillar loop; it calls
+  `load_curated_region(0)`, so boot and the cycler build the arena through one path.
+
+Bug found on the way (pre-existing, only reachable through curated flora): `spawn_arena_block()`
+allocated the `StaticBody3D` + `CollisionShape3D` for every kind but parented them only when the
+kind collides, so each `ANIME_FLORA_PATCH` leaked one body + shape at exit — exactly the
+2 × `P10JoltBody3D` leaks the gate reported. Now freed when `has_collision` is false.
+
+`dev_studio.gd` — `_cycle_region()` (also reached by the story tab's region jump) loads the curated
+layout after the palette swap, then sets `water_floor_enabled = (region_idx == 2)` and calls the
+existing `player._push_water()`. GOTHIC_ECLIPSE therefore floods, while the `quality_tier >= 1`
+gate stays where it was: LOW is dry, MID/HIGH/ULTRA get the plane. No new `WorldEnvironment`, no new
+mesh, no shortcut gate.
+
+Verified (headless, `combat_test.gd` §20, 11 new asserts): the three layouts exist; cycling 0→1→2
+twice spawns exactly each layout's prop count with live roots; each region swaps `stone_mat`;
+returning to region 0 leaves the same non-queued child count (no orphan nodes); region 2 keeps water
+hidden on LOW and shows it on MID; a Tab 6 monolith places on top, is never counted as curated, and
+removing it leaves the sanctum intact; `clear_curated_region()` empties the set.
+Not verified: no visual run — nave spacing, the raised monolith ledges, the obsidian sanctum read
+and the flooded floor are unjudged (headless has no canvas or GPU).
+
+=== AI HANDOFF PACKET ===
+REPO: Pinkypoopoo/sasti-sparkling-zero
+BRANCH: Pinkypoopoo-patch-1 (HEAD for this entry: V6 Task 2A)
+DONE: curated 3-region arena layouts in dash_vfx (12/7/7 props, load/clear/count, curated tracked
+apart from Tab 6), region-2 water through the existing tier-gated _push_water(), 11 new asserts,
+flora StaticBody leak fixed.
+OPEN: no on-device visual pass (layout spacing, sanctum read, flooded floor); Blender 5.2 exporter
+still unrun. Task 2B (story_nodes.json / story_test.gd) untouched.
+NEXT: Task 2B story regions.
+=== END AI HANDOFF PACKET ===

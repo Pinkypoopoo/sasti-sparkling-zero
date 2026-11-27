@@ -65,14 +65,80 @@ func node_exists(node_id: String) -> bool:
 # it through the merged "story_state" write, which never touches "tuning".
 const SHORTCUT_BLAME_FLAG: String = "shortcut_blame_unlocked"
 const SHORTCUT_ECLIPSE_FLAG: String = "shortcut_eclipse_unlocked"
+# V6 Task 6: the dead-end sanctum grants the finale flag instead of a shortcut.
+const ECLIPSE_SANCTUM_FLAG: String = "eclipse_sanctum_cleared"
+const REGION_CLEAR_FLAGS: Array[String] = [SHORTCUT_BLAME_FLAG, SHORTCUT_ECLIPSE_FLAG, ECLIPSE_SANCTUM_FLAG]
+const REGION_CLEAR_NOTES: Array[String] = [
+	"SHORTCUT UNLOCKED — BLAME! MEGASTRUCTURE",
+	"SHORTCUT UNLOCKED — GOTHIC ECLIPSE",
+	"ECLIPSE SANCTUM MASTERED",
+]
+const RANK_VALUE: Dictionary = {"S": 4, "A": 3, "B": 2, "C": 1}
 
-# Region order matches REGION_NAMES / CURATED_REGION_LAYOUTS: 0 hub, 1 megastruc.
-# Region 2 is the dead end, so it owns no outgoing progression flag.
+# Per-region bests, persisted inside "story_state" next to the flags.
+var region_mastery: Dictionary = {}
+
+# Region order matches REGION_NAMES / CURATED_REGION_LAYOUTS: 0 hub, 1 megastruc,
+# 2 sanctum. Region 2 owns no outgoing shortcut, so its clear flag is the V6
+# finale flag; the KO handler uses this as the one place progression is granted.
 func shortcut_flag_for_region(region_idx: int) -> String:
 	match region_idx:
 		0: return SHORTCUT_BLAME_FLAG
 		1: return SHORTCUT_ECLIPSE_FLAG
+		2: return ECLIPSE_SANCTUM_FLAG
 	return ""
+
+func region_clear_note(region_idx: int) -> String:
+	return REGION_CLEAR_NOTES[clampi(region_idx, 0, REGION_CLEAR_NOTES.size() - 1)]
+
+# --- V6 Task 6: regional mastery --------------------------------------------
+# Writes the region's clear flag plus its best rank/time/count in one merged save,
+# so a defeat card and a stored best can never disagree. Ranks only ever move up.
+func record_region_victory(region_idx: int, rank: String, elapsed: float) -> Dictionary:
+	var idx: int = clampi(region_idx, 0, REGION_CLEAR_FLAGS.size() - 1)
+	story_flags[REGION_CLEAR_FLAGS[idx]] = true
+	var key := str(idx)
+	var prev: Dictionary = {}
+	if typeof(region_mastery.get(key, null)) == TYPE_DICTIONARY:
+		prev = region_mastery[key]
+	var best_rank: String = str(prev.get("best_rank", ""))
+	if best_rank.is_empty() or _rank_value(rank) > _rank_value(best_rank):
+		best_rank = rank if _rank_value(rank) > 0 else "C"
+	var best_time: float = float(prev.get("best_time", 0.0))
+	if elapsed > 0.0 and (best_time <= 0.0 or elapsed < best_time):
+		best_time = elapsed
+	var entry := {
+		"best_rank": best_rank,
+		"best_time": best_time,
+		"clears": maxi(0, int(prev.get("clears", 0))) + 1,
+		"last_rank": rank,
+	}
+	region_mastery[key] = entry
+	save_state()
+	return entry.duplicate(true)
+
+func get_region_mastery(region_idx: int) -> Dictionary:
+	var saved = region_mastery.get(str(clampi(region_idx, 0, REGION_CLEAR_FLAGS.size() - 1)), null)
+	if typeof(saved) == TYPE_DICTIONARY:
+		return (saved as Dictionary).duplicate(true)
+	return {"best_rank": "", "best_time": 0.0, "clears": 0, "last_rank": ""}
+
+func is_vertical_slice_cleared() -> bool:
+	for f in REGION_CLEAR_FLAGS:
+		if not has_flag(f):
+			return false
+	return true
+
+# Wipes progression only: shortcut/finale flags and every mastery record. The
+# merged writer leaves "tuning" untouched, so tuned sliders survive a replay.
+func reset_progression_flags() -> void:
+	for f in REGION_CLEAR_FLAGS:
+		story_flags.erase(f)
+	region_mastery.clear()
+	save_state()
+
+func _rank_value(rank: String) -> int:
+	return int(RANK_VALUE.get(rank, 0))
 
 func has_flag(flag: String) -> bool:
 	return (not flag.is_empty()) and bool(story_flags.get(flag, false))
@@ -163,6 +229,7 @@ func save_state() -> void:
 		"active_origin_id": active_origin_id,
 		"current_node_id": current_node_id,
 		"story_flags": story_flags,
+		"region_mastery": region_mastery,
 		"completed_nodes": completed_nodes,
 		"unlocks": unlocks,
 	}
@@ -193,6 +260,9 @@ func load_state() -> void:
 		current_node_id = saved_node
 	if typeof(s.get("story_flags", null)) == TYPE_DICTIONARY:
 		story_flags = s["story_flags"]
+	region_mastery = {}
+	if typeof(s.get("region_mastery", null)) == TYPE_DICTIONARY:
+		region_mastery = s["region_mastery"]
 	if typeof(s.get("completed_nodes", null)) == TYPE_ARRAY:
 		completed_nodes.clear()
 		for n in s["completed_nodes"]:

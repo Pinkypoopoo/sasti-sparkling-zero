@@ -92,6 +92,14 @@ var boss_phase: int = 1
 var region_archetype: String = "INK_DUELIST"
 var telegraph_kind: String = "NONE"
 var phase2_awakenings: int = 0
+
+# --- V6 Task 6: per-duel metrics + deterministic S/A/B/C grading ------------
+var duel_elapsed: float = 0.0
+var duel_damage_taken: float = 0.0
+var duel_parries_landed: int = 0
+var duel_stagger_finishers: int = 0
+var last_victory_summary: Dictionary = {}
+const DUEL_RANK_BANDS: Array = [["S", 900], ["A", 650], ["B", 400], ["C", 0]]
 var ai_attack_cooldown: float = 1.25
 var ai_adaptation_rate: float = 0.30
 var parry_window_timer: float = 0.0
@@ -314,6 +322,7 @@ func apply_region_boss_profile(region_idx: int) -> String:
 	var prof := boss_profile_for_region(region_idx)
 	region_archetype = str(prof.get("archetype", "INK_DUELIST"))
 	boss_phase = 1
+	_reset_duel_metrics()
 	for t in target_stats.keys():
 		if not is_instance_valid(t) or not (t is Node3D):
 			continue
@@ -336,6 +345,45 @@ func apply_region_boss_profile(region_idx: int) -> String:
 			s["ai_state"] = AIState.IDLE
 		# hp is deliberately untouched: taking a shortcut mid-duel never heals.
 	return region_archetype
+
+# --- V6 Task 6: duel metrics -------------------------------------------------
+# Only a live duel ticks: no result card, no defeat, no hitstop freeze, and a
+# rival that is not already dead.
+func _tick_duel_metrics(delta: float) -> void:
+	if not player or result_state != "" or player.is_defeated or player.hitstop_timer > 0.0:
+		return
+	var td := primary_rival()
+	if td == null or not target_stats.has(td):
+		return
+	if int((target_stats[td] as Dictionary).get("ai_state", AIState.IDLE)) == AIState.DEAD:
+		return
+	duel_elapsed += delta
+
+func _reset_duel_metrics() -> void:
+	duel_elapsed = 0.0
+	duel_damage_taken = 0.0
+	duel_parries_landed = 0
+	duel_stagger_finishers = 0
+	last_victory_summary = {}
+
+# Pure and deterministic: same metrics always give the same rank. Speed, clean
+# HP and style (parries + finishers) pay; a slow or bloody duel falls to B/C.
+func compute_duel_rank() -> Dictionary:
+	var elapsed: float = maxf(0.0, duel_elapsed)
+	var taken: float = maxf(0.0, duel_damage_taken)
+	var parries: int = maxi(0, duel_parries_landed)
+	var finishers: int = maxi(0, duel_stagger_finishers)
+	var score: int = 1000 + parries * 90 + finishers * 140 - int(round(elapsed * 20.0)) - int(round(taken * 2.0))
+	score = clampi(score, 0, 1600)
+	var rank: String = "C"
+	for band in DUEL_RANK_BANDS:
+		if score >= int(band[1]):
+			rank = str(band[0])
+			break
+	return {
+		"rank": rank, "score": score, "elapsed": elapsed,
+		"damage_taken": taken, "parries": parries, "finishers": finishers,
+	}
 
 func _phase_speed(s: Dictionary) -> float:
 	if int(s.get("boss_phase", 1)) < 2:
@@ -592,6 +640,7 @@ func _check_active_parry_against_enemies() -> bool:
 				s["combo_left"] = 0
 				s["posture"] = minf(s["max_posture"], s["posture"] + 75.0)
 				last_combat_action = "Z-VANISH COUNTER!!"
+				duel_parries_landed += 1
 				simulate_clash(true)
 				return true
 	return false
@@ -714,6 +763,7 @@ func _trigger_sonic_sway() -> void:
 
 func _trigger_super_parry() -> void:
 	last_combat_action = "SUPER PARRY BREAKER!"
+	duel_parries_landed += 1
 	if player:
 		player.hitstun_timer = 0.0
 		player.state = PlayerController.MoveState.GROUND
@@ -828,6 +878,7 @@ func _commit_strike(dir: Vector2) -> void:
 				s["telegraph_kind"] = BOSS_TELEGRAPH_NONE
 				s["stagger_immunity"] = STAGGER_CHAIN_LOCK
 				last_combat_action = "STAGGER FINISHER!!"
+				duel_stagger_finishers += 1
 				_stagger_finisher_fx(td)
 			var dmg_out: float = float(data.get("dmg", 90.0)) * player.physical_strength * mult * tune("player_damage_mult", 1.0)
 			apply_damage(td, dmg_out, float(data.get("posture", 40.0)), fwd * float(data.get("knockback", 6.0)) + Vector3(0, float(data.get("launch_y", 0.0)), 0), mult > 1.0)
@@ -894,17 +945,53 @@ func _kill_rival(t: Node3D, s: Dictionary) -> void:
 		player.dash_vfx.play_sfx("shatter")
 		player.dash_vfx.check_destruction(t.global_position, 6.0, Vector3.UP, true)
 		player.dash_vfx.spawn_step_sigil(t.global_position + Vector3(0, 1.0, 0), Color(1.0, 0.9, 0.3), 3.0)
-	# V6 Task 2B: defeating a rival opens this region's progression shortcut.
+	# V6 Task 2B + 6: the KO opens this region's flag, then the duel is graded and
+	# the regional clear is written through world_story (merged story_state save).
+	var region: int = 0
+	var flag: String = ""
+	if player and player.has_method("current_region_index"):
+		region = int(player.call("current_region_index"))
 	if player and player.has_method("unlock_shortcut_for_region"):
-		var region: int = int(player.call("current_region_index"))
-		var flag: String = str(player.call("unlock_shortcut_for_region", region))
-		if not flag.is_empty():
-			last_combat_action = "K.O. — %s IS DOWN! SHORTCUT OPENED" % str(s.get("boss_name", "RIVAL"))
+		flag = str(player.call("unlock_shortcut_for_region", region))
+	var rank_info: Dictionary = compute_duel_rank()
+	var mastery: Dictionary = {}
+	var unlock_note: String = ""
+	var region_title: String = ""
+	var mgr: Node = null
+	if player and player.has_method("story_manager"):
+		mgr = player.call("story_manager") as Node
+	if player:
+		var titles: Array = player.SHORTCUT_REGION_BANNERS
+		if not titles.is_empty():
+			region_title = str(titles[clampi(region, 0, titles.size() - 1)])
+	if mgr != null:
+		if mgr.has_method("region_clear_note"):
+			unlock_note = str(mgr.call("region_clear_note", region))
+		if mgr.has_method("record_region_victory"):
+			var raw_mastery = mgr.call("record_region_victory", region, str(rank_info["rank"]), float(rank_info["elapsed"]))
+			if typeof(raw_mastery) == TYPE_DICTIONARY:
+				mastery = raw_mastery
+	last_victory_summary = {
+		"region": region,
+		"region_title": region_title,
+		"rank": str(rank_info["rank"]),
+		"score": int(rank_info["score"]),
+		"elapsed": float(rank_info["elapsed"]),
+		"damage_taken": float(rank_info["damage_taken"]),
+		"parries": int(rank_info["parries"]),
+		"finishers": int(rank_info["finishers"]),
+		"unlock_note": unlock_note,
+		"best_rank": str(mastery.get("best_rank", "")),
+		"clears": int(mastery.get("clears", 0)),
+	}
+	if not flag.is_empty() and not unlock_note.is_empty():
+		last_combat_action = "K.O. — %s IS DOWN! %s" % [str(s.get("boss_name", "RIVAL")), unlock_note]
 	simulate_clash(true)
 	result_state = "VICTORY"
 	_start_slowmo()
 
 func reset_duel() -> void:
+	_reset_duel_metrics()
 	result_state = ""
 	combo_hits = 0
 	# A retry is a fresh encounter: phase 1, no telegraph, no stagger debt.
@@ -1083,6 +1170,7 @@ func _resolve_enemy_strike_on_player(td: Node3D, s: Dictionary) -> void:
 		# live parry window or a dash actually avoids it.
 		if player.sway_timer > 0.0:
 			_trigger_sonic_sway()
+			duel_parries_landed += 1
 			s["posture"] = minf(s["max_posture"], s["posture"] + 35.0)
 			if s["posture"] >= s["max_posture"]:
 				_break_posture(s, "SWAY POSTURE BREAK!!")
@@ -1095,6 +1183,7 @@ func _resolve_enemy_strike_on_player(td: Node3D, s: Dictionary) -> void:
 			return
 	elif guard_up:
 		_trigger_sonic_sway()
+		duel_parries_landed += 1
 		s["posture"] = minf(s["max_posture"], s["posture"] + 35.0)
 		if s["posture"] >= s["max_posture"]:
 			_break_posture(s, "SWAY POSTURE BREAK!!")
@@ -1109,7 +1198,9 @@ func _resolve_enemy_strike_on_player(td: Node3D, s: Dictionary) -> void:
 		return
 
 	var dmg_in := tune("enemy_damage", 55.0)
+	var hp_before: float = player.hp
 	var lethal := player.take_damage(dmg_in)
+	duel_damage_taken += maxf(0.0, hp_before - player.hp)
 	hurt_vignette_timer = 0.5
 	combo_hits = 0
 	combo_timer = 0.0
@@ -1175,6 +1266,7 @@ func _physics_process(delta: float) -> void:
 	# Enemy AI, knockback and projectiles belong on the physics tick. Running them in
 	# _process made them 2.75x faster at a 165 Hz render rate than at 60 Hz.
 	if player and player.p5_camera_override: return
+	_tick_duel_metrics(delta)
 
 	for p in projectiles:
 		if p["timer"] > 0.0:
@@ -1233,6 +1325,7 @@ func spawn_story_rival(nd: Dictionary) -> void:
 	if not is_instance_valid(primary_td): return
 
 	var s: Dictionary = target_stats[primary_td]
+	_reset_duel_metrics()
 	# Story nodes are authored JSON: every optional field below is type-checked so a
 	# partial node (or a hand-edited one) spawns a sane rival instead of erroring.
 	var raw_hp = nd.get("rival_hp", 1800.0)
