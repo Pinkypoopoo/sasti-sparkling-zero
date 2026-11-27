@@ -122,14 +122,50 @@ class ScreenSlash extends Control:
 var custom_block_nodes: Array[Dictionary] = []
 
 # --- Procedural Synth SFX Engine (Zero External Audio Files Required) ---
+# V6 Task 5: every cue is pre-baked once into a mono frame buffer with a fixed
+# seed, and the render-tick pump streams those frames into the same
+# AudioStreamGenerator. One player, no sample files, no per-shot allocation.
+const SFX_MIX_RATE: float = 22050.0
+const SFX_HISTORY_MAX: int = 8
+const SFX_BOSS_AWAKEN: String = "boss_awaken"
+const SFX_UNBLOCKABLE_WARN: String = "unblockable_warn"
+const SFX_STAGGER_BREAK: String = "stagger_break"
+const SFX_STAGGER_FINISHER: String = "stagger_finisher"
+const SFX_GATE_TRAVEL: String = "gate_travel"
+const SFX_GATE_SEALED: String = "gate_sealed"
+const SFX_WALL_KICK: String = "wall_kick"
+
+# cue -> [duration_s, [[start_hz, end_hz, gain, noise_mix, partial], ...]]
+# The V6 cues stack 1-3 layers so a gong, a twin-tone sting or a sub-impact
+# still reads as one short hit on a phone speaker.
+const SYNTH_CUES: Dictionary = {
+	"slash": [0.11, [[520.0, 110.0, 0.45, 0.55, 2.4]]],
+	"hit": [0.14, [[190.0, 48.0, 0.45, 0.35, 2.4]]],
+	"clash": [0.22, [[1480.0, 620.0, 0.45, 0.25, 2.4]]],
+	"vanish": [0.12, [[320.0, 1280.0, 0.45, 0.15, 2.4]]],
+	"shatter": [0.26, [[130.0, 38.0, 0.45, 0.78, 2.4]]],
+	"build": [0.07, [[440.0, 660.0, 0.45, 0.05, 2.4]]],
+	SFX_BOSS_AWAKEN: [0.55, [[42.0, 26.0, 0.60, 0.10, 2.0], [680.0, 1360.0, 0.16, 0.0, 3.01], [1020.0, 2040.0, 0.10, 0.0, 4.7]]],
+	SFX_UNBLOCKABLE_WARN: [0.30, [[880.0, 1320.0, 0.30, 0.0, 2.0], [932.0, 1244.0, 0.30, 0.0, 2.0], [1760.0, 2640.0, 0.10, 0.35, 3.0]]],
+	SFX_STAGGER_BREAK: [0.26, [[240.0, 60.0, 0.40, 0.65, 2.2], [1240.0, 480.0, 0.18, 0.45, 3.7]]],
+	SFX_STAGGER_FINISHER: [0.34, [[88.0, 34.0, 0.55, 0.30, 2.0], [520.0, 140.0, 0.20, 0.50, 3.1]]],
+	SFX_GATE_TRAVEL: [0.45, [[220.0, 880.0, 0.34, 0.05, 2.0], [330.0, 1320.0, 0.18, 0.0, 3.0]]],
+	SFX_GATE_SEALED: [0.22, [[90.0, 55.0, 0.40, 0.45, 2.0]]],
+	SFX_WALL_KICK: [0.14, [[320.0, 90.0, 0.35, 0.70, 2.6], [1500.0, 700.0, 0.10, 0.30, 3.4]]],
+}
+
 var sfx_player: AudioStreamPlayer = null
 var sfx_playback: AudioStreamGeneratorPlayback = null
-var sfx_phase: float = 0.0
-var sfx_freq: float = 0.0
-var sfx_end_freq: float = 0.0
-var sfx_timer: float = 0.0
-var sfx_total_dur: float = 0.1
-var sfx_noise_mix: float = 0.0
+# Baking happens on first use, even headless: the cue buffers are plain data, so
+# a device-less run still proves every cue is valid and non-silent.
+var synth_frames: Dictionary = {}
+var sfx_active_frames: PackedVector2Array = PackedVector2Array()
+var sfx_cursor: int = 0
+var last_sfx_cue: String = ""
+var sfx_play_count: int = 0
+var sfx_history: Array[String] = []
+var sfx_enabled_flag: bool = true
+var sfx_volume_linear: float = 0.75
 
 # Hard cap on player-placed blocks: each one allocates fresh meshes, so an
 # unbounded build session could tank a phone.
@@ -216,6 +252,7 @@ const SHORTCUT_GATE_OPEN_COLOR: Color = Color(1.0, 0.82, 0.24)
 var shortcut_gates: Array[Dictionary] = []
 
 func _ready() -> void:
+	_bake_synth_cue_bank()
 	_setup_synth_audio()
 	_setup_afterimage_pool()
 	_setup_slash_arc_pool()
@@ -228,31 +265,31 @@ func _setup_synth_audio() -> void:
 	if DisplayServer.get_name() == "headless": return
 	sfx_player = AudioStreamPlayer.new()
 	var gen := AudioStreamGenerator.new()
-	gen.mix_rate = 22050.0
+	gen.mix_rate = SFX_MIX_RATE
 	gen.buffer_length = 0.12
 	sfx_player.stream = gen
-	sfx_player.volume_db = -6.0
+	sfx_player.volume_db = linear_to_db(maxf(0.001, sfx_volume_linear))
 	add_child(sfx_player)
 	sfx_player.play()
 	sfx_playback = sfx_player.get_stream_playback() as AudioStreamGeneratorPlayback
 
 func play_sfx(kind: String) -> void:
-	if not sfx_playback: return
-	sfx_phase = 0.0
-	match kind:
-		"slash":
-			sfx_freq = 520.0; sfx_end_freq = 110.0; sfx_total_dur = 0.11; sfx_noise_mix = 0.55
-		"hit":
-			sfx_freq = 190.0; sfx_end_freq = 48.0; sfx_total_dur = 0.14; sfx_noise_mix = 0.35
-		"clash":
-			sfx_freq = 1480.0; sfx_end_freq = 620.0; sfx_total_dur = 0.22; sfx_noise_mix = 0.25
-		"vanish":
-			sfx_freq = 320.0; sfx_end_freq = 1280.0; sfx_total_dur = 0.12; sfx_noise_mix = 0.15
-		"shatter":
-			sfx_freq = 130.0; sfx_end_freq = 38.0; sfx_total_dur = 0.26; sfx_noise_mix = 0.78
-		"build":
-			sfx_freq = 440.0; sfx_end_freq = 660.0; sfx_total_dur = 0.07; sfx_noise_mix = 0.05
-	sfx_timer = sfx_total_dur
+	# Muted in Tab 8: no sound AND no bookkeeping, so a test can prove silence.
+	if not sfx_enabled_flag:
+		return
+	if not SYNTH_CUES.has(kind):
+		return
+	last_sfx_cue = kind
+	sfx_play_count += 1
+	if sfx_history.size() >= SFX_HISTORY_MAX:
+		sfx_history.remove_at(0)
+	sfx_history.append(kind)
+	if not sfx_playback:
+		return  # headless / no audio device: the cue is still recorded
+	if sfx_player:
+		sfx_player.volume_db = synth_volume_db()
+	sfx_active_frames = _synth_frames_for(kind)
+	sfx_cursor = 0
 
 func _process(delta: float) -> void:
 	# Audio is pumped on the render tick, NOT at the end of _physics_process:
@@ -260,19 +297,100 @@ func _process(delta: float) -> void:
 	# and underrun the synth exactly during the impact frames.
 	_pump_synth_audio(delta)
 
-func _pump_synth_audio(delta: float) -> void:
-	if not sfx_playback or sfx_timer <= 0.0: return
-	sfx_timer = maxf(0.0, sfx_timer - delta)
-	var frames := mini(sfx_playback.get_frames_available(), 512)
-	var prog := 1.0 - (sfx_timer / maxf(0.01, sfx_total_dur))
-	var cur_f := lerpf(sfx_freq, sfx_end_freq, prog)
-	var env := (1.0 - prog) * 0.45
-	for i in range(frames):
-		sfx_phase += cur_f / 22050.0
-		var tone := sin(sfx_phase * TAU) + 0.35 * sin(sfx_phase * TAU * 2.4)
-		var noise := randf_range(-1.0, 1.0)
-		var samp := lerpf(tone, noise, sfx_noise_mix) * env
-		sfx_playback.push_frame(Vector2(samp, samp))
+func _pump_synth_audio(_delta: float) -> void:
+	# Pumped on the render tick (not physics): hitstop early-returns the physics
+	# tick and used to starve the generator exactly during impact frames.
+	if not sfx_playback or sfx_active_frames.is_empty():
+		return
+	var room: int = mini(sfx_playback.get_frames_available(), 512)
+	if room <= 0:
+		return
+	var take: int = mini(room, sfx_active_frames.size() - sfx_cursor)
+	if take <= 0:
+		sfx_cursor = 0
+		sfx_active_frames = PackedVector2Array()
+		return
+	var chunk := PackedVector2Array()
+	chunk.resize(take)
+	for i in range(take):
+		chunk[i] = sfx_active_frames[sfx_cursor + i]
+	sfx_playback.push_buffer(chunk)
+	sfx_cursor += take
+	if sfx_cursor >= sfx_active_frames.size():
+		sfx_cursor = 0
+		sfx_active_frames = PackedVector2Array()
+
+func set_sfx_tuning(enabled: bool, linear_volume: float) -> void:
+	# The player pushes Tab 8 in once per physics tick; the synth never reaches
+	# back into combat_data, so there is no cyclic node lookup.
+	sfx_enabled_flag = enabled
+	sfx_volume_linear = clampf(linear_volume, 0.0, 1.0)
+	if sfx_player:
+		sfx_player.volume_db = synth_volume_db()
+
+# One dB conversion for both the setter and every shot, clamped so a 0.0 slider
+# is silence rather than a -inf volume.
+func synth_volume_db() -> float:
+	return linear_to_db(maxf(0.001, clampf(sfx_volume_linear, 0.0, 1.0)))
+
+# Bake the whole bank at load: ~3.2 s of mono frames is ~560 KB, far cheaper than
+# hitching the frame a boss awakens on.
+func _bake_synth_cue_bank() -> void:
+	for cue in SYNTH_CUES.keys():
+		if not synth_frames.has(cue):
+			_bake_synth_cue(str(cue))
+
+func has_synth_cue(cue: String) -> bool:
+	return SYNTH_CUES.has(cue)
+
+func synth_frame_count(cue: String) -> int:
+	return _synth_frames_for(cue).size()
+
+func synth_peak(cue: String) -> float:
+	var peak: float = 0.0
+	for fr in _synth_frames_for(cue):
+		peak = maxf(peak, absf(fr.x))
+	return peak
+
+func _synth_frames_for(cue: String) -> PackedVector2Array:
+	if synth_frames.has(cue):
+		var cached: PackedVector2Array = synth_frames[cue]
+		return cached
+	return _bake_synth_cue(cue)
+
+# Bakes one cue at 22.05 kHz. Deterministic (seeded noise) so a headless run and
+# a phone hear the same buffer, and so a test can compare peaks across runs.
+func _bake_synth_cue(cue: String) -> PackedVector2Array:
+	var spec: Array = SYNTH_CUES.get(cue, [])
+	if spec.size() < 2:
+		return PackedVector2Array()
+	var dur: float = maxf(0.02, float(spec[0]))
+	var layers: Array = spec[1]
+	var frames := PackedVector2Array()
+	frames.resize(int(round(dur * SFX_MIX_RATE)))
+	var rng := RandomNumberGenerator.new()
+	rng.seed = hash(cue)
+	var count: int = frames.size()
+	for i in range(count):
+		var t: float = float(i) / SFX_MIX_RATE
+		var prog: float = clampf(t / dur, 0.0, 1.0)
+		# 2 ms attack + exponential decay: percussive, never a click.
+		var env: float = minf(1.0, t / 0.002) * pow(1.0 - prog, 1.7)
+		var samp: float = 0.0
+		for layer in layers:
+			var f0: float = float(layer[0])
+			var f1: float = float(layer[1])
+			var gain: float = float(layer[2])
+			var noise: float = float(layer[3])
+			var partial: float = float(layer[4])
+			# Integrate the sweep so the phase never jumps mid-cue.
+			var phase: float = f0 * t + (f1 - f0) * t * prog * 0.5
+			var tone: float = sin(phase * TAU) + 0.35 * sin(phase * TAU * partial)
+			samp += lerpf(tone, rng.randf_range(-1.0, 1.0), noise) * gain
+		samp = clampf(samp * env, -1.0, 1.0)
+		frames[i] = Vector2(samp, samp)
+	synth_frames[cue] = frames
+	return frames
 
 func _setup_afterimage_pool() -> void:
 	var cyl_cap := CapsuleMesh.new()

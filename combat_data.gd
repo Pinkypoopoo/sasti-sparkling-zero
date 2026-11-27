@@ -40,6 +40,8 @@ const TUNING_SPEC: Dictionary = {
 	"cel_smoke_density":   [0.0,  2.0, 0.05, "Cel Smoke Density"],
 	# V6 Task 3: 2-phase rival boss
 	"boss_phase2_speed_mult": [1.0, 1.6, 0.02, "Boss Phase 2 Speed x"],
+	# V6 Task 5: procedural synth mixer
+	"sfx_volume":          [0.0,  1.0,   0.05, "SFX Volume"],
 }
 
 const TUNING_BOOLS: Dictionary = {
@@ -55,6 +57,7 @@ const TUNING_BOOLS: Dictionary = {
 	"unlock_all_shortcuts": "Unlock All Shortcut Gates (sandbox)",
 	"boss_phase2_enabled": "Rival Phase 2 at 50% HP",
 	"seinen_hud_enabled": "Dark Seinen Combat HUD",
+	"sfx_enabled": "Procedural Synth SFX",
 }
 
 const TUNING_DEFAULTS: Dictionary = {
@@ -73,6 +76,7 @@ const TUNING_DEFAULTS: Dictionary = {
 	"unlock_all_shortcuts": false,
 	"boss_phase2_enabled": true, "boss_phase2_speed_mult": 1.22,
 	"seinen_hud_enabled": true,
+	"sfx_enabled": true, "sfx_volume": 0.75,
 	"impact_slash_enabled": true, "impact_slash_intensity": 1.0,
 	"water_ripple_strength": 1.0,
 	"cel_smoke_enabled": true, "cel_smoke_density": 1.0,

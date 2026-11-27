@@ -872,6 +872,148 @@ func _run() -> void:
 	studio.travel_to_region(0)
 	combat.reset_duel()
 
+	# --- 24. V6 Task 5: procedural Seinen synth cues ------------------------
+	player.data_store.reset_tuning()
+	check(CombatData.TUNING_BOOLS.has("sfx_enabled") and bool(CombatData.TUNING_DEFAULTS["sfx_enabled"]), "sfx_enabled is an auto-generated Tab 8 bool, default on")
+	var t11_vol_spec: Array = CombatData.TUNING_SPEC.get("sfx_volume", [])
+	check(t11_vol_spec.size() >= 4 and is_equal_approx(float(t11_vol_spec[0]), 0.0) and is_equal_approx(float(t11_vol_spec[1]), 1.0) and is_equal_approx(float(CombatData.TUNING_DEFAULTS.get("sfx_volume", 0.0)), 0.75), "sfx_volume is a 0.0-1.0 Tab 8 slider defaulting to 0.75")
+	player._push_fx_budget()
+	var t11_vfx = player.dash_vfx
+	check(bool(t11_vfx.sfx_enabled_flag) and is_equal_approx(float(t11_vfx.sfx_volume_linear), 0.75), "the player pushes the Tab 8 SFX state into the synth host")
+
+	# Every V6 cue bakes a real buffer with no audio device present.
+	var t11_cues: Array[String] = ["boss_awaken", "unblockable_warn", "stagger_break", "stagger_finisher", "gate_travel", "gate_sealed", "wall_kick"]
+	var t11_buffer_bad := 0
+	for c in t11_cues:
+		if not t11_vfx.has_synth_cue(c) or t11_vfx.synth_frame_count(c) < 256 or t11_vfx.synth_peak(c) <= 0.01:
+			t11_buffer_bad += 1
+	check(t11_buffer_bad == 0, "every V6 cue bakes a valid, non-silent frame buffer (headless, no audio device)")
+
+	# Bookkeeping + mute switch + dB volume.
+	var t11_before: int = t11_vfx.sfx_play_count
+	t11_vfx.play_sfx(t11_vfx.SFX_BOSS_AWAKEN)
+	check(t11_vfx.sfx_play_count == t11_before + 1 and t11_vfx.last_sfx_cue == "boss_awaken" and t11_vfx.sfx_history.has("boss_awaken"), "a played cue records its name, play count and history")
+	player.data_store.tuning["sfx_enabled"] = false
+	player._push_fx_budget()
+	t11_vfx.sfx_history.clear()
+	t11_vfx.play_sfx(t11_vfx.SFX_STAGGER_BREAK)
+	check(t11_vfx.sfx_play_count == t11_before + 1 and t11_vfx.last_sfx_cue == "boss_awaken" and t11_vfx.sfx_history.is_empty(), "sfx_enabled = false plays nothing and never increments the count")
+	player.data_store.tuning["sfx_enabled"] = true
+	player.data_store.tuning["sfx_volume"] = 0.5
+	player._push_fx_budget()
+	check(is_equal_approx(float(t11_vfx.sfx_volume_linear), 0.5) and is_equal_approx(t11_vfx.synth_volume_db(), linear_to_db(0.5)), "sfx_volume reaches the host and converts to dB with linear_to_db")
+	player.data_store.tuning["sfx_volume"] = 0.75
+	player._push_fx_budget()
+
+	# Phase 2 awakening: BOSS_AWAKEN + a camera kick with no hitstop freeze.
+	studio.travel_to_region(0)
+	combat.reset_duel()
+	var t11_rival: Node3D = combat.target_stats.keys()[0] as Node3D
+	var t11_s: Dictionary = combat.target_stats[t11_rival]
+	t11_vfx.sfx_history.clear()
+	t11_s["hp"] = float(t11_s["max_hp"]) * 0.52
+	combat.apply_damage(t11_rival, float(t11_s["max_hp"]) * 0.1, 0.0, Vector3.ZERO)
+	check(t11_vfx.sfx_history.has("boss_awaken") and int(t11_s["boss_phase"]) == 2, "the phase 2 awakening fires BOSS_AWAKEN")
+	player.cam_shake_trauma = 0.0
+	player.hitstop_timer = 0.0
+	t11_vfx.sfx_history.clear()
+	combat._awaken_phase_two(t11_rival, t11_s)
+	check(t11_vfx.sfx_history.has("boss_awaken") and float(player.cam_shake_trauma) > 0.0 and is_equal_approx(float(player.hitstop_timer), 0.0), "the awakening kicks the camera without freezing the boss mid-transition")
+
+	# Telegraph sting: only the unblockable wind-up warns.
+	t11_s["boss_phase"] = 2
+	t11_s["phase2_attack"] = "SLAM"
+	t11_s["telegraph_seq"] = 1
+	t11_vfx.sfx_history.clear()
+	combat._begin_telegraph(t11_s, t11_rival)
+	check(str(t11_s["telegraph_kind"]) == "UNBLOCKABLE" and t11_vfx.sfx_history.has("unblockable_warn"), "an UNBLOCKABLE wind-up fires UNBLOCKABLE_WARN")
+	t11_s["telegraph_seq"] = 2
+	t11_vfx.sfx_history.clear()
+	combat._begin_telegraph(t11_s, t11_rival)
+	check(str(t11_s["telegraph_kind"]) == "PARRIABLE" and t11_vfx.sfx_history.is_empty(), "a PARRIABLE wind-up stays silent")
+
+	# Posture break crack, then the finisher's heavier cue.
+	t11_s["ai_state"] = combat.AIState.IDLE
+	t11_s["posture"] = float(t11_s["max_posture"]) - 1.0
+	t11_vfx.sfx_history.clear()
+	combat.apply_damage(t11_rival, 1.0, 40.0, Vector3.ZERO)
+	check(int(t11_s["ai_state"]) == combat.AIState.STAGGERED and t11_vfx.sfx_history.has("stagger_break"), "a posture break fires STAGGER_BREAK")
+	player.lock_target = t11_rival
+	player.is_locked_on = true
+	player.global_position = t11_rival.global_position + Vector3(0.0, 0.0, 2.6)
+	player.velocity = Vector3.ZERO
+	player.state = PlayerController.MoveState.GROUND
+	player.cam_shake_trauma = 0.0
+	player.hitstop_timer = 0.0
+	t11_vfx.sfx_history.clear()
+	combat._commit_strike(Vector2(0.0, 1.0))
+	check(t11_vfx.sfx_history.has("stagger_finisher") and float(player.cam_shake_trauma) > 0.0 and float(player.hitstop_timer) > 0.0, "the stagger finisher fires STAGGER_FINISHER with hitstop and a camera kick")
+
+	# Sealed gate: one thud, then the 1.2 s cooldown, then allowed again.
+	var t11_story = studio.story_mgr
+	t11_story.story_flags.erase("shortcut_blame_unlocked")
+	studio.travel_to_region(0)
+	combat.reset_duel()
+	player._refresh_shortcut_visuals()
+	player.shortcut_sealed_sfx_cd = 0.0
+	player.shortcut_arrival_cd = 0.0
+	player.shortcut_dwell = 0.0
+	player.global_position = Vector3(-36.0, 1.6, -2.0)
+	var t11_sealed: int = t11_vfx.sfx_play_count
+	player._tick_shortcut_gates(1.0 / 60.0)
+	check(t11_vfx.sfx_play_count == t11_sealed + 1 and t11_vfx.last_sfx_cue == "gate_sealed", "bumping a sealed gate fires GATE_SEALED once")
+	for i in range(6):
+		player._tick_shortcut_gates(1.0 / 60.0)
+	check(t11_vfx.sfx_play_count == t11_sealed + 1, "... and the 1.2 s cooldown silences every later physics tick")
+	player._tick_shortcut_gates(1.3)
+	check(t11_vfx.sfx_play_count == t11_sealed + 2, "... while the thud is allowed again after 1.2 s")
+
+	# Open gate travel chime.
+	t11_story.story_flags["shortcut_blame_unlocked"] = true
+	player._refresh_shortcut_visuals()
+	player.shortcut_arrival_cd = 0.0
+	player.shortcut_dwell = 0.0
+	player.global_position = Vector3(-36.0, 1.6, -2.0)
+	t11_vfx.sfx_history.clear()
+	player._tick_shortcut_gates(1.0)
+	check(int(studio.region_idx) == 1 and t11_vfx.sfx_history.has("gate_travel"), "completing open gate travel fires GATE_TRAVEL")
+
+	# Wall kick-off and auto ledge-vault.
+	combat.reset_duel()
+	player.is_wall_running = true
+	player.wall_run_normal = Vector3(1.0, 0.0, 0.0)
+	player.state = PlayerController.MoveState.AIR
+	t11_vfx.sfx_history.clear()
+	player._trigger_jump()
+	check(not player.is_wall_running and t11_vfx.sfx_history.has("wall_kick"), "a wall-run jump kick-off fires WALL_KICK")
+	player.wall_run_normal = Vector3(1.0, 0.0, 0.0)
+	player.wall_run_forward = Vector3(1.0, 0.0, 0.0)
+	t11_vfx.sfx_history.clear()
+	player._vault_onto_ledge()
+	check(t11_vfx.sfx_history.has("wall_kick"), "an auto ledge-vault fires the same WALL_KICK burst")
+
+	# Leave no V6 Task 5 state behind.
+	player.wall_run_normal = Vector3.ZERO
+	player.wall_run_forward = Vector3.ZERO
+	player.is_wall_running = false
+	player.state = PlayerController.MoveState.GROUND
+	player.is_locked_on = false
+	player.lock_target = null
+	player.cam_shake_trauma = 0.0
+	player.hitstop_timer = 0.0
+	player.shortcut_sealed_sfx_cd = 0.0
+	player.shortcut_arrival_cd = 0.0
+	player.shortcut_dwell = 0.0
+	player.global_position = Vector3(0.0, 1.6, 0.0)
+	t11_story.story_flags.erase("shortcut_blame_unlocked")
+	t11_story.save_state()
+	player.data_store.tuning["sfx_enabled"] = true
+	player.data_store.tuning["sfx_volume"] = 0.75
+	player._push_fx_budget()
+	t11_vfx.sfx_history.clear()
+	studio.travel_to_region(0)
+	combat.reset_duel()
+
 	# Leave no test tuning behind for the next run.
 	player.data_store.reset_tuning()
 	player.data_store.refresh_auto_quality()

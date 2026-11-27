@@ -372,6 +372,8 @@ func _begin_telegraph(s: Dictionary, td: Node3D) -> void:
 	_boss_anim(s, "slash_up")
 	if player and player.dash_vfx:
 		var cue: Color = BOSS_TELEGRAPH_PARRIABLE_COL if kind == BOSS_TELEGRAPH_PARRIABLE else BOSS_TELEGRAPH_UNBLOCKABLE_COL
+		if kind == BOSS_TELEGRAPH_UNBLOCKABLE:
+			player.dash_vfx.play_sfx(DashVFX.SFX_UNBLOCKABLE_WARN)
 		player.dash_vfx.spawn_step_sigil(td.global_position + Vector3(0.0, 0.9, 0.0), cue, 1.6)
 
 func _awaken_phase_two(t: Node3D, s: Dictionary) -> void:
@@ -385,9 +387,13 @@ func _awaken_phase_two(t: Node3D, s: Dictionary) -> void:
 	# Reuses the V5 impact slash + pooled cel smoke, so the cue respects the
 	# active GPU tier budget and allocates nothing new.
 	trigger_impact_slash(t.global_position + Vector3(0.0, 1.4, 0.0), 22.0, 1.25)
-	if player and player.dash_vfx:
-		player.dash_vfx.play_sfx("shatter")
-		player.dash_vfx.spawn_cel_smoke(t.global_position + Vector3(0.0, 1.0, 0.0), 6, Vector3.UP, 1.15)
+	if player:
+		# Cinematic kick with zero hitstop: the awakening must not freeze the boss
+		# mid-transition, only sell the weight of it.
+		player.trigger_hitstop(0.0, 0.9)
+		if player.dash_vfx:
+			player.dash_vfx.play_sfx(DashVFX.SFX_BOSS_AWAKEN)
+			player.dash_vfx.spawn_cel_smoke(t.global_position + Vector3(0.0, 1.0, 0.0), 6, Vector3.UP, 1.15)
 	simulate_clash(true)
 
 func _break_posture(s: Dictionary, message: String) -> void:
@@ -397,15 +403,19 @@ func _break_posture(s: Dictionary, message: String) -> void:
 	s["telegraph_kind"] = BOSS_TELEGRAPH_NONE
 	s["combo_left"] = 0
 	last_combat_action = message
+	if player and player.dash_vfx:
+		player.dash_vfx.play_sfx(DashVFX.SFX_STAGGER_BREAK)
 	simulate_clash(true)
 
 func _stagger_finisher_fx(t: Node3D) -> void:
 	# Bonus damage rides the normal hit path; this only sells the beat.
 	trigger_impact_slash(t.global_position + Vector3(0.0, 1.2, 0.0), -18.0, 1.4)
 	if player:
-		player.trigger_hitstop(0.075, 0.8)
+		# Heavier stop + kick than a normal hit: the finisher lands like a door
+		# closing, alongside the slash, the smoke and its own synth cue.
+		player.trigger_hitstop(0.075, 1.0)
 		if player.dash_vfx:
-			player.dash_vfx.play_sfx("shatter")
+			player.dash_vfx.play_sfx(DashVFX.SFX_STAGGER_FINISHER)
 			player.dash_vfx.spawn_cel_smoke(t.global_position + Vector3(0.0, 1.1, 0.0), 5, Vector3.UP, 1.25)
 			player.dash_vfx.spawn_step_sigil(t.global_position + Vector3(0.0, 1.0, 0.0), Color(0.95, 0.82, 1.0), 2.0)
 

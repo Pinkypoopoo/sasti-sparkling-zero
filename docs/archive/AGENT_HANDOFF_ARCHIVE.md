@@ -536,3 +536,63 @@ with `udp_beacon == null`, and the 30 Hz cadence is asserted from the constant, 
 on a wire.
 
 === END AI HANDOFF PACKET ===
+
+### 2026-11-26 · Buffy (Freebuff) — V6 Task 1: touch-first Dev Studio + 4.7.2 warning cleanup
+
+Branch `Pinkypoopoo-patch-1`, based on `79da49b`. `main` untouched (`0c80d97`).
+Gate: **VERIFY_PASSED**, 7 gates, 79 signatures, 136 combat asserts, zero GDScript warnings
+(`--check-only` on `dev_studio.gd` / `character_body_3d.gd` / `combat_test.gd` silent, 120-frame
+boot scan empty).
+
+Godot 4.7.2 editor-debugger warnings (all four, `character_body_3d.gd`):
+1. `var scale` in `apply_quality_tier()` renamed `render_scale_applied` — it shadowed `Node3D.scale`.
+   Gate 2b's shadow regex now also matches *typed* locals (`var scale: float = ...`), which is why
+   this one shipped twice: the old pattern only caught `var scale =`.
+2. `vp.msaa_3d = int(prof["msaa"])` now casts `as Viewport.MSAA`; gate 2b fails any bare
+   `msaa_3d/msaa_2d = int(...)` without the cast.
+3. `_update_ragdoll_bones(dt)` → `_dt` (the pose is a function of `stepped_time`, the delta was dead).
+   Gate 2b pins the signature.
+4. Interpolated-camera warning: the rig (`CameraPivot`, `SpringArm3D`, `Camera3D`) is written every
+   *render* frame in `_process()`, so it now opts out with
+   `physics_interpolation_mode = PHYSICS_INTERPOLATION_MODE_OFF`. Per-render follow/FOV/roll stay
+   smooth and the parent capsule still interpolates the rig's base transform. Chosen over moving the
+   camera into `_physics_process`, which would quantise 120 Hz camera motion to 60 Hz.
+
+Touch-first Dev Studio (`dev_studio.gd`) — all 8 tabs, Tab 8 auto-generation, `[ MENU ]` and the
+single-tap P5 menu untouched:
+- `tab_container.tabs_visible = false`; a 2x4 `GridContainer` of `MOBILE_TAB_LABELS` pills (48 px
+  tall, expand-fill, toggle highlight) replaces it. `_select_tab()` / `_sync_tab_pills()` keep the
+  pills and `current_tab` in lockstep, including the P5 menu's "open Dev Studio at tab N" rows.
+- Panel is now full-bleed (8 px inset) instead of a fixed 820x500 box, with a full-rect
+  `ColorRect` backdrop on `MOUSE_FILTER_STOP` plus `dev_panel.mouse_filter = STOP`, so no tap
+  reaches the MOVE/ATK orbs underneath.
+- Header quick controls: live `FPS · ms · time scale · tier` readout on the existing 10 Hz throttle;
+  `[ PAUSE / RESUME ]` (`get_tree().paused`, studio is `PROCESS_MODE_ALWAYS`) with a `PAUSED` badge;
+  `[ GOD MODE ]` pill wired to `immortal_mode`; `[ COPY ALL ]` → clipboard + `user://balance_values.txt`
+  with an on-panel toast; 56x48 `X`.
+- `_build_mobile_theme()`: obsidian `StyleBoxFlat` card (1 px border, 12 px radius), button/OptionButton
+  pills, dark-vs-crimson CheckBox pills, 14 px track + 30 px round grabber texture for HSliders.
+  `_apply_mobile_widgets()` walks each tab (and the rebuilt Tab 8) setting `>= 44 px` heights and
+  prefixing every boolean with `[ ON ]` / `[ OFF ]`, so Tab 8 inherits the theme with no per-key code.
+  Tab scrolls are vertical-only with 10 px separation; closing the panel always resumes the tree.
+- Behaviour change worth knowing: `_toggle_dev_panel()` now force-resumes on close, so the game can
+  never be left frozen with the resume button off-screen.
+
+Verified (headless, `combat_test.gd` 19): 8 pills each reach their tab (helper + real `pressed`
+signal), Tab 8 sliders/booleans >= 44 px, `PROCESS_MODE_ALWAYS` + pause/resume round trip with badge,
+GOD MODE on/off mirrors `immortal_mode`, `_export_all_values()` formats `enemy_damage = 77`, writes
+`user://balance_values.txt`, shows the toast, camera rig interpolation mode is OFF, MSAA cast still
+applies the tier value.
+Not verified: no on-device run — pill/slider ergonomics, the crimson CheckBox contrast in sunlight and
+the clipboard (headless has no clipboard feature, so only the file path is asserted) are unjudged.
+
+=== AI HANDOFF PACKET ===
+REPO: Pinkypoopoo/sasti-sparkling-zero
+BRANCH: Pinkypoopoo-patch-1 (HEAD for this entry: V6 Task 1)
+DONE: 4 x 4.7.2 editor-debugger warnings fixed + gate-blocked; Dev Studio rebuilt touch-first
+(tab bar hidden, 2x4 pill grid, full-bleed panel + backdrop, telemetry header, pause/god/copy,
+mobile theme with >= 44 px controls, Tab 8 still auto-generated).
+OPEN: no on-device visual pass (pill ergonomics, sunlight contrast, real clipboard); Blender 5.2
+exporter still unrun.
+NEXT: playtest the panel on a phone, then continue V6.
+=== END AI HANDOFF PACKET ===

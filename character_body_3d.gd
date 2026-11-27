@@ -178,12 +178,14 @@ const SHORTCUT_GATE_HOLD: float = 0.85
 const SHORTCUT_ARRIVAL_CD: float = 2.0
 const SHORTCUT_ARRIVAL_POINT: Vector3 = Vector3(0.0, 1.6, 6.0)
 const SHORTCUT_RIVAL_SEPARATION: float = 7.0
+const SHORTCUT_SEALED_SFX_CD: float = 1.2
 const SHORTCUT_REGION_BANNERS: Array[String] = ["INK CATHEDRAL", "BLAME! MEGASTRUCTURE", "GOTHIC ECLIPSE"]
 var shortcut_dwell: float = 0.0
 var shortcut_arrival_cd: float = 0.0
 var shortcut_status: String = ""
 var shortcut_banner: String = ""
 var shortcut_banner_timer: float = 0.0
+var shortcut_sealed_sfx_cd: float = 0.0
 
 func _ready() -> void:
 	# Never tilt the capsule. Wall-running rolls VisualRoot and the camera only;
@@ -501,6 +503,9 @@ func _push_fx_budget() -> void:
 		data_store.tuning_get("impact_slash_intensity", 1.0),
 		data_store.tuning_bool("cel_smoke_enabled", true),
 		data_store.tuning_get("cel_smoke_density", 1.0))
+	dash_vfx.set_sfx_tuning(
+		data_store.tuning_bool("sfx_enabled", true),
+		data_store.tuning_get("sfx_volume", 0.75))
 
 func _setup_weapon_rig() -> void:
 	if not visual_root: return
@@ -863,7 +868,7 @@ func _vault_onto_ledge() -> void:
 	wall_run_latch = 0.12
 	jump_count = 1
 	if dash_vfx:
-		dash_vfx.play_sfx("vanish")
+		dash_vfx.play_sfx(DashVFX.SFX_WALL_KICK)
 		dash_vfx.spawn_cel_smoke(global_position + Vector3(0.0, 1.0, 0.0), 5, Vector3.UP, 0.8)
 		dash_vfx.spawn_step_sigil(global_position + Vector3(0.0, 0.2, 0.0), Color(0.55, 0.92, 1.0), 1.2)
 
@@ -1260,7 +1265,7 @@ func _trigger_jump() -> void:
 		var push_dir := n.normalized()
 		_end_wall_run(0.35)
 		if dash_vfx:
-			dash_vfx.play_sfx("clash")
+			dash_vfx.play_sfx(DashVFX.SFX_WALL_KICK)
 			dash_vfx.spawn_step_sigil(global_position + Vector3(0, 0.8, 0), Color(0.55, 0.92, 1.0), 1.5)
 			dash_vfx.spawn_cel_smoke(global_position + Vector3(0, 0.9, 0), 4, push_dir, 0.7)
 		return
@@ -1376,6 +1381,8 @@ func _tick_shortcut_gates(delta: float) -> void:
 		shortcut_banner_timer = maxf(0.0, shortcut_banner_timer - delta)
 	if shortcut_arrival_cd > 0.0:
 		shortcut_arrival_cd = maxf(0.0, shortcut_arrival_cd - delta)
+	if shortcut_sealed_sfx_cd > 0.0:
+		shortcut_sealed_sfx_cd = maxf(0.0, shortcut_sealed_sfx_cd - delta)
 	_refresh_shortcut_visuals()
 	if not dash_vfx:
 		return
@@ -1403,6 +1410,12 @@ func _tick_shortcut_gates(delta: float) -> void:
 		# Locked gates refuse travel but never block input or movement.
 		shortcut_dwell = 0.0
 		shortcut_status = "SEALED GATE — Defeat rival to unlock"
+		# One muted thud per bump, then 1.2 s of silence, so standing on a sealed
+		# gate can never machine-gun the speaker on the physics tick.
+		if shortcut_sealed_sfx_cd <= 0.0:
+			if dash_vfx:
+				dash_vfx.play_sfx(DashVFX.SFX_GATE_SEALED)
+			shortcut_sealed_sfx_cd = SHORTCUT_SEALED_SFX_CD
 		return
 	shortcut_dwell = minf(SHORTCUT_GATE_HOLD, shortcut_dwell + delta)
 	shortcut_status = "SHORTCUT OPEN — hold to travel"
@@ -1424,6 +1437,8 @@ func _travel_through_shortcut(gate: Dictionary) -> void:
 			for t in (stats as Dictionary).keys():
 				if is_instance_valid(t) and t is Node3D:
 					(t as Node3D).global_position = SHORTCUT_ARRIVAL_POINT + Vector3(0.0, 0.0, -SHORTCUT_RIVAL_SEPARATION)
+	if dash_vfx:
+		dash_vfx.play_sfx(DashVFX.SFX_GATE_TRAVEL)
 	var banner_idx: int = clampi(target, 0, SHORTCUT_REGION_BANNERS.size() - 1)
 	shortcut_banner = SHORTCUT_REGION_BANNERS[banner_idx]
 	shortcut_banner_timer = 1.8
