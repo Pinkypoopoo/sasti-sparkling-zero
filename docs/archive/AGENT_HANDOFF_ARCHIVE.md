@@ -394,3 +394,51 @@ real GLB import and the character contract, boot warning scan empty, shader unto
 Not verified: no on-device run (no GPU or phone here) — slash/ring timing and the smoke read are
 unjudged, and `_draw()` never executes because the dummy renderer has no canvas, so the asserts
 prove state and lifetime, not pixels.
+
+### 2026-11-16 · Buffy (Freebuff) — V5 Task 3: water floor audit + vault side-edge fix
+
+Branch `Pinkypoopoo-patch-1`, rebased on `ad3c4c0`. `main` untouched (`0c80d97`).
+Gate: **VERIFY_PASSED**, 7 gates, 71 signatures, 89 combat asserts, zero GDScript warnings.
+
+Audit result — the water floor was already most of the way there:
+- `WATER_SHADER` in `dash_vfx.gd` is `render_mode unshaded, cull_disabled, depth_draw_opaque`
+  with a hard 3-band `if` ladder (trough < 0.54, mid < 0.82, crest). Crisp steps, no
+  interpolation, no `light()` function at all, so "no return in light()" cannot be violated,
+  and zero full-screen post-processing.
+- Both contact uniforms already existed: `player_pos` and `boss_pos`, fed from `update_vfx(...)`
+  every tick with `global_position` and `_water_focus_pos()` (lock target, else first combat
+  target, else the 9999 sentinel).
+
+Three real gaps, closed:
+1. No ripple knob. Added `water_ripple_strength` (0–2, default 1.0) to `TUNING_SPEC` +
+   `TUNING_DEFAULTS`, pushed to a new `ripple_str` uniform that scales both contact rings.
+   Tab 8 generates it automatically.
+2. No tier gating. `apply_quality_tier()` showed the plane at every tier including LOW, where
+   240x240 at 32x32 subdivisions (2048 quads) is not free on an Adreno 618. New
+   `_push_water()` gates on `quality_tier >= 1`: LOW never shows it, MID/HIGH/ULTRA get the
+   full shader with both ripples.
+3. `_update_water_floor()` blind-set both vec3 uniforms every tick — a RenderingServer
+   dirty-mark per frame, contradicting the change-driven comment above `set_water_enabled()`.
+   Now cached with a 0.01 m epsilon, so the shader is only touched when a fighter actually moves.
+
+Wall-run side-edge false vault (`character_body_3d.gd`):
+- The chest (1.1 m) and head (2.2 m) forward rays are equally clear when running horizontally
+  past the SIDE of a pillar into open air, so `_vault_onto_ledge()` launched you into the void.
+- Added `_has_floor_below(from_point, depth)`: a downward ray requiring `normal.y > 0.5` (a
+  real top surface, not a wall) within `LEDGE_FLOOR_DEPTH = 2.4 m`. `_ledge_vault_clear()` casts
+  it from the forward clearance point (+1.1 m up, +0.75 m forward) and refuses over open air.
+
+Hygiene checks, both already correct (no change needed):
+- `ScreenSlash._process()` returns immediately while `timer <= 0`, otherwise decrements and
+  calls `queue_redraw()` every render frame, hiding at 0 — per-frame while active, silent idle.
+- `export_presets.cfg` carries `include_filter="*.json"` on all three presets;
+  `.github/workflows/ios_ipa.yml` targets `4.7-stable` (zero references to the old 4.3 pin).
+- Handoff was 468 lines over 6 entries. The four oldest moved verbatim to
+  `docs/archive/AGENT_HANDOFF_ARCHIVE.md`; the latest three stay here.
+
+Verified: 89 asserts (was 76). New ones cover the water toggle/slider/ripple defaults, MID-on
+and LOW-off gating, `player_pos` + `boss_pos` actually landing in the shader, the slash
+revealing and hiding, absolute refusal with no floor below, acceptance on the arena floor, and
+`_ledge_vault_clear()` refusing a side-edge run. Gate 7/7 with real GLB import.
+Not verified: no visual or on-device run — the 3-band silhouette, ripple read and LOW-tier
+frame cost are unjudged, and the dummy renderer never executes `fragment()`.

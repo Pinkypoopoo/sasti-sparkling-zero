@@ -670,6 +670,12 @@ func _kill_rival(t: Node3D, s: Dictionary) -> void:
 		player.dash_vfx.play_sfx("shatter")
 		player.dash_vfx.check_destruction(t.global_position, 6.0, Vector3.UP, true)
 		player.dash_vfx.spawn_step_sigil(t.global_position + Vector3(0, 1.0, 0), Color(1.0, 0.9, 0.3), 3.0)
+	# V6 Task 2B: defeating a rival opens this region's progression shortcut.
+	if player and player.has_method("unlock_shortcut_for_region"):
+		var region: int = int(player.call("current_region_index"))
+		var flag: String = str(player.call("unlock_shortcut_for_region", region))
+		if not flag.is_empty():
+			last_combat_action = "K.O. — %s IS DOWN! SHORTCUT OPENED" % str(s.get("boss_name", "RIVAL"))
 	simulate_clash(true)
 	result_state = "VICTORY"
 	_start_slowmo()

@@ -50,6 +50,7 @@ const TUNING_BOOLS: Dictionary = {
 	"impact_slash_enabled": "Screen-Space Impact Slash + Ring",
 	"cel_smoke_enabled":   "2-Tone Cel-Smoke Puffs",
 	"water_floor_enabled": "Stylized Anime Water Floor",
+	"unlock_all_shortcuts": "Unlock All Shortcut Gates (sandbox)",
 }
 
 const TUNING_DEFAULTS: Dictionary = {
@@ -65,6 +66,7 @@ const TUNING_DEFAULTS: Dictionary = {
 	"immortal_mode": false, "show_damage_numbers": true,
 	"show_combo_counter": true, "auto_lock_on": true,
 	"auto_quality": true, "wall_run_enabled": true, "water_floor_enabled": false,
+	"unlock_all_shortcuts": false,
 	"impact_slash_enabled": true, "impact_slash_intensity": 1.0,
 	"water_ripple_strength": 1.0,
 	"cel_smoke_enabled": true, "cel_smoke_density": 1.0,

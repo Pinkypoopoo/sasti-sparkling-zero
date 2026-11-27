@@ -445,7 +445,16 @@ func _step_render_scale() -> void:
 	_rebuild_combat_feel()
 
 func _cycle_region() -> void:
-	region_idx = (region_idx + 1) % 3
+	_apply_region((region_idx + 1) % 3)
+
+# V6 Task 2B: a shortcut gate jumps to a specific region. Palette, curated
+# props, shortcut gates and the flooded floor all ride this one path, so a gate
+# can never land on a half-applied arena.
+func travel_to_region(idx: int) -> void:
+	_apply_region(clampi(idx, 0, REGION_NAMES.size() - 1))
+
+func _apply_region(idx: int) -> void:
+	region_idx = idx
 	var env := world_env.environment if world_env else null
 	var fmat := StandardMaterial3D.new()
 	fmat.roughness = 0.92
@@ -1112,7 +1121,7 @@ func _process(delta: float) -> void:
 		telemetry_accum = 0.0
 		_refresh_telemetry()
 		queue_redraw()
-	elif combat.impact_flash_timer > 0.0 or combat.hurt_vignette_timer > 0.0 or combat.impact_slash_timer > 0.0:
+	elif combat.impact_flash_timer > 0.0 or combat.hurt_vignette_timer > 0.0 or combat.impact_slash_timer > 0.0 or player.shortcut_banner_timer > 0.0:
 		queue_redraw()
 
 func _refresh_telemetry() -> void:
@@ -1243,6 +1252,13 @@ func _draw() -> void:
 	if fp_mod and bool(fp_mod.get("p5_pause_active")): _draw_p5_menu()
 	if combat.impact_flash_timer > 0.0:
 		draw_rect(get_viewport_rect(), Color(1, 1, 1, 0.92))
+
+	# V6 Task 2B: non-blocking shortcut feedback. Never pauses, never gates input.
+	var vp_w: float = get_viewport_rect().size.x
+	if player.shortcut_banner_timer > 0.0:
+		draw_string(ThemeDB.fallback_font, Vector2(0.0, 214.0), player.shortcut_banner, HORIZONTAL_ALIGNMENT_CENTER, vp_w, 34, Color(1.0, 0.86, 0.35, clampf(player.shortcut_banner_timer, 0.0, 1.0)))
+	if not player.shortcut_status.is_empty():
+		draw_string(ThemeDB.fallback_font, Vector2(0.0, 246.0), player.shortcut_status, HORIZONTAL_ALIGNMENT_CENTER, vp_w, 17, Color(0.94, 0.92, 0.88, 0.9))
 
 func _build_tab_world_map() -> void:
 	var vb := _make_scroll_tab("7. World Map & Story")

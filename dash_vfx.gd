@@ -186,6 +186,35 @@ const CURATED_REGION_LAYOUTS: Dictionary = {
 var curated_region_props: Array[Dictionary] = []
 var curated_region_idx: int = 0
 
+# =============================================================================
+#  V6 TASK 2B - PHYSICAL SHORTCUT GATES
+#  One low-poly arch + emissive beacon per gate, spawned by the same call that
+#  builds the region's curated props, so a switch can never strand a gate from
+#  the layout that just left. Specs are [target_region, flag, x, z, rot_y_deg];
+#  an empty flag is a permanent return gate. Deliberately body-less: a visual
+#  marker needs no StaticBody3D, so a region switch cannot leak a Jolt RID.
+# =============================================================================
+const SHORTCUT_GATE_LAYOUTS: Dictionary = {
+	# 0 INK_CATHEDRAL hub: both edge gates are sealed until their rival falls.
+	0: [
+		[1, "shortcut_blame_unlocked", -36.0, -2.0, 90.0],
+		[2, "shortcut_eclipse_unlocked", 36.0, -2.0, 90.0],
+	],
+	# 1 BLAME_MEGASTRUC: the way back is always open, the eclipse shortcut is not.
+	1: [
+		[0, "", 0.0, 14.0, 0.0],
+		[2, "shortcut_eclipse_unlocked", -36.0, 2.0, 90.0],
+	],
+	# 2 GOTHIC_ECLIPSE: only the return gate.
+	2: [
+		[0, "", 0.0, 14.0, 0.0],
+	],
+}
+const SHORTCUT_GATE_LOCKED_COLOR: Color = Color(0.42, 0.05, 0.09)
+const SHORTCUT_GATE_OPEN_COLOR: Color = Color(1.0, 0.82, 0.24)
+
+var shortcut_gates: Array[Dictionary] = []
+
 func _ready() -> void:
 	_setup_synth_audio()
 	_setup_afterimage_pool()
@@ -656,6 +685,7 @@ func load_curated_region(region_idx: int) -> int:
 		if destructible_pillars.size() > before:
 			destructible_pillars[before]["curated"] = true
 			curated_region_props.append(destructible_pillars[before])
+	_spawn_shortcut_gates(region_idx)
 	return curated_region_props.size()
 
 func curated_prop_count() -> int:
@@ -664,6 +694,7 @@ func curated_prop_count() -> int:
 # Detach + free() (not queue_free): a deferred free would leave the outgoing
 # region's StaticBody3D RIDs alive at headless exit, which the gate reads as a leak.
 func clear_curated_region() -> void:
+	clear_shortcut_gates()
 	for i in range(destructible_pillars.size() - 1, -1, -1):
 		if not bool(destructible_pillars[i].get("curated", false)):
 			continue
@@ -674,6 +705,74 @@ func clear_curated_region() -> void:
 			root.free()
 		destructible_pillars.remove_at(i)
 	curated_region_props.clear()
+
+# --- V6 Task 2B: physical shortcut gates -------------------------------------
+func _spawn_shortcut_gates(region_idx: int) -> void:
+	for spec in SHORTCUT_GATE_LAYOUTS.get(region_idx, []):
+		var flag := str(spec[1])
+		var root := Node3D.new()
+		root.name = "ShortcutGate"
+		root.top_level = true
+		add_child(root)
+		root.global_position = Vector3(float(spec[2]), 0.0, float(spec[3]))
+		root.rotation_degrees.y = float(spec[4])
+		var stone := StandardMaterial3D.new()
+		stone.albedo_color = Color(0.09, 0.09, 0.11)
+		stone.roughness = 0.9
+		for side in [-1.0, 1.0]:
+			var post := MeshInstance3D.new()
+			var pm := BoxMesh.new(); pm.size = Vector3(0.55, 5.6, 0.55)
+			post.mesh = pm; post.position = Vector3(side * 1.9, 2.8, 0.0); post.material_override = stone
+			root.add_child(post)
+		var lintel := MeshInstance3D.new()
+		var lm := BoxMesh.new(); lm.size = Vector3(4.4, 0.6, 0.7)
+		lintel.mesh = lm; lintel.position = Vector3(0.0, 5.6, 0.0); lintel.material_override = stone
+		root.add_child(lintel)
+		# Unshaded slab: dim crimson sealed, bright gold open, no post-processing.
+		var beacon_mat := StandardMaterial3D.new()
+		beacon_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		beacon_mat.albedo_color = SHORTCUT_GATE_LOCKED_COLOR
+		var beacon := MeshInstance3D.new()
+		var bm := BoxMesh.new(); bm.size = Vector3(3.2, 1.6, 0.18)
+		beacon.mesh = bm; beacon.position = Vector3(0.0, 3.2, 0.0); beacon.material_override = beacon_mat
+		root.add_child(beacon)
+		shortcut_gates.append({
+			"target_region": int(spec[0]),
+			"required_flag": flag,
+			"position": root.global_position,
+			"root": root,
+			"beacon_mat": beacon_mat,
+			"locked": true,
+		})
+	refresh_shortcut_gate_visuals(false, {})
+
+# Called every physics tick by the player (a colour compare per gate) and
+# directly by the story/KO path. Returns how many gates currently read as open.
+func refresh_shortcut_gate_visuals(unlock_all: bool, flags: Dictionary) -> int:
+	var open_count := 0
+	for g in shortcut_gates:
+		var flag := str(g.get("required_flag", ""))
+		var open: bool = flag.is_empty() or unlock_all or bool(flags.get(flag, false))
+		g["locked"] = not open
+		if open:
+			open_count += 1
+		var mat = g.get("beacon_mat", null)
+		if mat is StandardMaterial3D:
+			var want: Color = SHORTCUT_GATE_OPEN_COLOR if open else SHORTCUT_GATE_LOCKED_COLOR
+			if not (mat as StandardMaterial3D).albedo_color.is_equal_approx(want):
+				(mat as StandardMaterial3D).albedo_color = want
+	return open_count
+
+# Same detach + free() rule as the curated props: a deferred free would leave the
+# outgoing gate alive at headless exit (and the gate reads that as an RID leak).
+func clear_shortcut_gates() -> void:
+	for i in range(shortcut_gates.size() - 1, -1, -1):
+		var root: Node = shortcut_gates[i].get("root", null)
+		if is_instance_valid(root) and not root.is_queued_for_deletion():
+			if root.get_parent() == self:
+				remove_child(root)
+			root.free()
+	shortcut_gates.clear()
 
 # --- Minecraft-Style Modular Block & MultiMesh Flora Spawner ---
 func spawn_arena_block(kind: String, pos: Vector3, rot_y_deg: float = 0.0, record_user: bool = true) -> void:

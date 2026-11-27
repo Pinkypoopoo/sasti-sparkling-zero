@@ -169,6 +169,21 @@ var afterimage_profile: bool = false
 var _quality_afterimage_ok: bool = true
 var _applied_tier: int = -99
 
+# --- V6 Task 2B: physical shortcut gates -------------------------------------
+# A gate only opens travel after 0.85 s of standing inside it, and every arrival
+# starts a 2 s cooldown so the return gate you just landed next to cannot fire
+# straight back. All of it runs on the 60 Hz physics tick, never _process.
+const SHORTCUT_GATE_RADIUS: float = 3.2
+const SHORTCUT_GATE_HOLD: float = 0.85
+const SHORTCUT_ARRIVAL_CD: float = 2.0
+const SHORTCUT_ARRIVAL_POINT: Vector3 = Vector3(0.0, 1.6, 6.0)
+const SHORTCUT_REGION_BANNERS: Array[String] = ["INK CATHEDRAL", "BLAME! MEGASTRUCTURE", "GOTHIC ECLIPSE"]
+var shortcut_dwell: float = 0.0
+var shortcut_arrival_cd: float = 0.0
+var shortcut_status: String = ""
+var shortcut_banner: String = ""
+var shortcut_banner_timer: float = 0.0
+
 func _ready() -> void:
 	# Never tilt the capsule. Wall-running rolls VisualRoot and the camera only;
 	# a tilted up_direction would make move_and_slide() slide down the wall.
@@ -1291,6 +1306,118 @@ func trigger_dash(dir: Vector3) -> void:
 		dash_vfx.trigger_style_fx(dash_style, dash_start_pos, global_position + dash_dir * 6.0, visual_root, afterimage_enabled)
 		dash_vfx.check_destruction(global_position, 3.2, dash_dir, false)
 
+
+# --- V6 Task 2B: shortcut gate API -------------------------------------------
+func story_manager() -> Node:
+	var studio: Node = get_node_or_null("../DevStudio")
+	if studio == null:
+		return null
+	var mgr = studio.get("story_mgr")
+	return mgr as Node
+
+func current_region_index() -> int:
+	var studio: Node = get_node_or_null("../DevStudio")
+	if studio == null:
+		return 0
+	return int(studio.get("region_idx"))
+
+func shortcut_flag_unlocked(flag: String) -> bool:
+	if flag.is_empty():
+		return true
+	if data_store and data_store.tuning_bool("unlock_all_shortcuts", false):
+		return true
+	var mgr := story_manager()
+	return mgr != null and mgr.has_method("has_flag") and bool(mgr.call("has_flag", flag))
+
+# Persists the region's progression flag (Region 0 -> blame, Region 1 -> eclipse)
+# through the merged "story_state" writer. Returns the flag it tried to open.
+func unlock_shortcut_for_region(region_idx: int) -> String:
+	var mgr := story_manager()
+	if mgr == null or not mgr.has_method("shortcut_flag_for_region"):
+		return ""
+	var flag: String = str(mgr.call("shortcut_flag_for_region", region_idx))
+	if not flag.is_empty():
+		mgr.call("unlock_shortcut", flag)
+	_refresh_shortcut_visuals()
+	return flag
+
+func _refresh_shortcut_visuals() -> void:
+	if not dash_vfx:
+		return
+	var flags: Dictionary = {}
+	var mgr := story_manager()
+	if mgr != null:
+		var raw = mgr.get("story_flags")
+		if typeof(raw) == TYPE_DICTIONARY:
+			flags = raw
+	var unlock_all: bool = data_store != null and data_store.tuning_bool("unlock_all_shortcuts", false)
+	dash_vfx.refresh_shortcut_gate_visuals(unlock_all, flags)
+
+# Attacking, dashing, hitstun, guarding or being dead all cancel a dwell attempt.
+func _shortcut_busy() -> bool:
+	return is_defeated or state == MoveState.WINDUP or state == MoveState.DASH \
+		or state == MoveState.HITSTUN or state == MoveState.GUARD or state == MoveState.STEP
+
+func _tick_shortcut_gates(delta: float) -> void:
+	if shortcut_banner_timer > 0.0:
+		shortcut_banner_timer = maxf(0.0, shortcut_banner_timer - delta)
+	if shortcut_arrival_cd > 0.0:
+		shortcut_arrival_cd = maxf(0.0, shortcut_arrival_cd - delta)
+	_refresh_shortcut_visuals()
+	if not dash_vfx:
+		return
+	if _shortcut_busy() or shortcut_arrival_cd > 0.0:
+		shortcut_dwell = 0.0
+		shortcut_status = ""
+		return
+	var best := -1
+	var best_d: float = SHORTCUT_GATE_RADIUS
+	for i in range(dash_vfx.shortcut_gates.size()):
+		var g: Dictionary = dash_vfx.shortcut_gates[i]
+		var gp: Vector3 = g["position"]
+		if absf(gp.y - global_position.y) > 4.0:
+			continue
+		var d: float = Vector2(gp.x - global_position.x, gp.z - global_position.z).length()
+		if d <= best_d:
+			best_d = d
+			best = i
+	if best == -1:
+		shortcut_dwell = 0.0
+		shortcut_status = ""
+		return
+	var gate: Dictionary = dash_vfx.shortcut_gates[best]
+	if bool(gate.get("locked", true)):
+		# Locked gates refuse travel but never block input or movement.
+		shortcut_dwell = 0.0
+		shortcut_status = "SEALED GATE — Defeat rival to unlock"
+		return
+	shortcut_dwell = minf(SHORTCUT_GATE_HOLD, shortcut_dwell + delta)
+	shortcut_status = "SHORTCUT OPEN — hold to travel"
+	if shortcut_dwell >= SHORTCUT_GATE_HOLD:
+		_travel_through_shortcut(gate)
+
+func _travel_through_shortcut(gate: Dictionary) -> void:
+	var target: int = int(gate.get("target_region", 0))
+	var studio: Node = get_node_or_null("../DevStudio")
+	if studio != null and studio.has_method("travel_to_region"):
+		studio.call("travel_to_region", target)
+	# Re-seat both fighters at the arena's open centre, never on the gate edge.
+	global_position = SHORTCUT_ARRIVAL_POINT
+	velocity = Vector3.ZERO
+	var combat_node: Node = get_node_or_null("../CombatManager")
+	if combat_node != null:
+		var stats = combat_node.get("target_stats")
+		if typeof(stats) == TYPE_DICTIONARY:
+			for t in (stats as Dictionary).keys():
+				if is_instance_valid(t) and t is Node3D:
+					(t as Node3D).global_position = SHORTCUT_ARRIVAL_POINT + Vector3(0.0, 0.0, -6.0)
+	var banner_idx: int = clampi(target, 0, SHORTCUT_REGION_BANNERS.size() - 1)
+	shortcut_banner = SHORTCUT_REGION_BANNERS[banner_idx]
+	shortcut_banner_timer = 1.8
+	shortcut_status = "SHORTCUT TAKEN"
+	shortcut_dwell = 0.0
+	shortcut_arrival_cd = SHORTCUT_ARRIVAL_CD
+
 func _physics_process(delta: float) -> void:
 	# Live tier switching: the Tab 8 slider re-applies on the next physics tick.
 	if data_store and int(round(data_store.tuning_get("quality_tier", 2.0))) != _applied_tier:
@@ -1302,6 +1429,7 @@ func _physics_process(delta: float) -> void:
 	if face_sdf_active:
 		_push_head_basis()
 	if p5_camera_override: return
+	_tick_shortcut_gates(delta)
 	if not is_defeated:
 		hp = minf(max_hp, hp + hp_regen * delta)
 	mana = minf(max_mana, mana + mana_regen * delta)

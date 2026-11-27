@@ -567,10 +567,103 @@ func _run() -> void:
 	check(player.dash_vfx.curated_prop_count() == 0, "clear_curated_region() leaves no curated props behind")
 	player.dash_vfx.load_curated_region(0)
 
+	# --- 21. V6 Task 2B: physical shortcut gates + flag-gated travel --------
+	player.data_store.reset_tuning()
+	check(CombatData.TUNING_BOOLS.has("unlock_all_shortcuts") and CombatData.TUNING_DEFAULTS.has("unlock_all_shortcuts") and not bool(CombatData.TUNING_DEFAULTS["unlock_all_shortcuts"]), "unlock_all_shortcuts is an auto-generated Tab 8 bool, default off")
+	player.data_store.tuning["unlock_all_shortcuts"] = true
+	check(player.data_store.tuning_bool("unlock_all_shortcuts", false), "the sandbox gate override toggles on")
+	player.data_store.tuning["unlock_all_shortcuts"] = false
+	player.data_store.tuning["auto_quality"] = false
+
+	var t8_story = studio.story_mgr
+	t8_story.story_flags.erase("shortcut_blame_unlocked")
+	t8_story.story_flags.erase("shortcut_eclipse_unlocked")
+	studio.travel_to_region(0)
+	var t8_kids0 := 0
+	for c in player.dash_vfx.get_children():
+		if not c.is_queued_for_deletion():
+			t8_kids0 += 1
+	var t8_counts: Array[int] = []
+	var t8_locked := 0
+	var t8_bad := 0
+	for want in [0, 1, 2]:
+		studio.travel_to_region(want)
+		t8_counts.append(player.dash_vfx.shortcut_gates.size())
+		for g in player.dash_vfx.shortcut_gates:
+			if int(g["target_region"]) == want:
+				t8_bad += 1
+			if bool(g["locked"]):
+				t8_locked += 1
+	check(t8_counts == [2, 2, 1], "each curated region spawns its expected shortcut gates (hub 2, megastruc 2, eclipse 1)")
+	check(t8_bad == 0, "no gate ever targets the region it stands in")
+	check(t8_locked == 3 and not t8_story.has_flag("shortcut_blame_unlocked") and not t8_story.has_flag("shortcut_eclipse_unlocked"), "with both flags absent the progression gates start sealed")
+	studio.travel_to_region(0)
+	var t8_kids1 := 0
+	for c in player.dash_vfx.get_children():
+		if not c.is_queued_for_deletion():
+			t8_kids1 += 1
+	check(t8_kids1 == t8_kids0, "repeated region switches free every shortcut gate (no orphan nodes)")
+
+	# Sealed gate: standing in it must not travel and must report why.
+	player.shortcut_arrival_cd = 0.0
+	player.shortcut_dwell = 0.0
+	player.global_position = Vector3(-36.0, 1.6, -2.0)
+	player._tick_shortcut_gates(1.0)
+	check(int(studio.region_idx) == 0 and player.shortcut_status.begins_with("SEALED"), "a sealed gate refuses travel and reports it without blocking input")
+	check(is_equal_approx(player.shortcut_dwell, 0.0), "a sealed gate never accumulates a dwell timer")
+
+	# Rival KO in Region 0 is the real unlock path, and it persists.
+	player.data_store.tuning["enemy_damage"] = 91.0
+	player.data_store.save_to_disk(player, combat)
+	combat.reset_duel()
+	var t8_rival: Node3D = combat.target_stats.keys()[0] as Node3D
+	combat.apply_damage(t8_rival, 99999.0, 0.0, Vector3(0.0, 8.0, 12.0))
+	Engine.time_scale = 1.0
+	check(bool(t8_story.story_flags.get("shortcut_blame_unlocked", false)), "a rival KO in region 0 grants shortcut_blame_unlocked")
+	check(not bool(t8_story.story_flags.get("shortcut_eclipse_unlocked", false)), "that KO leaves the eclipse shortcut sealed")
+	var t8_profile: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("user://dev_profile.json"))
+	var t8_state: Dictionary = t8_profile.get("story_state", {})
+	var t8_saved_flags: Dictionary = t8_state.get("story_flags", {})
+	var t8_saved_tuning: Dictionary = t8_profile.get("tuning", {})
+	check(t8_saved_flags.has("shortcut_blame_unlocked") and is_equal_approx(float(t8_saved_tuning.get("enemy_damage", 0.0)), 91.0), "the shortcut flag persists in story_state without erasing tuning")
+	check(player.dash_vfx.refresh_shortcut_gate_visuals(false, t8_story.story_flags) >= 1, "the unlocked hub gate repaints to its bright-gold beacon")
+
+	# Partial dwell must not travel; a full hold on the physics tick must.
+	studio.travel_to_region(0)
+	player.shortcut_arrival_cd = 0.0
+	player.shortcut_dwell = 0.0
+	player.global_position = Vector3(-36.0, 1.6, -2.0)
+	player._tick_shortcut_gates(0.4)
+	check(int(studio.region_idx) == 0, "a dwell shorter than 0.85 s does not travel")
+	player._tick_shortcut_gates(0.5)
+	check(int(studio.region_idx) == 1 and player.shortcut_banner == "BLAME! MEGASTRUCTURE", "a full dwell travels through the unlocked gate to region 1")
+	check(player.shortcut_arrival_cd > 0.0 and is_equal_approx(player.shortcut_dwell, 0.0), "arriving starts the 2 s cooldown so a return gate cannot re-fire")
+
+	# The Tab 8 sandbox override opens a gate the story has not unlocked yet.
+	studio.travel_to_region(0)
+	player.data_store.tuning["unlock_all_shortcuts"] = true
+	player.shortcut_arrival_cd = 0.0
+	player.shortcut_dwell = 0.0
+	player.global_position = Vector3(36.0, 1.6, -2.0)
+	player._tick_shortcut_gates(1.0)
+	check(int(studio.region_idx) == 2 and player.shortcut_banner == "GOTHIC ECLIPSE", "unlock_all_shortcuts opens the eclipse gate in sandbox")
+	player.data_store.tuning["unlock_all_shortcuts"] = false
+	player.global_position = Vector3(0.0, 1.6, 0.0)
+	player.shortcut_status = ""
+	player.shortcut_banner = ""
+	player.shortcut_dwell = 0.0
+	player.shortcut_arrival_cd = 0.0
+	studio.travel_to_region(0)
+	t8_story.story_flags.erase("shortcut_blame_unlocked")
+	t8_story.story_flags.erase("shortcut_eclipse_unlocked")
+	t8_story.save_state()
+	combat.reset_duel()
+
 	# Leave no test tuning behind for the next run.
 	player.data_store.reset_tuning()
 	player.data_store.refresh_auto_quality()
 	player.apply_quality_tier()
+	player.data_store.save_to_disk(player, combat)
 	combat.reset_duel()
 
 func _finish() -> void:

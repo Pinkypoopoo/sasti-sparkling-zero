@@ -59,6 +59,32 @@ func get_current_node() -> Dictionary:
 func node_exists(node_id: String) -> bool:
 	return story_nodes.has(node_id)
 
+# --- V6 Task 2B: shortcut gate flags ----------------------------------------
+# Progress flags only. The narrative graph stays in data/story_nodes.json; this
+# is the single place that copies a shortcut flag into story_flags and persists
+# it through the merged "story_state" write, which never touches "tuning".
+const SHORTCUT_BLAME_FLAG: String = "shortcut_blame_unlocked"
+const SHORTCUT_ECLIPSE_FLAG: String = "shortcut_eclipse_unlocked"
+
+# Region order matches REGION_NAMES / CURATED_REGION_LAYOUTS: 0 hub, 1 megastruc.
+# Region 2 is the dead end, so it owns no outgoing progression flag.
+func shortcut_flag_for_region(region_idx: int) -> String:
+	match region_idx:
+		0: return SHORTCUT_BLAME_FLAG
+		1: return SHORTCUT_ECLIPSE_FLAG
+	return ""
+
+func has_flag(flag: String) -> bool:
+	return (not flag.is_empty()) and bool(story_flags.get(flag, false))
+
+# Returns true only on a real change, so a repeated KO cannot spam a save.
+func unlock_shortcut(flag: String) -> bool:
+	if flag.is_empty() or bool(story_flags.get(flag, false)):
+		return false
+	story_flags[flag] = true
+	save_state()
+	return true
+
 func select_origin(profile_key: String) -> Dictionary:
 	if typeof(origins.get(profile_key, null)) == TYPE_DICTIONARY:
 		active_origin_id = profile_key
