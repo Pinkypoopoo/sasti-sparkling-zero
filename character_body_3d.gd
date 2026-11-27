@@ -177,6 +177,7 @@ const SHORTCUT_GATE_RADIUS: float = 3.2
 const SHORTCUT_GATE_HOLD: float = 0.85
 const SHORTCUT_ARRIVAL_CD: float = 2.0
 const SHORTCUT_ARRIVAL_POINT: Vector3 = Vector3(0.0, 1.6, 6.0)
+const SHORTCUT_RIVAL_SEPARATION: float = 7.0
 const SHORTCUT_REGION_BANNERS: Array[String] = ["INK CATHEDRAL", "BLAME! MEGASTRUCTURE", "GOTHIC ECLIPSE"]
 var shortcut_dwell: float = 0.0
 var shortcut_arrival_cd: float = 0.0
@@ -1410,7 +1411,7 @@ func _travel_through_shortcut(gate: Dictionary) -> void:
 		if typeof(stats) == TYPE_DICTIONARY:
 			for t in (stats as Dictionary).keys():
 				if is_instance_valid(t) and t is Node3D:
-					(t as Node3D).global_position = SHORTCUT_ARRIVAL_POINT + Vector3(0.0, 0.0, -6.0)
+					(t as Node3D).global_position = SHORTCUT_ARRIVAL_POINT + Vector3(0.0, 0.0, -SHORTCUT_RIVAL_SEPARATION)
 	var banner_idx: int = clampi(target, 0, SHORTCUT_REGION_BANNERS.size() - 1)
 	shortcut_banner = SHORTCUT_REGION_BANNERS[banner_idx]
 	shortcut_banner_timer = 1.8

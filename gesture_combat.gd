@@ -12,6 +12,28 @@ const AI_STATE_LABELS: Array[String] = [
 	"BAITED WHIFF!", "LAUNCHED", "Z-VANISH COUNTER!", "RAGDOLL KO", "DEAD"
 ]
 
+# --- V6 Task 3: regional boss profiles, phase 2, stagger finishers ----------
+# One profile per curated region, applied by apply_region_boss_profile() from
+# DevStudio._apply_region() so the rival always matches the arena it stands in.
+# A story-spawned rival keeps its authored name, scale and slot visibility.
+const BOSS_PROFILES: Dictionary = {
+	0: {"archetype": "INK_DUELIST", "name": "KATANA WARDEN OF THE NAVE",
+		"speed": 1.0, "telegraph": 1.0, "combo": 3, "phase2_attack": "THRUST"},
+	1: {"archetype": "BLAME_RUSHDOWN", "name": "MONOLITH STALKER",
+		"speed": 1.24, "telegraph": 0.82, "combo": 3, "phase2_attack": "LUNGE"},
+	2: {"archetype": "GOTHIC_SANCTUM", "name": "SANCTUM GUARDIAN",
+		"speed": 0.86, "telegraph": 1.3, "combo": 2, "phase2_attack": "SLAM"},
+}
+const BOSS_TELEGRAPH_NONE: String = "NONE"
+const BOSS_TELEGRAPH_PARRIABLE: String = "PARRIABLE"
+const BOSS_TELEGRAPH_UNBLOCKABLE: String = "UNBLOCKABLE"
+const BOSS_PHASE2_HP_RATIO: float = 0.5
+const STAGGER_TIME: float = 2.0
+const STAGGER_FINISHER_MULT: float = 2.0
+const STAGGER_CHAIN_LOCK: float = 1.1
+const BOSS_TELEGRAPH_PARRIABLE_COL: Color = Color(1.0, 0.94, 0.62)
+const BOSS_TELEGRAPH_UNBLOCKABLE_COL: Color = Color(0.95, 0.05, 0.10)
+
 func ai_state_label(s: Dictionary) -> String:
 	var st = s.get("ai_state", AIState.IDLE)
 	if typeof(st) == TYPE_STRING:
@@ -64,6 +86,12 @@ var target_stats: Dictionary = {}
 var player_habits: Dictionary = {}
 var ai_mode: AIMode = AIMode.ADAPTIVE_RIVAL
 var ai_telegraph_time: float = 0.46
+# Read-only mirrors of the primary rival, refreshed on the physics tick so the
+# HUD and the tests never have to reach into target_stats.
+var boss_phase: int = 1
+var region_archetype: String = "INK_DUELIST"
+var telegraph_kind: String = "NONE"
+var phase2_awakenings: int = 0
 var ai_attack_cooldown: float = 1.25
 var ai_adaptation_rate: float = 0.30
 var parry_window_timer: float = 0.0
@@ -258,8 +286,137 @@ func _init_targets() -> void:
 				"combo_left": 0, "strike_hit_done": false,
 				"vel": Vector3.ZERO, "home_pos": td.global_position,
 				"mat": dmat, "weapon": wp, "anim": anim,
-				"boss_name": "LADY OF THE GILDED VEIL"
+				"boss_name": "LADY OF THE GILDED VEIL",
+				# V6 Task 3 boss state
+				"boss_phase": 1, "telegraph_kind": "NONE", "stagger_immunity": 0.0,
+				"archetype": "INK_DUELIST", "archetype_speed": 1.0,
+				"archetype_telegraph": 1.0, "archetype_combo": 3,
+				"phase2_attack": "THRUST", "telegraph_seq": 0, "story_override": false
 			}
+
+# =============================================================================
+#  V6 Task 3: regional boss identity, 50% phase 2, stagger finishers
+#  Every knob below is either a TUNING_SPEC/TUNING_BOOLS entry or a constant;
+#  nothing here runs on the render tick.
+# =============================================================================
+func boss_profile_for_region(region_idx: int) -> Dictionary:
+	var key: int = clampi(region_idx, 0, 2)
+	if BOSS_PROFILES.has(key):
+		return BOSS_PROFILES[key]
+	return BOSS_PROFILES[0]
+
+func region_archetype_for(region_idx: int) -> String:
+	return str(boss_profile_for_region(region_idx).get("archetype", "INK_DUELIST"))
+
+# Called by DevStudio._apply_region(): the arena and the rival hosting it change
+# in the same beat, and the boss always re-enters in phase 1 with a clean guard.
+func apply_region_boss_profile(region_idx: int) -> String:
+	var prof := boss_profile_for_region(region_idx)
+	region_archetype = str(prof.get("archetype", "INK_DUELIST"))
+	boss_phase = 1
+	for t in target_stats.keys():
+		if not is_instance_valid(t) or not (t is Node3D):
+			continue
+		var s: Dictionary = target_stats[t]
+		s["archetype"] = region_archetype
+		s["archetype_speed"] = float(prof.get("speed", 1.0))
+		s["archetype_telegraph"] = float(prof.get("telegraph", 1.0))
+		s["archetype_combo"] = int(prof.get("combo", 3))
+		s["phase2_attack"] = str(prof.get("phase2_attack", "THRUST"))
+		# A story choice owns its name/scale/slots; the archetype only owns cadence.
+		if not bool(s.get("story_override", false)):
+			s["boss_name"] = str(prof.get("name", "RIVAL"))
+		s["boss_phase"] = 1
+		s["posture"] = 0.0
+		s["telegraph_kind"] = BOSS_TELEGRAPH_NONE
+		s["stagger_immunity"] = 0.0
+		s["telegraph_seq"] = 0
+		s["combo_left"] = 0
+		if int(s.get("ai_state", AIState.IDLE)) not in [AIState.DEAD, AIState.RAGDOLL_KO]:
+			s["ai_state"] = AIState.IDLE
+		# hp is deliberately untouched: taking a shortcut mid-duel never heals.
+	return region_archetype
+
+func _phase_speed(s: Dictionary) -> float:
+	if int(s.get("boss_phase", 1)) < 2:
+		return 1.0
+	if not tune_bool("boss_phase2_enabled", true):
+		return 1.0
+	return clampf(tune("boss_phase2_speed_mult", 1.22), 1.0, 1.6)
+
+# One number drives wind-up AND recovery, so phase 2 never shortens only one
+# half of the cadence and turns the rival into an unreadable machine gun.
+func _boss_cadence(s: Dictionary) -> float:
+	var prof_speed: float = maxf(0.5, float(s.get("archetype_speed", 1.0)))
+	return maxf(0.35, _phase_speed(s) * prof_speed)
+
+func _telegraph_duration(s: Dictionary) -> float:
+	var mult: float = maxf(0.5, float(s.get("archetype_telegraph", 1.0)))
+	return maxf(0.18, ai_telegraph_time * mult / _boss_cadence(s))
+
+func _attack_cooldown_for(s: Dictionary) -> float:
+	return maxf(0.25, ai_attack_cooldown / _boss_cadence(s))
+
+func _begin_telegraph(s: Dictionary, td: Node3D) -> void:
+	s["telegraph_seq"] = int(s.get("telegraph_seq", 0)) + 1
+	var kind := BOSS_TELEGRAPH_PARRIABLE
+	# Region 2's guardian lands its crimson slam on every second wind-up once
+	# phase 2 is live. Regions 0/1 stay readable and parriable all fight long.
+	var slam_ready: bool = int(s.get("boss_phase", 1)) >= 2 and str(s.get("phase2_attack", "")) == "SLAM"
+	if slam_ready and int(s["telegraph_seq"]) % 2 == 0:
+		kind = BOSS_TELEGRAPH_UNBLOCKABLE
+	s["ai_state"] = AIState.TELEGRAPH
+	s["state_timer"] = _telegraph_duration(s)
+	s["telegraph_kind"] = kind
+	s["strike_hit_done"] = false
+	_boss_anim(s, "slash_up")
+	if player and player.dash_vfx:
+		var cue: Color = BOSS_TELEGRAPH_PARRIABLE_COL if kind == BOSS_TELEGRAPH_PARRIABLE else BOSS_TELEGRAPH_UNBLOCKABLE_COL
+		player.dash_vfx.spawn_step_sigil(td.global_position + Vector3(0.0, 0.9, 0.0), cue, 1.6)
+
+func _awaken_phase_two(t: Node3D, s: Dictionary) -> void:
+	s["boss_phase"] = 2
+	s["telegraph_seq"] = 0
+	s["telegraph_kind"] = BOSS_TELEGRAPH_NONE
+	s["state_timer"] = maxf(float(s.get("state_timer", 0.0)), 0.35)
+	boss_phase = 2
+	phase2_awakenings += 1
+	last_combat_action = "PHASE 2 — %s AWAKENS!" % str(s.get("boss_name", "RIVAL"))
+	# Reuses the V5 impact slash + pooled cel smoke, so the cue respects the
+	# active GPU tier budget and allocates nothing new.
+	trigger_impact_slash(t.global_position + Vector3(0.0, 1.4, 0.0), 22.0, 1.25)
+	if player and player.dash_vfx:
+		player.dash_vfx.play_sfx("shatter")
+		player.dash_vfx.spawn_cel_smoke(t.global_position + Vector3(0.0, 1.0, 0.0), 6, Vector3.UP, 1.15)
+	simulate_clash(true)
+
+func _break_posture(s: Dictionary, message: String) -> void:
+	s["ai_state"] = AIState.STAGGERED
+	s["state_timer"] = STAGGER_TIME
+	s["posture"] = 0.0
+	s["telegraph_kind"] = BOSS_TELEGRAPH_NONE
+	s["combo_left"] = 0
+	last_combat_action = message
+	simulate_clash(true)
+
+func _stagger_finisher_fx(t: Node3D) -> void:
+	# Bonus damage rides the normal hit path; this only sells the beat.
+	trigger_impact_slash(t.global_position + Vector3(0.0, 1.2, 0.0), -18.0, 1.4)
+	if player:
+		player.trigger_hitstop(0.075, 0.8)
+		if player.dash_vfx:
+			player.dash_vfx.play_sfx("shatter")
+			player.dash_vfx.spawn_cel_smoke(t.global_position + Vector3(0.0, 1.1, 0.0), 5, Vector3.UP, 1.25)
+			player.dash_vfx.spawn_step_sigil(t.global_position + Vector3(0.0, 1.0, 0.0), Color(0.95, 0.82, 1.0), 2.0)
+
+func current_boss_phase() -> int:
+	return boss_phase
+
+func current_region_archetype() -> String:
+	return region_archetype
+
+func current_telegraph_kind() -> String:
+	return telegraph_kind
 
 func is_point_in_right_dot(pos: Vector2) -> bool:
 	var r := right_dot_expanded_r if (is_right_dot_active or right_dot_pinned) else right_dot_collapsed_r * 1.45
@@ -609,9 +766,22 @@ func _commit_strike(dir: Vector2) -> void:
 				player_habits[slot_key] = 0.0
 				return
 
-			var mult := 1.5 if (s["whiff_timer"] > 0.0 or st == AIState.STAGGERED) else 1.0
+			var staggered: bool = st == AIState.STAGGERED
+			var mult: float = STAGGER_FINISHER_MULT if staggered else (1.5 if s["whiff_timer"] > 0.0 else 1.0)
+			if staggered:
+				# The stagger window is consumed by this hit. Clearing it here (and
+				# leaving a chain-lock) is what stops an infinite re-break loop.
+				s["ai_state"] = AIState.IDLE
+				s["state_timer"] = _attack_cooldown_for(s) * 0.6
+				s["combo_left"] = 0
+				s["telegraph_kind"] = BOSS_TELEGRAPH_NONE
+				s["stagger_immunity"] = STAGGER_CHAIN_LOCK
+				last_combat_action = "STAGGER FINISHER!!"
+				_stagger_finisher_fx(td)
 			var dmg_out: float = float(data.get("dmg", 90.0)) * player.physical_strength * mult * tune("player_damage_mult", 1.0)
 			apply_damage(td, dmg_out, float(data.get("posture", 40.0)), fwd * float(data.get("knockback", 6.0)) + Vector3(0, float(data.get("launch_y", 0.0)), 0), mult > 1.0)
+			if staggered and float(s["hp"]) > 0.0:
+				s["posture"] = 0.0
 
 	if not hit_any:
 		last_combat_action = slot_key + " (WHIFF)"
@@ -621,7 +791,10 @@ func apply_damage(t: Node3D, dmg: float, post_dmg: float, launch_vec: Vector3 = 
 	var s: Dictionary = target_stats[t]
 	if int(s.get("ai_state", AIState.IDLE)) == AIState.DEAD: return
 	s["hp"] = maxf(0.0, s["hp"] - dmg)
-	s["posture"] = minf(s["max_posture"], s["posture"] + post_dmg * tune("posture_damage_mult", 1.0))
+	# A stagger finisher leaves a short chain-lock so posture cannot be re-broken
+	# on the very next hit.
+	if float(s.get("stagger_immunity", 0.0)) <= 0.0:
+		s["posture"] = minf(s["max_posture"], s["posture"] + post_dmg * tune("posture_damage_mult", 1.0))
 	s["hit_flash"] = 0.16
 	s["vel"] = launch_vec
 	if player:
@@ -640,19 +813,17 @@ func apply_damage(t: Node3D, dmg: float, post_dmg: float, launch_vec: Vector3 = 
 		player.dash_vfx.play_sfx("hit")
 		player.dash_vfx.spawn_step_sigil(t.global_position + Vector3(0, 1.0, 0), Color(1.0, 0.85, 0.2), 1.3)
 		player.dash_vfx.check_destruction(t.global_position, 4.5, launch_vec, launch_vec.y < -6.0)
+	var below_half: bool = s["hp"] <= float(s["max_hp"]) * BOSS_PHASE2_HP_RATIO
 	if s["hp"] <= 0.0:
 		_kill_rival(t, s)
+	elif int(s.get("boss_phase", 1)) == 1 and tune_bool("boss_phase2_enabled", true) and below_half:
+		_awaken_phase_two(t, s)
 	elif s["posture"] >= s["max_posture"]:
 		# Posture break is a reward window, NOT a full heal + reset (that made the
 		# boss effectively immortal and the fight unwinnable).
 		trigger_impact_slash(t.global_position + Vector3(0, 1.3, 0), 18.0, 1.15)
-		s["posture"] = 0.0
-		s["ai_state"] = AIState.STAGGERED
-		s["state_timer"] = 1.7
-		s["combo_left"] = 0
-		last_combat_action = "POSTURE BREAK — FREE HIT WINDOW!"
 		_boss_anim(s, "guard_sway")
-		simulate_clash(true)
+		_break_posture(s, "POSTURE BREAK — FREE HIT WINDOW!")
 		if player and player.dash_vfx:
 			player.dash_vfx.play_sfx("shatter")
 
@@ -662,6 +833,8 @@ func _kill_rival(t: Node3D, s: Dictionary) -> void:
 	s["ai_state"] = AIState.DEAD
 	s["state_timer"] = 999.0
 	s["combo_left"] = 0
+	s["telegraph_kind"] = BOSS_TELEGRAPH_NONE
+	s["stagger_immunity"] = 0.0
 	trigger_impact_slash(t.global_position + Vector3(0, 1.4, 0), -28.0, 1.35)
 	var ko_dir := (t.global_position - player.global_position).normalized() if player else Vector3.BACK
 	s["vel"] = ko_dir * 16.0 + Vector3(0, 11.5, 0)
@@ -683,6 +856,10 @@ func _kill_rival(t: Node3D, s: Dictionary) -> void:
 func reset_duel() -> void:
 	result_state = ""
 	combo_hits = 0
+	# A retry is a fresh encounter: phase 1, no telegraph, no stagger debt.
+	boss_phase = 1
+	telegraph_kind = BOSS_TELEGRAPH_NONE
+	phase2_awakenings = 0
 	combo_timer = 0.0
 	hurt_vignette_timer = 0.0
 	Engine.time_scale = 1.0
@@ -699,6 +876,10 @@ func reset_duel() -> void:
 		s["combo_left"] = 0
 		s["whiff_timer"] = 0.0
 		s["hit_flash"] = 0.0
+		s["boss_phase"] = 1
+		s["telegraph_kind"] = BOSS_TELEGRAPH_NONE
+		s["stagger_immunity"] = 0.0
+		s["telegraph_seq"] = 0
 		td.global_position = s.get("home_pos", td.global_position)
 		td.rotation = Vector3.ZERO
 		_boss_anim(s, "idle")
@@ -759,7 +940,8 @@ func _update_enemy_ai(td: Node3D, s: Dictionary, delta: float, is_active_duelist
 	if s["hit_flash"] > 0.0:
 		dmat.albedo_color = Color(1.0, 1.0, 1.0)
 	elif s["ai_state"] == AIState.TELEGRAPH:
-		dmat.albedo_color = Color(0.98, 0.12, 0.18)
+		# Gold/white = parriable, crimson = the unblockable sanctum slam.
+		dmat.albedo_color = BOSS_TELEGRAPH_PARRIABLE_COL if str(s.get("telegraph_kind", "NONE")) == BOSS_TELEGRAPH_PARRIABLE else BOSS_TELEGRAPH_UNBLOCKABLE_COL
 		td.rotation.x = deg_to_rad(18.0)
 		if wp and wp.name == "DummyWeaponPivot": wp.rotation_degrees = Vector3(75.0, -35.0, -65.0)
 	elif s["ai_state"] == AIState.STRIKE_ACTIVE:
@@ -790,23 +972,23 @@ func _update_enemy_ai(td: Node3D, s: Dictionary, delta: float, is_active_duelist
 			if dist > 4.2 and dist < 38.0:
 				s["ai_state"] = AIState.PURSUIT
 				var move_dir := to_p.normalized()
-				var spd := 15.0 if ai_mode == AIMode.ADAPTIVE_RIVAL else 11.0
+				var spd := (15.0 if ai_mode == AIMode.ADAPTIVE_RIVAL else 11.0) * _boss_cadence(s)
 				_move_body(td, Vector3(move_dir.x, 0.0, move_dir.z) * spd, delta)
 				if player.global_position.y - td.global_position.y > 2.0:
 					s["vel"].y = 14.0
 			elif dist <= 4.5 and s["state_timer"] <= 0.0:
-				s["ai_state"] = AIState.TELEGRAPH
-				s["state_timer"] = ai_telegraph_time
-				s["combo_left"] = 3 if ai_mode == AIMode.ADAPTIVE_RIVAL else 2
-				s["strike_hit_done"] = false
-				_boss_anim(s, "slash_up")
+				s["combo_left"] = int(s.get("archetype_combo", 3)) if ai_mode == AIMode.ADAPTIVE_RIVAL else 2
+				_begin_telegraph(s, td)
 		AIState.TELEGRAPH:
 			if s["state_timer"] <= 0.0:
 				s["ai_state"] = AIState.STRIKE_ACTIVE
 				s["state_timer"] = 0.20
 				s["strike_hit_done"] = false
 				var lunge_dir := to_p.normalized()
-				s["vel"] = lunge_dir * 22.0
+				var lunge_speed := 22.0 * float(s.get("archetype_speed", 1.0))
+				if str(s.get("telegraph_kind", "NONE")) == BOSS_TELEGRAPH_UNBLOCKABLE:
+					lunge_speed *= 1.15
+				s["vel"] = lunge_dir * lunge_speed
 				# The GLB boss now actually swings its baked slash animation.
 				_boss_anim(s, "slash_down" if (int(s["combo_left"]) % 2 == 0) else "slash_side")
 				if player.dash_vfx:
@@ -820,12 +1002,11 @@ func _update_enemy_ai(td: Node3D, s: Dictionary, delta: float, is_active_duelist
 			if s["state_timer"] <= 0.0:
 				s["combo_left"] -= 1
 				if s["combo_left"] > 0 and dist <= 6.5:
-					s["ai_state"] = AIState.TELEGRAPH
-					s["state_timer"] = maxf(0.22, ai_telegraph_time * 0.65)
-					_boss_anim(s, "slash_up")
+					_begin_telegraph(s, td)
 				else:
 					s["ai_state"] = AIState.IDLE
-					s["state_timer"] = ai_attack_cooldown
+					s["state_timer"] = _attack_cooldown_for(s)
+					s["telegraph_kind"] = BOSS_TELEGRAPH_NONE
 		AIState.STAGGERED, AIState.BAITED_WHIFF, AIState.LAUNCHED, AIState.Z_VANISH_COUNTER, AIState.RAGDOLL_KO:
 			if s["state_timer"] <= 0.0:
 				if s["ai_state"] == AIState.Z_VANISH_COUNTER:
@@ -833,19 +1014,39 @@ func _update_enemy_ai(td: Node3D, s: Dictionary, delta: float, is_active_duelist
 					s["state_timer"] = 0.26
 				else:
 					s["ai_state"] = AIState.IDLE
-					s["state_timer"] = ai_attack_cooldown * 0.7
+					s["state_timer"] = _attack_cooldown_for(s) * 0.7
+					s["telegraph_kind"] = BOSS_TELEGRAPH_NONE
+
+	if is_active_duelist:
+		# HUD + tests read these three without poking target_stats.
+		boss_phase = int(s.get("boss_phase", 1))
+		region_archetype = str(s.get("archetype", region_archetype))
+		telegraph_kind = str(s.get("telegraph_kind", BOSS_TELEGRAPH_NONE))
 
 func _resolve_enemy_strike_on_player(td: Node3D, s: Dictionary) -> void:
 	if not player: return
-	if sonic_sway_holding or player.state == PlayerController.MoveState.GUARD:
+	var kind := str(s.get("telegraph_kind", BOSS_TELEGRAPH_NONE))
+	var guard_up: bool = sonic_sway_holding or player.state == PlayerController.MoveState.GUARD
+	if kind == BOSS_TELEGRAPH_UNBLOCKABLE:
+		# Crimson slam: a raised guard is worthless. Only a timed Sonic Sway, a
+		# live parry window or a dash actually avoids it.
+		if player.sway_timer > 0.0:
+			_trigger_sonic_sway()
+			s["posture"] = minf(s["max_posture"], s["posture"] + 35.0)
+			if s["posture"] >= s["max_posture"]:
+				_break_posture(s, "SWAY POSTURE BREAK!!")
+			return
+		if parry_window_timer > 0.0:
+			_check_active_parry_against_enemies()
+			return
+		if player.state == PlayerController.MoveState.DASH:
+			last_combat_action = "DASH EVADE — SLAM WHIFFED!"
+			return
+	elif guard_up:
 		_trigger_sonic_sway()
 		s["posture"] = minf(s["max_posture"], s["posture"] + 35.0)
 		if s["posture"] >= s["max_posture"]:
-			s["ai_state"] = AIState.STAGGERED
-			s["state_timer"] = 1.3
-			s["posture"] = 0.0
-			last_combat_action = "SWAY POSTURE BREAK!!"
-			simulate_clash(true)
+			_break_posture(s, "SWAY POSTURE BREAK!!")
 		return
 
 	if parry_window_timer > 0.0:
@@ -871,7 +1072,10 @@ func _resolve_enemy_strike_on_player(td: Node3D, s: Dictionary) -> void:
 	else:
 		player.apply_hitstun(0.36, knock)
 		if player.dash_vfx: player.dash_vfx.play_sfx("hit")
-		last_combat_action = "HIT BY ENEMY! (TAP BOTH ORBS TO BREAK)"
+		if kind == BOSS_TELEGRAPH_UNBLOCKABLE:
+			last_combat_action = "GUARD BROKEN — UNBLOCKABLE SLAM!"
+		else:
+			last_combat_action = "HIT BY ENEMY! (TAP BOTH ORBS TO BREAK)"
 
 func _process(delta: float) -> void:
 	if parry_window_timer > 0.0: parry_window_timer -= delta
@@ -947,6 +1151,7 @@ func _physics_process(delta: float) -> void:
 			var s: Dictionary = target_stats[td]
 			if s["hit_flash"] > 0.0: s["hit_flash"] -= delta
 			if s["whiff_timer"] > 0.0: s["whiff_timer"] -= delta
+			if s["stagger_immunity"] > 0.0: s["stagger_immunity"] -= delta
 
 			_update_enemy_ai(td, s, delta, td == primary_duelist)
 
@@ -992,6 +1197,15 @@ func spawn_story_rival(nd: Dictionary) -> void:
 	s["state_timer"] = 0.65
 	s["boss_name"] = str(nd.get("rival_name", "RIVAL BOSS"))
 	s["anim"] = s.get("anim", null)
+	# The authored name/scale/slots outrank the regional profile from now on.
+	s["story_override"] = true
+	s["boss_phase"] = 1
+	s["telegraph_kind"] = BOSS_TELEGRAPH_NONE
+	s["stagger_immunity"] = 0.0
+	s["telegraph_seq"] = 0
+	boss_phase = 1
+	phase2_awakenings = 0
+	telegraph_kind = BOSS_TELEGRAPH_NONE
 	result_state = ""
 	combo_hits = 0
 	Engine.time_scale = 1.0

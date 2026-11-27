@@ -659,6 +659,130 @@ func _run() -> void:
 	t8_story.save_state()
 	combat.reset_duel()
 
+	# --- 22. V6 Task 3: 2-phase boss, regional telegraphs, stagger finisher --
+	player.data_store.reset_tuning()
+	player.data_store.tuning["auto_quality"] = false
+	combat.sonic_sway_holding = false
+	combat.parry_window_timer = 0.0
+	check(CombatData.TUNING_BOOLS.has("boss_phase2_enabled") and CombatData.TUNING_DEFAULTS.has("boss_phase2_enabled") and bool(CombatData.TUNING_DEFAULTS["boss_phase2_enabled"]), "boss_phase2_enabled is an auto-generated Tab 8 bool, default on")
+	var t9_spec: Array = CombatData.TUNING_SPEC.get("boss_phase2_speed_mult", [])
+	check(t9_spec.size() >= 4 and is_equal_approx(float(t9_spec[0]), 1.0) and is_equal_approx(float(t9_spec[1]), 1.6) and is_equal_approx(float(CombatData.TUNING_DEFAULTS.get("boss_phase2_speed_mult", 0.0)), 1.22), "boss_phase2_speed_mult is a 1.0-1.6 Tab 8 slider defaulting to 1.22")
+	player.data_store.tuning["boss_phase2_speed_mult"] = 1.4
+	check(is_equal_approx(combat.tune("boss_phase2_speed_mult", 0.0), 1.4), "the phase 2 speed multiplier updates live")
+	player.data_store.tuning["boss_phase2_speed_mult"] = 1.22
+
+	# 50% HP awakening, exactly once, and clean on retry.
+	studio.travel_to_region(0)
+	combat.reset_duel()
+	var t9_rival: Node3D = combat.target_stats.keys()[0] as Node3D
+	var t9_s: Dictionary = combat.target_stats[t9_rival]
+	t9_s["hp"] = float(t9_s["max_hp"]) * 0.62
+	combat.apply_damage(t9_rival, float(t9_s["max_hp"]) * 0.15, 0.0, Vector3.ZERO)
+	check(int(t9_s["boss_phase"]) == 2 and combat.boss_phase == 2, "dropping the rival below 50% HP awakens phase 2")
+	check(combat.phase2_awakenings == 1, "phase 2 awakens exactly once")
+	combat.apply_damage(t9_rival, 60.0, 0.0, Vector3.ZERO)
+	check(combat.phase2_awakenings == 1 and int(t9_s["boss_phase"]) == 2, "further damage never re-triggers the awakening")
+	combat.reset_duel()
+	check(int(t9_s["boss_phase"]) == 1 and combat.boss_phase == 1 and combat.phase2_awakenings == 0, "a duel retry resets the boss to phase 1")
+	player.data_store.tuning["boss_phase2_enabled"] = false
+	combat.reset_duel()
+	t9_s["hp"] = float(t9_s["max_hp"]) * 0.62
+	combat.apply_damage(t9_rival, float(t9_s["max_hp"]) * 0.2, 0.0, Vector3.ZERO)
+	check(int(t9_s["boss_phase"]) == 1 and combat.phase2_awakenings == 0, "boss_phase2_enabled = false keeps the rival in phase 1")
+	player.data_store.tuning["boss_phase2_enabled"] = true
+	combat.reset_duel()
+
+	# Regional archetypes ride the same switch as the curated arena.
+	var t9_arch: Array[String] = []
+	for want in [0, 1, 2]:
+		studio.travel_to_region(want)
+		t9_arch.append(combat.region_archetype)
+	check(t9_arch[0] != t9_arch[1] and t9_arch[1] != t9_arch[2] and t9_arch[0] != t9_arch[2], "each curated region assigns a distinct boss archetype")
+	check(t9_arch == ["INK_DUELIST", "BLAME_RUSHDOWN", "GOTHIC_SANCTUM"], "the archetypes are the authored INK / BLAME / GOTHIC profiles")
+	check(combat.region_archetype_for(2) == "GOTHIC_SANCTUM" and str(combat.boss_profile_for_region(2).get("phase2_attack", "")) == "SLAM", "region 2's guardian owns the phase 2 slam")
+
+	# A shortcut re-seats both fighters apart and starts a clean phase 1.
+	var t9_story = studio.story_mgr
+	t9_story.story_flags["shortcut_blame_unlocked"] = true
+	studio.travel_to_region(0)
+	combat.reset_duel()
+	t9_s["boss_phase"] = 2
+	t9_s["ai_state"] = combat.AIState.STAGGERED
+	player._refresh_shortcut_visuals()
+	player.shortcut_arrival_cd = 0.0
+	player.shortcut_dwell = 0.0
+	player.global_position = Vector3(-36.0, 1.6, -2.0)
+	player._tick_shortcut_gates(1.0)
+	var t9_gap: float = player.global_position.distance_to(t9_rival.global_position)
+	check(int(studio.region_idx) == 1 and t9_gap >= 6.0, "region travel keeps the player and rival at least 6 m apart")
+	check(int(t9_s["boss_phase"]) == 1 and int(t9_s["ai_state"]) != combat.AIState.STAGGERED, "region travel resets boss_phase to 1 and clears the stagger window")
+
+	# UNBLOCKABLE bypasses a guard; PARRIABLE, dash and Sonic Sway still beat it.
+	player.lock_target = t9_rival
+	player.is_locked_on = true
+	player.global_position = t9_rival.global_position + Vector3(0.0, 0.0, 3.0)
+	player.velocity = Vector3.ZERO
+	player.hp = player.max_hp
+	player.state = PlayerController.MoveState.GUARD
+	t9_s["telegraph_kind"] = combat.BOSS_TELEGRAPH_UNBLOCKABLE
+	t9_s["ai_state"] = combat.AIState.STRIKE_ACTIVE
+	combat._resolve_enemy_strike_on_player(t9_rival, t9_s)
+	check(player.hp < player.max_hp, "an UNBLOCKABLE slam breaks a raised guard")
+	player.hp = player.max_hp
+	player.state = PlayerController.MoveState.GUARD
+	t9_s["telegraph_kind"] = combat.BOSS_TELEGRAPH_PARRIABLE
+	combat._resolve_enemy_strike_on_player(t9_rival, t9_s)
+	check(is_equal_approx(player.hp, player.max_hp), "a PARRIABLE wind-up is still negated by guard / Sonic Sway")
+	player.hp = player.max_hp
+	player.sway_timer = 0.0
+	player.state = PlayerController.MoveState.DASH
+	t9_s["telegraph_kind"] = combat.BOSS_TELEGRAPH_UNBLOCKABLE
+	combat._resolve_enemy_strike_on_player(t9_rival, t9_s)
+	check(is_equal_approx(player.hp, player.max_hp), "dash evasion still beats the UNBLOCKABLE slam")
+	player.hp = player.max_hp
+	player.state = PlayerController.MoveState.GROUND
+	player.trigger_sonic_sway_pose(0.4)
+	combat._resolve_enemy_strike_on_player(t9_rival, t9_s)
+	check(is_equal_approx(player.hp, player.max_hp) and player.sway_timer > 0.0, "a timed Sonic Sway still evades the UNBLOCKABLE slam")
+	player.sway_timer = 0.0
+
+	# Posture break -> 2 s STAGGERED -> one finisher consumes the window.
+	combat.reset_duel()
+	player.lock_target = t9_rival
+	player.is_locked_on = true
+	player.global_position = t9_rival.global_position + Vector3(0.0, 0.0, 2.6)
+	player.velocity = Vector3.ZERO
+	player.state = PlayerController.MoveState.GROUND
+	combat.player_habits.clear()
+	var t9_base_hp: float = float(t9_s["hp"])
+	combat._commit_strike(Vector2(0.0, 1.0))
+	var t9_base_dmg: float = t9_base_hp - float(t9_s["hp"])
+	t9_s["posture"] = float(t9_s["max_posture"]) - 1.0
+	combat.apply_damage(t9_rival, 5.0, 40.0, Vector3.ZERO)
+	check(int(t9_s["ai_state"]) == combat.AIState.STAGGERED and is_equal_approx(float(t9_s["state_timer"]), GestureCombat.STAGGER_TIME), "breaking posture opens a 2 s STAGGERED window")
+	check(is_equal_approx(float(t9_s["posture"]), 0.0) and str(t9_s["telegraph_kind"]) == "NONE", "the posture break empties the bar and drops the telegraph")
+	var t9_fin_hp: float = float(t9_s["hp"])
+	combat._commit_strike(Vector2(0.0, 1.0))
+	var t9_fin_dmg: float = t9_fin_hp - float(t9_s["hp"])
+	check(t9_base_dmg > 0.0 and t9_fin_dmg >= t9_base_dmg * 1.9, "a strike on a STAGGERED rival deals finisher bonus damage")
+	check(int(t9_s["ai_state"]) != combat.AIState.STAGGERED, "the stagger finisher consumes the STAGGERED window")
+	check(is_equal_approx(float(t9_s["posture"]), 0.0) and float(t9_s["stagger_immunity"]) > 0.0, "the finisher refills the rival posture and blocks a chain-stagger")
+
+	# Leave no V6 Task 3 state behind.
+	player.sway_timer = 0.0
+	player.state = PlayerController.MoveState.GROUND
+	player.is_locked_on = false
+	player.lock_target = null
+	player.shortcut_arrival_cd = 0.0
+	player.shortcut_dwell = 0.0
+	player.global_position = Vector3(0.0, 1.6, 0.0)
+	t9_story.story_flags.erase("shortcut_blame_unlocked")
+	t9_story.save_state()
+	combat.player_habits.clear()
+	combat.reset_duel()
+	player.data_store.tuning["boss_phase2_enabled"] = true
+	player.data_store.tuning["boss_phase2_speed_mult"] = 1.22
+
 	# Leave no test tuning behind for the next run.
 	player.data_store.reset_tuning()
 	player.data_store.refresh_auto_quality()

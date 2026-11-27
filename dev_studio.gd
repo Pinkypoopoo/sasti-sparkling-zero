@@ -485,6 +485,11 @@ func _apply_region(idx: int) -> void:
 	# quality_tier >= 1 gate stays inside _push_water(), so LOW is always dry and fast.
 	if player and player.dash_vfx:
 		player.dash_vfx.load_curated_region(region_idx)
+	# V6 Task 3: the rival hosting the arena changes with it. A story-authored
+	# name/scale/slots survives, because the profile only rewrites the name when
+	# no story override is active.
+	if combat and combat.has_method("apply_region_boss_profile"):
+		combat.apply_region_boss_profile(region_idx)
 	if player and player.data_store:
 		player.data_store.tuning["water_floor_enabled"] = region_idx == 2
 		player._push_water()

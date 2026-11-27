@@ -37,7 +37,9 @@ const TUNING_SPEC: Dictionary = {
 	"water_ripple_strength": [0.0, 2.0, 0.05, "Water Ripple Strength"],
 	# V5 Task 2: screen-space impact slash + 2-tone cel smoke
 	"impact_slash_intensity": [0.0, 2.0, 0.05, "Impact Slash Intensity"],
-	"cel_smoke_density":   [0.0, 2.0, 0.05, "Cel Smoke Density"],
+	"cel_smoke_density":   [0.0,  2.0, 0.05, "Cel Smoke Density"],
+	# V6 Task 3: 2-phase rival boss
+	"boss_phase2_speed_mult": [1.0, 1.6, 0.02, "Boss Phase 2 Speed x"],
 }
 
 const TUNING_BOOLS: Dictionary = {
@@ -51,6 +53,7 @@ const TUNING_BOOLS: Dictionary = {
 	"cel_smoke_enabled":   "2-Tone Cel-Smoke Puffs",
 	"water_floor_enabled": "Stylized Anime Water Floor",
 	"unlock_all_shortcuts": "Unlock All Shortcut Gates (sandbox)",
+	"boss_phase2_enabled": "Rival Phase 2 at 50% HP",
 }
 
 const TUNING_DEFAULTS: Dictionary = {
@@ -67,6 +70,7 @@ const TUNING_DEFAULTS: Dictionary = {
 	"show_combo_counter": true, "auto_lock_on": true,
 	"auto_quality": true, "wall_run_enabled": true, "water_floor_enabled": false,
 	"unlock_all_shortcuts": false,
+	"boss_phase2_enabled": true, "boss_phase2_speed_mult": 1.22,
 	"impact_slash_enabled": true, "impact_slash_intensity": 1.0,
 	"water_ripple_strength": 1.0,
 	"cel_smoke_enabled": true, "cel_smoke_density": 1.0,
