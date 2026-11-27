@@ -1201,16 +1201,18 @@ func _sync_seinen_visibility() -> void:
 func get_hud_snapshot() -> Dictionary:
 	var snap: Dictionary = {
 		"visible": _seinen_hud_active(),
-		"player": {"hp_ratio": 0.0, "posture_ratio": 0.0, "combo": 0},
+		"player": {"hp_ratio": 0.0, "posture_ratio": 0.0, "combo": 0, "origin_id": "", "origin_title": ""},
 		"boss": {
 			"name": "", "phase": 1, "archetype": "", "hp_ratio": 0.0,
 			"posture_ratio": 0.0, "telegraph_kind": "NONE", "staggered": false, "present": false,
+			"story_rival": false,
 		},
 		"world": {"region_title": "", "gate_status": "", "gate_dwell_ratio": 0.0},
 		"victory": {
 			"active": false, "region_title": "", "rank": "", "score": 0, "elapsed": 0.0,
 			"damage_taken": 0.0, "parries": 0, "finishers": 0, "unlock_note": "",
 			"best_rank": "", "vertical_slice_cleared": false,
+			"origin_title": "", "story_rival": false, "story_rivals_defeated_count": 0,
 		},
 	}
 	if not (player and combat):
@@ -1219,6 +1221,8 @@ func get_hud_snapshot() -> Dictionary:
 		"hp_ratio": clampf(player.hp / maxf(1.0, player.max_hp), 0.0, 1.0),
 		"posture_ratio": player.guard_ratio(),
 		"combo": combat.combo_hits,
+		"origin_id": str(story_mgr.active_origin_id) if story_mgr != null else "",
+		"origin_title": str(story_mgr.call("active_origin_title")) if (story_mgr != null and story_mgr.has_method("active_origin_title")) else "",
 	}
 	var rival: Node3D = combat.primary_rival()
 	snap["boss"] = {
@@ -1230,6 +1234,7 @@ func get_hud_snapshot() -> Dictionary:
 		"telegraph_kind": combat.current_telegraph_kind(),
 		"staggered": combat.is_boss_staggered(),
 		"present": rival != null,
+		"story_rival": combat.is_story_rival_duel() if combat.has_method("is_story_rival_duel") else false,
 	}
 	var ri: int = clampi(int(region_idx), 0, REGION_NAMES.size() - 1)
 	var titles: Array = player.SHORTCUT_REGION_BANNERS
@@ -1262,6 +1267,9 @@ func get_hud_snapshot() -> Dictionary:
 		"unlock_note": str(summary.get("unlock_note", "")),
 		"best_rank": str(mastery.get("best_rank", summary.get("best_rank", ""))),
 		"vertical_slice_cleared": bool(story_mgr.call("is_vertical_slice_cleared")) if (story_mgr != null and story_mgr.has_method("is_vertical_slice_cleared")) else false,
+		"origin_title": str(summary.get("origin_title", "")),
+		"story_rival": bool(summary.get("story_rival", false)),
+		"story_rivals_defeated_count": int(summary.get("story_rivals_defeated", 0)),
 	}
 	return snap
 
@@ -1309,6 +1317,13 @@ func _draw_seinen_hud(snap: Dictionary) -> void:
 		var badge_pos := Vector2(px, py + 38.0)
 		_draw_ink_panel(badge_pos, Vector2(84.0, 26.0), SEINEN_INK_GOLD)
 		draw_string(font, badge_pos + Vector2(0.0, 18.0), "%d HIT" % combo, HORIZONTAL_ALIGNMENT_CENTER, 84.0, 14, SEINEN_INK_GOLD)
+	# --- Active origin tag (bone ink, tucked under the VITAL/GUARD cluster) ---
+	var origin_title: String = str(pstat["origin_title"])
+	if not origin_title.is_empty():
+		var tag_y: float = py + (70.0 if combo > 1 else 38.0)
+		var tag_w: float = minf(252.0, vp.x * 0.34)
+		_draw_ink_panel(Vector2(px, tag_y), Vector2(tag_w, 18.0), SEINEN_INK_BORDER)
+		draw_string(font, Vector2(px + 6.0, tag_y + 13.0), "ORIGIN · %s" % origin_title, HORIZONTAL_ALIGNMENT_LEFT, tag_w - 12.0, 9, SEINEN_INK_BONE)
 
 	# --- Boss cluster (top-centre, always left of [ MENU ]) ------------------
 	var bstat: Dictionary = snap["boss"]
@@ -1321,7 +1336,14 @@ func _draw_seinen_hud(snap: Dictionary) -> void:
 		var phase: int = int(bstat["phase"])
 		var accent: Color = SEINEN_INK_CRIMSON if phase >= 2 else SEINEN_INK_BORDER
 		draw_string(font, Vector2(bx, by + 26.0), str(bstat["name"]), HORIZONTAL_ALIGNMENT_LEFT, bw * 0.62, 14, SEINEN_INK_BONE)
-		draw_string(font, Vector2(bx, by + 26.0), "[ %s ]" % str(bstat["archetype"]), HORIZONTAL_ALIGNMENT_RIGHT, bw, 10, SEINEN_INK_DIM)
+		if bool(bstat["story_rival"]):
+			# Authored story-choice rival: crimson ink on gold so it never reads as
+			# a generic regional guardian.
+			var sr_w: float = 132.0
+			_draw_ink_panel(Vector2(bx + bw - sr_w, by + 13.0), Vector2(sr_w, 16.0), SEINEN_INK_GOLD)
+			draw_string(font, Vector2(bx + bw - sr_w, by + 25.0), "[ STORY RIVAL ]", HORIZONTAL_ALIGNMENT_CENTER, sr_w, 10, SEINEN_INK_CRIMSON)
+		else:
+			draw_string(font, Vector2(bx, by + 26.0), "[ %s ]" % str(bstat["archetype"]), HORIZONTAL_ALIGNMENT_RIGHT, bw, 10, SEINEN_INK_DIM)
 		_draw_ink_bar(Vector2(bx, by + 32.0), Vector2(bw, 18.0), float(bstat["hp_ratio"]), SEINEN_INK_CRIMSON.lerp(SEINEN_INK_GOLD, 0.3), accent)
 		_draw_ink_bar(Vector2(bx, by + 54.0), Vector2(bw, 8.0), float(bstat["posture_ratio"]), SEINEN_INK_GOLD, Color(accent.r, accent.g, accent.b, 0.55))
 		if phase >= 2:
@@ -1365,10 +1387,11 @@ func _draw_seinen_hud(snap: Dictionary) -> void:
 	var vic: Dictionary = snap["victory"]
 	if bool(vic["active"]):
 		var card_w: float = minf(430.0, vp.x - margin * 2.0)
-		var card_h: float = 176.0
+		var story_rival: bool = bool(vic["story_rival"])
+		var card_h: float = 196.0 if story_rival else 176.0
 		var card_y: float = vp.y * 0.5 - 135.0 - card_h - 14.0
 		if card_y < 150.0:
-			card_y = clampf(vp.y * 0.5 + 135.0 + 14.0, 150.0, maxf(150.0, vp.y - card_h - 128.0))
+			card_y = clampf(vp.y * 0.5 + 135.0 + 14.0, 150.0, maxf(150.0, vp.y - card_h - 150.0))
 		var card_x: float = clampf(vp.x * 0.5 - card_w * 0.5, margin, maxf(margin, vp.x - margin - card_w))
 		var stamp: String = str(vic["rank"])
 		var stamp_col: Color = SEINEN_INK_GOLD if stamp == "S" else (SEINEN_INK_BONE if stamp == "A" else SEINEN_INK_CRIMSON)
@@ -1381,13 +1404,22 @@ func _draw_seinen_hud(snap: Dictionary) -> void:
 		var tx: float = card_x + 120.0
 		var tw: float = card_w - 134.0
 		draw_string(font, Vector2(tx, card_y + 24.0), "%s — CLEARED" % str(vic["region_title"]), HORIZONTAL_ALIGNMENT_LEFT, tw, 11, SEINEN_INK_GOLD)
-		draw_string(font, Vector2(tx, card_y + 54.0), "TIME %.1fs  ·  PARRIES %d  ·  FINISHERS %d" % [float(vic["elapsed"]), int(vic["parries"]), int(vic["finishers"])], HORIZONTAL_ALIGNMENT_LEFT, tw, 11, SEINEN_INK_BONE)
-		draw_string(font, Vector2(tx, card_y + 74.0), "DAMAGE TAKEN %d   SCORE %d" % [int(round(float(vic["damage_taken"]))), int(vic["score"])], HORIZONTAL_ALIGNMENT_LEFT, tw, 11, SEINEN_INK_DIM)
+		var card_origin: String = str(vic["origin_title"])
+		if not card_origin.is_empty():
+			draw_string(font, Vector2(tx, card_y + 40.0), "ORIGIN · %s" % card_origin, HORIZONTAL_ALIGNMENT_LEFT, tw, 9, SEINEN_INK_DIM)
+		draw_string(font, Vector2(tx, card_y + 60.0), "TIME %.1fs  ·  PARRIES %d  ·  FINISHERS %d" % [float(vic["elapsed"]), int(vic["parries"]), int(vic["finishers"])], HORIZONTAL_ALIGNMENT_LEFT, tw, 11, SEINEN_INK_BONE)
+		draw_string(font, Vector2(tx, card_y + 78.0), "DAMAGE TAKEN %d   SCORE %d" % [int(round(float(vic["damage_taken"]))), int(vic["score"])], HORIZONTAL_ALIGNMENT_LEFT, tw, 11, SEINEN_INK_DIM)
 		if not str(vic["best_rank"]).is_empty():
-			draw_string(font, Vector2(tx, card_y + 94.0), "BEST %s" % str(vic["best_rank"]), HORIZONTAL_ALIGNMENT_LEFT, tw, 11, SEINEN_INK_BONE)
-		draw_string(font, Vector2(tx, card_y + 120.0), str(vic["unlock_note"]), HORIZONTAL_ALIGNMENT_LEFT, tw, 12, SEINEN_INK_GOLD)
+			draw_string(font, Vector2(tx, card_y + 96.0), "BEST %s" % str(vic["best_rank"]), HORIZONTAL_ALIGNMENT_LEFT, tw, 11, SEINEN_INK_BONE)
+		draw_string(font, Vector2(tx, card_y + 118.0), str(vic["unlock_note"]), HORIZONTAL_ALIGNMENT_LEFT, tw, 12, SEINEN_INK_GOLD)
 		if bool(vic["vertical_slice_cleared"]):
-			draw_string(font, Vector2(tx, card_y + 142.0), "VERTICAL SLICE CLEARED", HORIZONTAL_ALIGNMENT_LEFT, tw, 10, SEINEN_INK_CRIMSON)
+			draw_string(font, Vector2(tx, card_y + 140.0), "VERTICAL SLICE CLEARED", HORIZONTAL_ALIGNMENT_LEFT, tw, 10, SEINEN_INK_CRIMSON)
+		if story_rival:
+			# Crisp stamp on its own ink plate: the card is 20 px taller for it, so
+			# it cannot touch the unlock line or the centred RETRY overlay.
+			var stamp_w: float = minf(tw, 190.0)
+			_draw_ink_panel(Vector2(tx, card_y + 158.0), Vector2(stamp_w, 18.0), SEINEN_INK_CRIMSON)
+			draw_string(font, Vector2(tx, card_y + 171.0), "STORY RIVAL DEFEATED", HORIZONTAL_ALIGNMENT_CENTER, stamp_w, 10, SEINEN_INK_GOLD)
 
 func _draw() -> void:
 	if not player or not combat: return

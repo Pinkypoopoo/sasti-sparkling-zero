@@ -346,6 +346,15 @@ func apply_region_boss_profile(region_idx: int) -> String:
 		# hp is deliberately untouched: taking a shortcut mid-duel never heals.
 	return region_archetype
 
+# --- V7 Task 1: authored story-choice rival duels ----------------------------
+# True while the duel's rival carries the JSON story override, so the HUD can
+# badge story encounters differently from generic regional guardians.
+func is_story_rival_duel() -> bool:
+	var td := primary_rival()
+	if td == null or not target_stats.has(td):
+		return false
+	return bool((target_stats[td] as Dictionary).get("story_override", false))
+
 # --- V6 Task 6: duel metrics -------------------------------------------------
 # Only a live duel ticks: no result card, no defeat, no hitstop freeze, and a
 # rival that is not already dead.
@@ -964,11 +973,20 @@ func _kill_rival(t: Node3D, s: Dictionary) -> void:
 		var titles: Array = player.SHORTCUT_REGION_BANNERS
 		if not titles.is_empty():
 			region_title = str(titles[clampi(region, 0, titles.size() - 1)])
+	var origin_id: String = ""
+	var origin_title: String = ""
+	var story_rival: bool = bool(s.get("story_override", false))
+	var rival_name: String = str(s.get("boss_name", "RIVAL"))
 	if mgr != null:
+		var raw_origin = mgr.get("active_origin_id")
+		if typeof(raw_origin) == TYPE_STRING:
+			origin_id = raw_origin
+		if mgr.has_method("active_origin_title"):
+			origin_title = str(mgr.call("active_origin_title"))
 		if mgr.has_method("region_clear_note"):
 			unlock_note = str(mgr.call("region_clear_note", region))
 		if mgr.has_method("record_region_victory"):
-			var raw_mastery = mgr.call("record_region_victory", region, str(rank_info["rank"]), float(rank_info["elapsed"]))
+			var raw_mastery = mgr.call("record_region_victory", region, str(rank_info["rank"]), float(rank_info["elapsed"]), origin_id, story_rival, rival_name)
 			if typeof(raw_mastery) == TYPE_DICTIONARY:
 				mastery = raw_mastery
 	last_victory_summary = {
@@ -983,6 +1001,12 @@ func _kill_rival(t: Node3D, s: Dictionary) -> void:
 		"unlock_note": unlock_note,
 		"best_rank": str(mastery.get("best_rank", "")),
 		"clears": int(mastery.get("clears", 0)),
+		"origin_id": origin_id,
+		"origin_title": origin_title,
+		"story_rival": story_rival,
+		"best_origin": str(mastery.get("best_origin", "")),
+		"cleared_origins": mastery.get("cleared_origins", []),
+		"story_rivals_defeated": int(mgr.call("story_rivals_defeated_count")) if (mgr != null and mgr.has_method("story_rivals_defeated_count")) else 0,
 	}
 	if not flag.is_empty() and not unlock_note.is_empty():
 		last_combat_action = "K.O. — %s IS DOWN! %s" % [str(s.get("boss_name", "RIVAL")), unlock_note]

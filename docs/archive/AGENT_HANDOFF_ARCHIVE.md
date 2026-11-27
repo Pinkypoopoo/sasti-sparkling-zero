@@ -649,3 +649,75 @@ OPEN: no on-device visual pass (layout spacing, sanctum read, flooded floor); Bl
 still unrun. Task 2B (story_nodes.json / story_test.gd) untouched.
 NEXT: Task 2B story regions.
 === END AI HANDOFF PACKET ===
+
+---
+
+### 2026-11-27 · Buffy (Freebuff) — V6 Task 2B: physical shortcut gates + flag-gated travel
+
+Branch `Pinkypoopoo-patch-1`, based on `eeeb407`. `main` untouched (`0c80d97`).
+Gate: **VERIFY_PASSED**, 7 gates, 79 signatures, 163 combat asserts, zero GDScript warnings
+(`--check-only` on `dash_vfx.gd` / `character_body_3d.gd` / `dev_studio.gd` / `world_story.gd` /
+`gesture_combat.gd` / `combat_test.gd` silent, 120-frame boot scan empty), zero RID/orphan leaks.
+
+`combat_data.gd` — one line in `TUNING_BOOLS` + `TUNING_DEFAULTS`
+(`unlock_all_shortcuts: false`). Tab 8 generated its checkbox with no UI code, which is the whole
+point of the tuning layer.
+
+`dash_vfx.gd` — gates ride the curated-region lifecycle, no new file:
+- `SHORTCUT_GATE_LAYOUTS` specs `[target_region, flag, x, z, rot]`: hub 2 (-> 1 `shortcut_blame_unlocked`,
+  -> 2 `shortcut_eclipse_unlocked`), megastruc 2 (return -> 0 with `""`, -> 2 eclipse), eclipse 1
+  (return -> 0). Empty flag = permanent return gate.
+- Each gate is a `Node3D` (`top_level`, like the curated props) with two posts, a lintel and an
+  unshaded beacon slab. **No `StaticBody3D` and no `CollisionShape3D` at all**, so there is nothing
+  for Jolt to leak and nothing that can trap the player; zero post-processing.
+- `_spawn_shortcut_gates()` is called from `load_curated_region()`; `clear_shortcut_gates()` runs
+  first inside `clear_curated_region()` with the same `remove_child()` + `free()` rule, because
+  `queue_free` left RIDs alive at headless exit in 2A.
+- `refresh_shortcut_gate_visuals(unlock_all, flags) -> int` recomputes `locked` and repaints only
+  when the colour actually changes (dim crimson `(0.42,0.05,0.09)` sealed -> gold `(1,0.82,0.24)` open).
+
+`world_story.gd` — still a pure loader; the graph stays in `data/story_nodes.json` (`schema_version: 1`,
+untouched). Added `shortcut_flag_for_region()` (0 -> blame, 1 -> eclipse, 2 -> none), `has_flag()`
+and `unlock_shortcut()`, which sets `story_flags` and persists through the existing merged
+`"story_state"` writer. Nothing writes `"tuning"`, so neither block can erase the other.
+
+`dev_studio.gd` — `_cycle_region()` is now `_apply_region((region_idx + 1) % 3)`; the new
+`travel_to_region(idx)` goes through the same `_apply_region()`, so palette, curated props, gates and
+the tier-gated water all change in one place (a gate can never land on a half-applied arena). The
+story tab's boot-time region jump still reuses `_cycle_region()`. Banner + status are drawn in the
+existing `_draw()`; `_process()` now also redraws while a banner is live.
+
+`character_body_3d.gd` — `_tick_shortcut_gates(delta)` is called from `_physics_process` (60 Hz,
+never `_process`): 3.2 m radius, 0.85 s dwell, 2.0 s arrival cooldown. WINDUP / DASH / HITSTUN /
+GUARD / STEP or `is_defeated` cancel a dwell. A sealed gate refuses travel and reports
+`"SEALED GATE — Defeat rival to unlock"` without touching input. An open gate accumulates dwell,
+then `_travel_through_shortcut()` calls `travel_to_region()`, re-seats the player and every rival at
+`(0, 1.6, 6)` (never on the gate edge), resets dwell, starts the cooldown and shows the region
+banner (`INK CATHEDRAL` / `BLAME! MEGASTRUCTURE` / `GOTHIC ECLIPSE`).
+
+`gesture_combat.gd` — `_kill_rival()` calls `player.unlock_shortcut_for_region(current_region_index())`
+before the VICTORY state, so a KO in Region 0 grants `shortcut_blame_unlocked` and a KO in Region 1
+grants `shortcut_eclipse_unlocked` (both persisted, both repaint the gates).
+
+Verified (headless, `combat_test.gd` §21, 16 new asserts -> 163): the bool exists with a `false`
+default and toggles; the three regions spawn 2/2/1 gates and no gate targets its own region; with
+both flags absent 3 progression gates read sealed and the 2 return gates read open; repeated region
+switches leave the same non-queued child count (0 orphan nodes); a sealed gate refuses travel and
+never accumulates dwell; a real Region-0 KO grants blame only, the flag lands in `story_state` while
+`tuning.enemy_damage = 91` survives in the same `user://dev_profile.json`, and the hub gate repaints
+gold; 0.4 s of dwell does not travel, a further 0.5 s does (banner `BLAME! MEGASTRUCTURE`, cooldown
+armed); `unlock_all_shortcuts = true` opens the eclipse gate with no story flag at all.
+Not verified: no visual or on-device run — beacon read through fog, arch scale against the 14 m
+pillars and the 214 px banner placement are unjudged, and the dummy renderer never runs `_draw()`,
+so the banner and status text are proven as state, not pixels.
+
+=== AI HANDOFF PACKET ===
+REPO: Pinkypoopoo/sasti-sparkling-zero
+BRANCH: Pinkypoopoo-patch-1 (HEAD for this entry: V6 Task 2B)
+DONE: physical shortcut gates (2/2/1, body-less arch + unshaded lock beacon, spawned and freed with
+the curated region), flag persistence via story_state, rival-KO unlock, 60 Hz dwell travel with
+2 s arrival cooldown + region banner, unlock_all_shortcuts Tab 8 override, 16 new asserts.
+OPEN: no on-device visual pass (beacon readability, gate scale, banner placement); Blender 5.2
+exporter still unrun.
+NEXT: playtest the gates on a phone, then continue V6.
+=== END AI HANDOFF PACKET ===

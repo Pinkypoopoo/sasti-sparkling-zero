@@ -1147,6 +1147,80 @@ func _run() -> void:
 	var t12_after: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("user://dev_profile.json"))
 	check(is_equal_approx(float(t12_after.get("tuning", {}).get("enemy_damage", 0.0)), 91.0), "the progression reset never erases tuned values")
 
+	# --- 26. V7 Task 1: origins, story-rival duels, mastery bridge ----------
+	t12_story.select_origin("Profile_1")
+	var t13_title_1: String = t12_story.active_origin_title()
+	t12_story.select_origin("Profile_3")
+	var t13_title_3: String = t12_story.active_origin_title()
+	check(t13_title_1.contains("Ash Inquisitor") and t13_title_3.contains("Silicon Nomad") and t13_title_1 != t13_title_3, "selecting an origin changes the active origin title")
+	var t13_origin_snap: Dictionary = studio.get_hud_snapshot()["player"]
+	check(str(t13_origin_snap["origin_id"]) == "Profile_3" and str(t13_origin_snap["origin_title"]) == t13_title_3, "the HUD snapshot exposes the active origin id and title")
+
+	# A spawned story-choice rival is a distinct, safely separated encounter.
+	var t13_node: Dictionary = t12_story.get_current_node()
+	var t13_region: int = clampi(int(t13_node.get("region", 1)), 0, 2)
+	studio.travel_to_region(t13_region)
+	player.global_position = Vector3(0.0, 1.6, 0.0)
+	player.hitstun_timer = 0.0
+	player.hp = player.max_hp
+	combat.reset_duel()
+	var t13_base: Node3D = combat.primary_rival()
+	var t13_base_stats: Dictionary = combat.target_stats[t13_base]
+	t13_base_stats["story_override"] = false
+	check(not combat.is_story_rival_duel(), "a regional guardian without a story override is not a story-rival duel")
+	combat.spawn_story_rival(t13_node)
+	check(combat.is_story_rival_duel(), "spawning a story rival flags the duel as a story encounter")
+	check(int(combat.current_boss_phase()) == 1, "... and resets the boss to phase 1")
+	var t13_rival: Node3D = combat.primary_rival()
+	var t13_sep: float = player.global_position.distance_to(t13_rival.global_position)
+	check(t13_sep >= 7.0, "... at or beyond the 7 m safe combat separation (%.2f m)" % t13_sep)
+	var t13_boss_snap: Dictionary = studio.get_hud_snapshot()["boss"]
+	check(bool(t13_boss_snap["story_rival"]) and str(t13_boss_snap["name"]) == str(t13_node.get("rival_name", "")), "the HUD boss cluster badges the story rival with its authored name")
+
+	# The KO bridges the duel into story_state without touching tuning.
+	player.data_store.reset_tuning()
+	player.data_store.tuning["enemy_damage"] = 93.0
+	player.data_store.save_to_disk(player, combat)
+	t12_story.reset_progression_flags()
+	t12_story.select_origin("Profile_3")
+	combat.apply_damage(t13_rival, 99999.0, 0.0, Vector3(0.0, 8.0, 12.0))
+	Engine.time_scale = 1.0
+	var t13_prof: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("user://dev_profile.json"))
+	var t13_state: Dictionary = t13_prof.get("story_state", {})
+	var t13_mastery: Dictionary = t13_state.get("region_mastery", {})
+	var t13_entry: Dictionary = t13_mastery.get(str(t13_region), {})
+	var t13_origins: Array = t13_entry.get("cleared_origins", [])
+	check(str(t13_entry.get("best_origin", "")) == "Profile_3" and t13_origins.has("Profile_3"), "the region clear records its best origin and cleared-origin list")
+	var t13_rivals: Array = t13_state.get("story_rivals_defeated", [])
+	check(t13_rivals.has(str(t13_node.get("rival_name", ""))), "defeating an authored story rival is recorded in story_state")
+	check(is_equal_approx(float(t13_prof.get("tuning", {}).get("enemy_damage", 0.0)), 93.0), "the story-rival clear preserves tuning")
+	var t13_vic: Dictionary = studio.get_hud_snapshot()["victory"]
+	check(str(t13_vic["origin_title"]) == t13_title_3 and bool(t13_vic["story_rival"]) and int(t13_vic["story_rivals_defeated_count"]) == 1, "the victory card exposes the origin and the story-rival stamp data")
+
+	# A repeat encounter is deduplicated.
+	combat.spawn_story_rival(t13_node)
+	combat.apply_damage(combat.primary_rival(), 99999.0, 0.0, Vector3(0.0, 8.0, 12.0))
+	Engine.time_scale = 1.0
+	check(t12_story.story_rivals_defeated.size() == 1, "a repeat story-rival KO is deduplicated")
+
+	# Reset wipes the story-rival record and mastery but keeps origin + tuning.
+	t12_story.reset_progression_flags()
+	check(t12_story.story_rivals_defeated.is_empty() and int(t12_story.get_region_mastery(t13_region).get("clears", 1)) == 0, "reset_progression_flags clears story rivals and mastery")
+	check(str(t12_story.active_origin_id) == "Profile_3", "... while leaving the chosen origin selected")
+	var t13_after: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("user://dev_profile.json"))
+	check(is_equal_approx(float(t13_after.get("tuning", {}).get("enemy_damage", 0.0)), 93.0), "... and still preserving tuning")
+
+	# Leave no V7 Task 1 state behind.
+	player.data_store.reset_tuning()
+	player.data_store.save_to_disk(player, combat)
+	t12_story.select_origin("Profile_1")
+	player.hp = player.max_hp
+	player.hitstun_timer = 0.0
+	combat.reset_duel()
+	studio.travel_to_region(0)
+	player._refresh_shortcut_visuals()
+	t12_story.reset_progression_flags()
+
 	# Leave no V6 Task 6 state behind.
 	player.hp = player.max_hp
 	player.hitstun_timer = 0.0

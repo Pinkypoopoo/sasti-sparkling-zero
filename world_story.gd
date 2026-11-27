@@ -59,6 +59,16 @@ func get_current_node() -> Dictionary:
 func node_exists(node_id: String) -> bool:
 	return story_nodes.has(node_id)
 
+# V7 Task 1: read-only origin label for the HUD. The titles stay authored JSON;
+# a missing entry falls back to the stored id and never invents narrative.
+func active_origin_title() -> String:
+	var entry = origins.get(active_origin_id, null)
+	if typeof(entry) == TYPE_DICTIONARY:
+		var title := str((entry as Dictionary).get("title", ""))
+		if not title.is_empty():
+			return title
+	return active_origin_id
+
 # --- V6 Task 2B: shortcut gate flags ----------------------------------------
 # Progress flags only. The narrative graph stays in data/story_nodes.json; this
 # is the single place that copies a shortcut flag into story_flags and persists
@@ -77,6 +87,8 @@ const RANK_VALUE: Dictionary = {"S": 4, "A": 3, "B": 2, "C": 1}
 
 # Per-region bests, persisted inside "story_state" next to the flags.
 var region_mastery: Dictionary = {}
+# V7 Task 1: authored story-choice rivals already K.O.'d (deduplicated ids).
+var story_rivals_defeated: Array[String] = []
 
 # Region order matches REGION_NAMES / CURATED_REGION_LAYOUTS: 0 hub, 1 megastruc,
 # 2 sanctum. Region 2 owns no outgoing shortcut, so its clear flag is the V6
@@ -91,37 +103,70 @@ func shortcut_flag_for_region(region_idx: int) -> String:
 func region_clear_note(region_idx: int) -> String:
 	return REGION_CLEAR_NOTES[clampi(region_idx, 0, REGION_CLEAR_NOTES.size() - 1)]
 
-# --- V6 Task 6: regional mastery --------------------------------------------
-# Writes the region's clear flag plus its best rank/time/count in one merged save,
-# so a defeat card and a stored best can never disagree. Ranks only ever move up.
-func record_region_victory(region_idx: int, rank: String, elapsed: float) -> Dictionary:
+# --- V6 Task 6 + V7 Task 1: regional mastery --------------------------------
+# Writes the region's clear flag plus its best rank/time/count, the origin that
+# owns the best and the origins that have cleared it in one merged save, so a
+# defeat card and a stored best can never disagree. Ranks only ever move up.
+# The extra arguments default, so the 3-argument callers keep working.
+func record_region_victory(region_idx: int, rank: String, elapsed: float, origin_id: String = "", is_story_rival: bool = false, rival_name: String = "") -> Dictionary:
 	var idx: int = clampi(region_idx, 0, REGION_CLEAR_FLAGS.size() - 1)
 	story_flags[REGION_CLEAR_FLAGS[idx]] = true
 	var key := str(idx)
 	var prev: Dictionary = {}
 	if typeof(region_mastery.get(key, null)) == TYPE_DICTIONARY:
 		prev = region_mastery[key]
-	var best_rank: String = str(prev.get("best_rank", ""))
-	if best_rank.is_empty() or _rank_value(rank) > _rank_value(best_rank):
+	var origin: String = origin_id if not origin_id.is_empty() else active_origin_id
+	var prev_best: String = str(prev.get("best_rank", ""))
+	var new_best: bool = prev_best.is_empty() or _rank_value(rank) > _rank_value(prev_best)
+	var best_rank: String = prev_best
+	if new_best:
 		best_rank = rank if _rank_value(rank) > 0 else "C"
 	var best_time: float = float(prev.get("best_time", 0.0))
 	if elapsed > 0.0 and (best_time <= 0.0 or elapsed < best_time):
 		best_time = elapsed
+	var best_origin: String = str(prev.get("best_origin", ""))
+	if new_best or best_origin.is_empty():
+		best_origin = origin
+	var cleared_origins: Array[String] = []
+	var raw_cleared = prev.get("cleared_origins", [])
+	if typeof(raw_cleared) == TYPE_ARRAY:
+		for o in raw_cleared:
+			var cleared_id := str(o)
+			if not cleared_id.is_empty() and not cleared_origins.has(cleared_id):
+				cleared_origins.append(cleared_id)
+	if not origin.is_empty() and not cleared_origins.has(origin):
+		cleared_origins.append(origin)
 	var entry := {
 		"best_rank": best_rank,
 		"best_time": best_time,
 		"clears": maxi(0, int(prev.get("clears", 0))) + 1,
 		"last_rank": rank,
+		"best_origin": best_origin,
+		"cleared_origins": cleared_origins,
 	}
 	region_mastery[key] = entry
+	if is_story_rival:
+		_note_story_rival(rival_name)
 	save_state()
 	return entry.duplicate(true)
+
+# Authored story-choice rivals only. Ids are the node's rival_name, deduplicated
+# so replaying the same encounter cannot inflate the tally.
+func _note_story_rival(rival_name: String) -> void:
+	var rival_id := rival_name.strip_edges()
+	if rival_id.is_empty():
+		rival_id = "STORY_RIVAL"
+	if not story_rivals_defeated.has(rival_id):
+		story_rivals_defeated.append(rival_id)
+
+func story_rivals_defeated_count() -> int:
+	return story_rivals_defeated.size()
 
 func get_region_mastery(region_idx: int) -> Dictionary:
 	var saved = region_mastery.get(str(clampi(region_idx, 0, REGION_CLEAR_FLAGS.size() - 1)), null)
 	if typeof(saved) == TYPE_DICTIONARY:
 		return (saved as Dictionary).duplicate(true)
-	return {"best_rank": "", "best_time": 0.0, "clears": 0, "last_rank": ""}
+	return {"best_rank": "", "best_time": 0.0, "clears": 0, "last_rank": "", "best_origin": "", "cleared_origins": []}
 
 func is_vertical_slice_cleared() -> bool:
 	for f in REGION_CLEAR_FLAGS:
@@ -135,6 +180,7 @@ func reset_progression_flags() -> void:
 	for f in REGION_CLEAR_FLAGS:
 		story_flags.erase(f)
 	region_mastery.clear()
+	story_rivals_defeated.clear()
 	save_state()
 
 func _rank_value(rank: String) -> int:
@@ -230,6 +276,7 @@ func save_state() -> void:
 		"current_node_id": current_node_id,
 		"story_flags": story_flags,
 		"region_mastery": region_mastery,
+		"story_rivals_defeated": story_rivals_defeated,
 		"completed_nodes": completed_nodes,
 		"unlocks": unlocks,
 	}
@@ -263,6 +310,12 @@ func load_state() -> void:
 	region_mastery = {}
 	if typeof(s.get("region_mastery", null)) == TYPE_DICTIONARY:
 		region_mastery = s["region_mastery"]
+	story_rivals_defeated.clear()
+	if typeof(s.get("story_rivals_defeated", null)) == TYPE_ARRAY:
+		for r in s["story_rivals_defeated"]:
+			var rival_id := str(r)
+			if not rival_id.is_empty() and not story_rivals_defeated.has(rival_id):
+				story_rivals_defeated.append(rival_id)
 	if typeof(s.get("completed_nodes", null)) == TYPE_ARRAY:
 		completed_nodes.clear()
 		for n in s["completed_nodes"]:
