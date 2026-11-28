@@ -1437,6 +1437,192 @@ func _run() -> void:
 	player.dash_vfx.sigil_timers[t16_idx] = 0.0
 	player.dash_vfx.sigil_rings[t16_idx].visible = false
 
+	# --- 32. V8 Task 2: 3-stage gauntlet persistence + thermal auto-guard ------
+	# 32a. The two knobs live in the auto-generated Tab 8 tables (never hand-coded
+	# UI) and a fresh profile falls back to enabled / 75 FPS / 5 FPS steps.
+	check(CombatData.TUNING_BOOLS.has("thermal_guard_enabled") and CombatData.TUNING_DEFAULTS.has("thermal_guard_enabled"), "thermal_guard_enabled is an auto-generated Tab 8 checkbox")
+	check(CombatData.TUNING_SPEC.has("thermal_fps_floor") and CombatData.TUNING_DEFAULTS.has("thermal_fps_floor"), "thermal_fps_floor is an auto-generated Tab 8 slider")
+	var t17_defaults: Dictionary = CombatData.TUNING_DEFAULTS
+	check(bool(t17_defaults["thermal_guard_enabled"]) and is_equal_approx(float(t17_defaults["thermal_fps_floor"]), 75.0), "... defaulting to enabled at a 75.0 FPS floor")
+	var t17_spec: Array = CombatData.TUNING_SPEC["thermal_fps_floor"]
+	check(is_equal_approx(float(t17_spec[0]), 45.0) and is_equal_approx(float(t17_spec[1]), 110.0) and is_equal_approx(float(t17_spec[2]), 5.0), "... inside the authored 45-110 FPS / 5 FPS step range")
+
+	var t17_ds = player.data_store
+	t17_ds.tuning["auto_quality"] = false
+	t17_ds.tuning["thermal_guard_enabled"] = true
+	t17_ds.tuning["thermal_fps_floor"] = 75.0
+	t17_ds.tuning["quality_tier"] = 2
+	t17_ds.tuning["render_scale"] = 0.92
+	player.apply_quality_tier()
+	player.thermal_low_accum = 0.0
+	player.thermal_step_cooldown = 0.0
+	player.thermal_status = ""
+	player.thermal_status_timer = 0.0
+
+	# A short dip is a stutter, not a hot phone: it accrues but never steps.
+	var t17_step: bool = false
+	for t17_i in range(3):
+		t17_step = player.tick_thermal_guard(1.0, 40.0)
+	check(not t17_step and int(t17_ds.tuning["quality_tier"]) == 2, "a 3 s FPS dip never steps the tier down")
+	check(is_equal_approx(float(player.thermal_low_accum), 3.0), "... it only accrues the dip")
+
+	# +5 FPS hysteresis: one clean window wipes the debt instead of decaying it.
+	player.tick_thermal_guard(1.0, 92.0)
+	check(is_equal_approx(float(player.thermal_low_accum), 0.0), "one window above floor + 5 FPS clears the whole debt")
+
+	var t17_step2: bool = false
+	for t17_i in range(4):
+		t17_step2 = player.tick_thermal_guard(1.0, 40.0)
+	check(t17_step2 and int(t17_ds.tuning["quality_tier"]) == 1, "4 s of sustained low FPS steps exactly one tier down")
+	check(str(player.thermal_status).contains("TIER -> MID") and float(player.thermal_status_timer) > 0.0, "... and raises a readable THERMAL GUARD toast")
+	check(str(studio.get_hud_snapshot()["thermal_status"]).contains("THERMAL GUARD"), "get_hud_snapshot() exposes that toast as thermal_status")
+
+	# 10 s cooldown, then the next step, then the hard floor at tier 0 (LOW).
+	var t17_cool: bool = true
+	for t17_i in range(5):
+		if player.tick_thermal_guard(1.0, 40.0):
+			t17_cool = false
+	check(t17_cool and int(t17_ds.tuning["quality_tier"]) == 1, "the 10 s cooldown blocks a second step inside 5 s")
+	var t17_step3: bool = false
+	for t17_i in range(6):
+		if player.tick_thermal_guard(1.0, 40.0):
+			t17_step3 = true
+	check(t17_step3 and int(t17_ds.tuning["quality_tier"]) == 0, "... and the next step lands once the cooldown expires")
+	var t17_floor: bool = false
+	for t17_i in range(20):
+		if player.tick_thermal_guard(1.0, 20.0):
+			t17_floor = true
+	check(not t17_floor and int(t17_ds.tuning["quality_tier"]) == 0, "the guard never steps below tier 0 (LOW)")
+	check(not player.tick_thermal_guard(5.0, 0.0), "a zero FPS read is a missing sample, never a step")
+
+	# The checkbox is the only off switch and it is fully inert when off.
+	t17_ds.tuning["thermal_guard_enabled"] = false
+	t17_ds.tuning["quality_tier"] = 2
+	player.apply_quality_tier()
+	player.thermal_low_accum = 0.0
+	player.thermal_step_cooldown = 0.0
+	var t17_inert: bool = false
+	for t17_i in range(8):
+		if player.tick_thermal_guard(1.0, 20.0):
+			t17_inert = true
+	check(not t17_inert and int(t17_ds.tuning["quality_tier"]) == 2, "the guard is inert while thermal_guard_enabled is off")
+	t17_ds.tuning["thermal_guard_enabled"] = true
+	player.apply_quality_tier()
+
+	# 32b. The gauntlet: gates frozen, a +35% heal per stage, one cumulative grade
+	# and a merged save that keeps "tuning" beside it.
+	studio.story_mgr.call("reset_progression_flags")
+	var t17_fresh: Dictionary = studio.story_mgr.call("get_boss_rush_mastery")
+	check(int(t17_fresh.get("clears", -1)) == 0, "the progression reset also clears the persisted gauntlet record")
+
+	# A sentinel the merged story_state write must never drop.
+	t17_ds.tuning["thermal_fps_floor"] = 91.0
+	player.data_store.save_to_disk(player, combat)
+
+	studio.start_boss_rush()
+	check(bool(studio.boss_rush_active) and int(studio.boss_rush_stage) == 0, "the rush starts live on stage 1")
+	player.shortcut_dwell = 0.6
+	player.shortcut_status = "SHORTCUT OPEN — hold to travel"
+	var t17_region: int = int(studio.region_idx)
+	for t17_i in range(20):
+		player._tick_shortcut_gates(0.1)
+	check(is_equal_approx(float(player.shortcut_dwell), 0.0) and str(player.shortcut_status).is_empty(), "a live gauntlet freezes the shortcut gate dwell")
+	check(int(studio.region_idx) == t17_region, "... so no edge gate can tram the run into another region")
+
+	# Stage 1 -> 2: the stage grade accrues and the clear pays exactly 35%.
+	player.hp = player.max_hp * 0.2
+	var t17_hp_before: float = float(player.hp)
+	combat.apply_damage(combat.primary_rival(), 99999.0, 0.0, Vector3.ZERO)
+	Engine.time_scale = 1.0
+	studio._tick_boss_rush()
+	check(int(studio.boss_rush_stage) == 1 and int(studio.region_idx) == 1, "the first clear rolls into stage 2 / region 1")
+	check(int(studio.boss_rush_heals) == 1 and is_equal_approx(float(player.hp), minf(player.max_hp, t17_hp_before + player.max_hp * 0.35)), "stage 2 opens on a +35% max HP partial heal")
+	check(player.global_position.distance_to(combat.primary_rival().global_position) >= 6.99, "... with the next guardian a clean 7 m away")
+	check(int(combat.target_stats.size()) == 1 and int(combat.parked_rivals.size()) == 1, "... and still exactly one registered rival")
+
+	# Stage 2 -> 3: same terms, no accumulation of rivals or heals.
+	player.hp = player.max_hp * 0.1
+	var t17_hp_before2: float = float(player.hp)
+	combat.apply_damage(combat.primary_rival(), 99999.0, 0.0, Vector3.ZERO)
+	Engine.time_scale = 1.0
+	studio._tick_boss_rush()
+	check(int(studio.boss_rush_stage) == 2 and int(studio.region_idx) == 2, "the second clear rolls into stage 3 / region 2")
+	check(int(studio.boss_rush_heals) == 2 and is_equal_approx(float(player.hp), minf(player.max_hp, t17_hp_before2 + player.max_hp * 0.35)), "... paying the same +35% partial heal")
+	check(int(combat.target_stats.size()) == 1 and int(combat.parked_rivals.size()) == 1, "the gauntlet never stacks a duplicate rival")
+
+	# Stage 3: the run completes, grades and persists instead of aborting.
+	combat.apply_damage(combat.primary_rival(), 99999.0, 0.0, Vector3.ZERO)
+	Engine.time_scale = 1.0
+	studio._tick_boss_rush()
+	check(not bool(studio.boss_rush_active) and bool(studio.boss_rush_complete), "the third clear completes the gauntlet instead of aborting it")
+	check(int(studio.boss_rush_clears) == 3 and str(studio.boss_rush_rank) == "S", "... and grades the cumulative run S on a clean fast sweep")
+	check(is_equal_approx(float(studio.boss_rush_damage_taken), 0.0), "... with the ledger carrying zero damage across all three stages")
+
+	# Pure grading: the same ledger always lands on the same letter.
+	var t17_steady: Dictionary = studio.last_boss_rush_summary.duplicate(true)
+	studio.boss_rush_elapsed = 0.0
+	studio.boss_rush_damage_taken = 0.0
+	studio.boss_rush_parries = 0
+	studio.boss_rush_finishers = 0
+	check(str(studio.compute_boss_rush_rank()["rank"]) == "S", "a spotless ledger grades S")
+	studio.boss_rush_damage_taken = 250.0
+	check(str(studio.compute_boss_rush_rank()["rank"]) == "A", "+250 damage drops the gauntlet to A")
+	studio.boss_rush_damage_taken = 400.0
+	check(str(studio.compute_boss_rush_rank()["rank"]) == "B", "+400 damage drops it to B")
+	studio.boss_rush_damage_taken = 600.0
+	check(str(studio.compute_boss_rush_rank()["rank"]) == "C", "a bloody gauntlet falls to C")
+	studio.boss_rush_elapsed = float(t17_steady.get("elapsed", 0.0))
+	studio.boss_rush_damage_taken = float(t17_steady.get("damage_taken", 0.0))
+	studio.boss_rush_parries = int(t17_steady.get("parries", 0))
+	studio.boss_rush_finishers = int(t17_steady.get("finishers", 0))
+
+	# HUD snapshot + the merged save on disk.
+	var t17_snap: Dictionary = studio.get_hud_snapshot()
+	var t17_br: Dictionary = t17_snap["boss_rush"]
+	check(not bool(t17_br["active"]) and bool(t17_br["complete"]) and str(t17_br["rank"]) == "S", "get_hud_snapshot() reports the completed gauntlet and its rank")
+	check(int(t17_br["total_stages"]) == 3 and str(t17_br["best_rank"]) == "S" and int(t17_br["clears"]) == 1, "... with 3 stages, the persisted best and one clear")
+	check(bool(t17_snap["victory"]["active"]), "... while the victory card is still up to carry the GAUNTLET COMPLETE stamp")
+
+	var t17_doc: Dictionary = {}
+	if FileAccess.file_exists(CombatData.SAVE_PATH):
+		var t17_file := FileAccess.open(CombatData.SAVE_PATH, FileAccess.READ)
+		if t17_file:
+			var t17_parsed = JSON.parse_string(t17_file.get_as_text())
+			if typeof(t17_parsed) == TYPE_DICTIONARY:
+				t17_doc = t17_parsed
+	var t17_story: Dictionary = {}
+	if typeof(t17_doc.get("story_state", null)) == TYPE_DICTIONARY:
+		t17_story = t17_doc["story_state"]
+	var t17_saved: Dictionary = {}
+	if typeof(t17_story.get("boss_rush", null)) == TYPE_DICTIONARY:
+		t17_saved = t17_story["boss_rush"]
+	var t17_tuning: Dictionary = {}
+	if typeof(t17_doc.get("tuning", null)) == TYPE_DICTIONARY:
+		t17_tuning = t17_doc["tuning"]
+	check(str(t17_saved.get("best_rank", "")) == "S" and int(t17_saved.get("clears", 0)) == 1, "the S rank and the clear count persist inside story_state.boss_rush")
+	check(is_equal_approx(float(t17_tuning.get("thermal_fps_floor", 0.0)), 91.0), "... without dropping the 91.0 tuning sentinel from the same profile")
+	check(t17_story.has("region_mastery") and t17_story.has("story_rivals_defeated"), "... and without dropping the region mastery or the defeated-rival list")
+
+	# A defeat ends the run only; an explicit abort never touches the record.
+	studio.start_boss_rush()
+	studio.travel_to_region(1)
+	combat.result_state = "DEFEAT"
+	studio._tick_boss_rush()
+	check(not bool(studio.boss_rush_active) and int(studio.boss_rush_stage) == 0, "a DEFEAT aborts the run cleanly")
+	check(int(studio.region_idx) == 1 and str(combat.result_state) == "DEFEAT", "... leaving the region and the defeat card exactly as normal play left them")
+	studio.start_boss_rush()
+	studio.abort_boss_rush()
+	check(not bool(studio.boss_rush_active) and not bool(studio.boss_rush_complete) and str(studio.boss_rush_rank).is_empty(), "an explicit abort clears the live run and its ledger")
+	check(int(studio.story_mgr.call("get_boss_rush_mastery")["clears"]) == 1, "... without ever touching the persisted record")
+
+	# Leave no V8 Task 2 state behind.
+	combat.result_state = ""
+	studio.travel_to_region(0)
+	studio.story_mgr.call("reset_progression_flags")
+	player.shortcut_dwell = 0.0
+	player.shortcut_status = ""
+	player.hp = player.max_hp
+
 	# Leave no test tuning behind for the next run.
 	player.data_store.reset_tuning()
 	player.data_store.refresh_auto_quality()

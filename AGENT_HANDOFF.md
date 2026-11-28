@@ -87,67 +87,6 @@ Answer in §4 with a dated entry. These are decisions, not research tasks.
 
 ## 4. Message log
 
-### 2026-11-27 · Buffy (Freebuff) — V6 Task 6: regional mastery loop, S/A/B/C duel grading, eclipse finale
-
-Branch `Pinkypoopoo-patch-1`, based on `754ae4b`. `main` untouched.
-Gate: **VERIFY_PASSED**, 7 gates, 79 signatures, 245 combat asserts (+22 in §25), zero GDScript
-warnings (`--check-only` on `world_story.gd` / `gesture_combat.gd` / `dev_studio.gd` silent).
-
-`gesture_combat.gd` — 60 Hz duel metrics + deterministic grading, no new file:
-- `duel_elapsed` / `duel_damage_taken` / `duel_parries_landed` / `duel_stagger_finishers` +
-  `last_victory_summary`. `_tick_duel_metrics()` runs at the top of `_physics_process` and only
-  accumulates while a duel is live: no `result_state`, no `player.is_defeated`, no
-  `hitstop_timer`, rival not `AIState.DEAD`. `_reset_duel_metrics()` fires from `reset_duel()`,
-  `spawn_story_rival()` and `apply_region_boss_profile()` (region travel).
-- Damage comes from the `take_damage()` delta (`hp_before - player.hp`), not the tuning number, so
-  immortal/overkill hits cannot inflate it. Parries count on: the Z-Vanish counter, the super
-  parry, and both Sonic Sway evasion paths (unblockable sway + guarded sway).
-- `compute_duel_rank()` is pure: `1000 + parries*90 + finishers*140 - round(elapsed*20) -
-  round(taken*2)`, clamped 0..1600, bands `S>=900 / A>=650 / B>=400 / else C`. Verified: 9 s, 0 dmg,
-  2 parries, 1 finisher = 1140 → S; 35 s, 800 dmg = 0 → C.
-- `_kill_rival()` now grades, caches `last_victory_summary` (`region`, `region_title`, `rank`,
-  `score`, `elapsed`, `damage_taken`, `parries`, `finishers`, `unlock_note`, `best_rank`,
-  `clears`) and calls `world_story.record_region_victory()` before `result_state = "VICTORY"`, so
-  the RETRY card and the rank stamp read one cached snapshot.
-
-`world_story.gd` — still a pure loader:
-- `ECLIPSE_SANCTUM_FLAG`, `REGION_CLEAR_FLAGS` (`[blame, eclipse, eclipse_sanctum_cleared]`),
-  `REGION_CLEAR_NOTES`, `RANK_VALUE` (`S`=4 … `C`=1).
-- `shortcut_flag_for_region(2)` now returns `"eclipse_sanctum_cleared"` (it returned `""`), so the
-  existing `player.unlock_shortcut_for_region(2)` grants the finale flag through one path instead
-  of a second KO hook.
-- `record_region_victory(idx, rank, elapsed)` sets the clear flag and writes
-  `region_mastery[str(idx)] = {best_rank, best_time, clears, last_rank}`: rank only moves up
-  (`S>A>B>C`), `best_time` only takes a faster positive time, `clears` always increments. Saves
-  through the merged `story_state` writer, so `"tuning"` is never dropped.
-- `get_region_mastery()`, `is_vertical_slice_cleared()` (all 3 flags), `region_clear_note()`,
-  `reset_progression_flags()` (erases the 3 flags + `region_mastery`, then merged-saves).
-  `region_mastery` round-trips through `save_state()` / `load_state()`.
-
-`dev_studio.gd`:
-- `get_hud_snapshot()["victory"]` = `active, region_title, rank, score, elapsed, damage_taken,
-  parries, finishers, unlock_note, best_rank, vertical_slice_cleared` (defaults present before any
-  KO). `active` needs `result_state == "VICTORY"` *and* a non-empty summary, so the card cannot
-  outlive `reset_duel()`.
-- `_draw_seinen_hud()` draws the Dark Seinen Victory Rank Card after the dwell bar: ink panel,
-  92 px rank stamp (gold S / bone A / crimson B-C), region + CLEARED, time/parries/finishers,
-  damage/score, `BEST <rank>`, the unlock line, and `VERTICAL SLICE CLEARED`. It is placed above the
-  existing centred RETRY overlay, and flips below it when the viewport is too short (`card_y < 150`),
-  so the two victory cards never overlap at 720p or 1080p. Same 10 Hz snapshot, no new nodes,
-  shaders or allocations, still hidden while the Dev Panel / P5 menu is open.
-- Story/World tab: chunky `[ RESET PROGRESSION ]` button (+ one-line note) at the top of the tab,
-  wired to `_reset_progression()` → `reset_progression_flags()`,
-  `player._refresh_shortcut_visuals()`, toast, `_refresh_story_ui()`.
-
-Test coverage is §25 of `combat_test.gd` (22 asserts): metrics tick/freeze/record/reset, S and C
-grading with the reported dictionary, region-2 flag + summary + `region_mastery` on disk beside
-`tuning` (91.0 sentinel), HUD snapshot contents, S never downgraded on a 40 s / 900 dmg repeat,
-`is_vertical_slice_cleared()` after all three clears, reset relocking both hub gates, and reset
-keeping the 91.0 tuning value. The test leaves no flags, mastery or tuning behind.
-
-Unverified: the card's pixels (headless `_draw()` never runs) and the reset button's touch size on a
-real device; both read only from the snapshot verified above.
-
 ### 2026-11-27 · Buffy (Freebuff) — V7 Task 1: story-to-progression bridge (origins, story rivals, mastery)
 
 Branch `Pinkypoopoo-patch-1`, based on `3625526`. `main` untouched.
@@ -387,4 +326,101 @@ OPEN: no on-device/mobile look at the water or the rings; the shader was never c
 renderer in this sandbox.
 NEXT: open Gothic Eclipse on a phone and confirm the ring stops flickering and the water no longer
 z-fights the floor.
+=== END AI HANDOFF PACKET ===
+
+### 2026-11-28 · Buffy (Freebuff) — V8 Task 2: full 3-stage gauntlet, mobile thermal auto-guard
+
+Branch `Pinkypoopoo-patch-1`, based on `e307ef4` (V8 Task 1A). `main` untouched.
+Gate: **VERIFY_PASSED**, 7 gates, 79 signatures, **358 combat asserts** (+43 in §32), zero GDScript
+warnings (`--check-only` on `character_body_3d.gd` / `world_story.gd` / `dev_studio.gd` /
+`combat_test.gd` silent), zero RID/orphan leaks. `data/story_nodes.json`, `story_test.gd`,
+`flame_p5_pvp.gd` and `combat_data.gd` untouched.
+
+Audit first: `thermal_guard_enabled` / `thermal_fps_floor` already existed in `TUNING_BOOLS` /
+`TUNING_SPEC` / `TUNING_DEFAULTS` (V7 Task 3), so Tab 8 needed nothing. V8 Task 1B's
+`start/abort/toggle_boss_rush()` + `_tick_boss_rush()` were extended in place, never duplicated.
+
+`character_body_3d.gd` — step-down-only thermal guard:
+- `tick_thermal_guard(dt, measured_fps)` returns true only on the tick that stepped. Skips when the
+  checkbox is off (and clears the accumulator/status), the tree is paused, the sample is `<= 0.0`,
+  or `quality_tier <= 0` (LOW is the floor).
+- `thermal_low_accum` grows only under the floor; at or above `floor + 5.0` it is zeroed outright
+  (hysteresis), and inside the 5 FPS band it only decays, so a device parked on the floor cannot
+  ratchet itself down. `>= 4.0 s` plus `thermal_step_cooldown <= 0.0` writes the next tier into
+  `data_store.tuning` (tier + its `render_scale`), calls the existing `apply_quality_tier()`, arms a
+  `10.0 s` cooldown and raises `THERMAL GUARD: TIER -> <label>` for `3.5 s`. It never steps back up.
+- Called from `_physics_process` (skipped while the P5 camera override is on) with
+  `Engine.get_frames_per_second()`.
+- `boss_rush_live()` probe plus a guard at the top of `_tick_shortcut_gates()`: while a gauntlet is
+  live the dwell is zeroed and the status cleared before any gate lookup, so an edge gate cannot
+  tram the run into another region.
+
+`world_story.gd` — still a pure loader/writer:
+- `boss_rush_mastery` + `record_boss_rush_result(rank, elapsed)` / `get_boss_rush_mastery()`. Same
+  contracts as the region mastery: `best_rank` only moves up (S>A>B>C), `best_time` only takes a
+  faster positive time, `clears` always increments.
+- It is written as `"boss_rush"` **inside** `"story_state"`, through the same merged
+  `user://dev_profile.json` writer, so `"tuning"`, `"region_mastery"` and
+  `"story_rivals_defeated"` survive. `load_state()` round-trips it and
+  `reset_progression_flags()` clears it.
+
+`dev_studio.gd` — the gauntlet loop:
+- New ledger (`elapsed`, `damage_taken`, `parries`, `finishers`, `heals`), `boss_rush_complete`,
+  `boss_rush_rank`, `boss_rush_score`, `last_boss_rush_summary`. `start_boss_rush()` and
+  `abort_boss_rush()` both reset it, so an abort never leaks a score into the next run.
+- `_tick_boss_rush()` reads `compute_duel_rank()` **before** it touches the arena (the stage grade is
+  still live), accumulates it, and on stages 0 -> 1 and 1 -> 2 runs `_apply_region()` ->
+  `reset_duel()` -> `_heal_player_for_next_stage()` -> `_seat_boss_rush_stage()`.
+- The heal is `min(max_hp, hp_at_clear + 35% max_hp)` and is deliberately stamped **after**
+  `reset_duel()`, because that path revives to full the way a RETRY does: a gauntlet stage is not a
+  retry, so it never pays a free full heal.
+- `_seat_boss_rush_stage()` re-seats the next guardian exactly 7.0 m from the re-seated player and
+  rewrites its `home_pos`, so a later RETRY reads the same gap. `enforce_single_active_rival()` still
+  owns the count, so no duplicate rival and no new nodes.
+- `_finish_boss_rush()` stores `compute_boss_rush_rank()` (`1000 + parries*90 + finishers*140 -
+  12*elapsed - 1.2*damage`, clamped 0..1700, on the duel's own `DUEL_RANK_BANDS`), then persists it
+  through `record_boss_rush_result()`; the victory card is left standing so the completion stamp can
+  read it. A `DEFEAT` aborts the run without touching the region or the card.
+- `get_hud_snapshot()` gains `"boss_rush"` (`active`, `stage`, `total_stages`, `complete`, `rank`,
+  `score`, `best_rank`, `clears`, read live from world_story) and `"thermal_status"`.
+- `_draw_seinen_hud()` adds a crimson `[ GAUNTLET X/3 ]` plate under the player cluster (it steps
+  below the combo badge and the origin tag), a `GAUNTLET COMPLETE — RANK X` footer on the victory
+  card (the card grows 22 px so it cannot overlap the duel grade or the RETRY overlay) and a
+  bottom-centre thermal toast while `thermal_status` is non-empty. Same 10 Hz snapshot, no new nodes
+  or shaders, no `size`/`position`/`scale`/`rotation` parameter shadows.
+- Story/World tab gains `[ BOSS RUSH ]` / `[ ABORT RUSH ]` (44 px, beside `[ RESET PROGRESSION ]`)
+  driving the same `toggle_boss_rush()` as the `19 // BOSS RUSH` blade row. Still 8 tabs, still 20
+  P5 rows, `flame_p5_pvp.gd` untouched.
+
+Test coverage is §32 (43 asserts): both Tab 8 knobs and their 45-110 / 5.0 spec range; a 3 s dip only
+accrues; one window above floor + 5 FPS wipes the debt; 4 s sustained steps 2 -> 1 and raises the
+toast (`get_hud_snapshot()["thermal_status"]` included); the 10 s cooldown blocks a second step
+inside 5 s and the next one lands after it; 20 s more never goes below 0; a 0.0 FPS sample is a
+no-op; the checkbox makes it inert. On the gauntlet: the progression reset clears the record; a live
+rush freezes a 0.6 dwell to 0.0 and 20 gate ticks keep the region; stage 0 -> 1 and 1 -> 2 each roll
+the region and pay exactly `hp + 35% max_hp` with the next guardian 7 m away and still one
+registered rival; the third clear completes, grades S, and writes
+`story_state.boss_rush = {best_rank S, clears 1}` beside the 91.0 tuning sentinel and the surviving
+`region_mastery` / `story_rivals_defeated`; the pure ledger grades S / A / B / C at 0 / 250 / 400 /
+600 damage; `get_hud_snapshot()["boss_rush"]` reports complete + rank + best + clears with the
+victory card still up; a DEFEAT aborts without moving the region and an explicit abort keeps the
+persisted record. The test leaves no flags, mastery or tuning behind.
+
+Unverified: no pixels — headless never runs `_draw()`, so the GAUNTLET badge, the completion stamp
+and the thermal toast were never looked at; no real device, so the 4 s / 10 s thermal timing and the
+render-target resize cost of the tier step are unmeasured; and no real 3-stage playthrough — the loop
+is driven by KOs in-process.
+
+=== AI HANDOFF PACKET ===
+REPO: Pinkypoopoo/sasti-sparkling-zero
+BRANCH: Pinkypoopoo-patch-1 (HEAD for this entry: V8 Task 2 on e307ef4)
+DONE: step-down-only thermal auto-guard (4 s hold, +5 FPS hysteresis, 10 s cooldown, tier-0 floor,
+3.5 s toast) wired to the live physics tick and the Tab 8 knobs; gauntlet shortcut-gate suspension;
+3-stage Boss Rush with a cumulative ledger, +35% inter-stage partial heal, 7 m re-seat, S/A/B/C
+gauntlet grade persisted as `story_state.boss_rush` beside `tuning`; GAUNTLET badge, completion
+stamp and thermal toast; Story-tab BOSS RUSH button; 43 new asserts.
+OPEN: no visual run (badge/stamp/toast pixels), no on-device thermal or FPS measurement, no real
+three-stage playtest.
+NEXT: play a full gauntlet on a phone and check the badge never collides with the boss cluster, then
+watch whether the 4 s hold fires on a thermally throttled Adreno 618.
 === END AI HANDOFF PACKET ===

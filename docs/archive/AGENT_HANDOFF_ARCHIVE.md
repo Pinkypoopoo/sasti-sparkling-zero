@@ -934,3 +934,65 @@ OPEN: no on-device listening pass (timbre, mix balance, phone speaker); Blender 
 unrun.
 NEXT: listen on a phone and balance `sfx_volume`, then continue V6.
 === END AI HANDOFF PACKET ===
+
+---
+
+### 2026-11-27 · Buffy (Freebuff) — V6 Task 6: regional mastery loop, S/A/B/C duel grading, eclipse finale
+Branch `Pinkypoopoo-patch-1`, based on `754ae4b`. `main` untouched.
+Gate: **VERIFY_PASSED**, 7 gates, 79 signatures, 245 combat asserts (+22 in §25), zero GDScript
+warnings (`--check-only` on `world_story.gd` / `gesture_combat.gd` / `dev_studio.gd` silent).
+
+`gesture_combat.gd` — 60 Hz duel metrics + deterministic grading, no new file:
+- `duel_elapsed` / `duel_damage_taken` / `duel_parries_landed` / `duel_stagger_finishers` +
+  `last_victory_summary`. `_tick_duel_metrics()` runs at the top of `_physics_process` and only
+  accumulates while a duel is live: no `result_state`, no `player.is_defeated`, no
+  `hitstop_timer`, rival not `AIState.DEAD`. `_reset_duel_metrics()` fires from `reset_duel()`,
+  `spawn_story_rival()` and `apply_region_boss_profile()` (region travel).
+- Damage comes from the `take_damage()` delta (`hp_before - player.hp`), not the tuning number, so
+  immortal/overkill hits cannot inflate it. Parries count on: the Z-Vanish counter, the super
+  parry, and both Sonic Sway evasion paths (unblockable sway + guarded sway).
+- `compute_duel_rank()` is pure: `1000 + parries*90 + finishers*140 - round(elapsed*20) -
+  round(taken*2)`, clamped 0..1600, bands `S>=900 / A>=650 / B>=400 / else C`. Verified: 9 s, 0 dmg,
+  2 parries, 1 finisher = 1140 → S; 35 s, 800 dmg = 0 → C.
+- `_kill_rival()` now grades, caches `last_victory_summary` (`region`, `region_title`, `rank`,
+  `score`, `elapsed`, `damage_taken`, `parries`, `finishers`, `unlock_note`, `best_rank`,
+  `clears`) and calls `world_story.record_region_victory()` before `result_state = "VICTORY"`, so
+  the RETRY card and the rank stamp read one cached snapshot.
+
+`world_story.gd` — still a pure loader:
+- `ECLIPSE_SANCTUM_FLAG`, `REGION_CLEAR_FLAGS` (`[blame, eclipse, eclipse_sanctum_cleared]`),
+  `REGION_CLEAR_NOTES`, `RANK_VALUE` (`S`=4 … `C`=1).
+- `shortcut_flag_for_region(2)` now returns `"eclipse_sanctum_cleared"` (it returned `""`), so the
+  existing `player.unlock_shortcut_for_region(2)` grants the finale flag through one path instead
+  of a second KO hook.
+- `record_region_victory(idx, rank, elapsed)` sets the clear flag and writes
+  `region_mastery[str(idx)] = {best_rank, best_time, clears, last_rank}`: rank only moves up
+  (`S>A>B>C`), `best_time` only takes a faster positive time, `clears` always increments. Saves
+  through the merged `story_state` writer, so `"tuning"` is never dropped.
+- `get_region_mastery()`, `is_vertical_slice_cleared()` (all 3 flags), `region_clear_note()`,
+  `reset_progression_flags()` (erases the 3 flags + `region_mastery`, then merged-saves).
+  `region_mastery` round-trips through `save_state()` / `load_state()`.
+
+`dev_studio.gd`:
+- `get_hud_snapshot()["victory"]` = `active, region_title, rank, score, elapsed, damage_taken,
+  parries, finishers, unlock_note, best_rank, vertical_slice_cleared` (defaults present before any
+  KO). `active` needs `result_state == "VICTORY"` *and* a non-empty summary, so the card cannot
+  outlive `reset_duel()`.
+- `_draw_seinen_hud()` draws the Dark Seinen Victory Rank Card after the dwell bar: ink panel,
+  92 px rank stamp (gold S / bone A / crimson B-C), region + CLEARED, time/parries/finishers,
+  damage/score, `BEST <rank>`, the unlock line, and `VERTICAL SLICE CLEARED`. It is placed above the
+  existing centred RETRY overlay, and flips below it when the viewport is too short (`card_y < 150`),
+  so the two victory cards never overlap at 720p or 1080p. Same 10 Hz snapshot, no new nodes,
+  shaders or allocations, still hidden while the Dev Panel / P5 menu is open.
+- Story/World tab: chunky `[ RESET PROGRESSION ]` button (+ one-line note) at the top of the tab,
+  wired to `_reset_progression()` → `reset_progression_flags()`,
+  `player._refresh_shortcut_visuals()`, toast, `_refresh_story_ui()`.
+
+Test coverage is §25 of `combat_test.gd` (22 asserts): metrics tick/freeze/record/reset, S and C
+grading with the reported dictionary, region-2 flag + summary + `region_mastery` on disk beside
+`tuning` (91.0 sentinel), HUD snapshot contents, S never downgraded on a 40 s / 900 dmg repeat,
+`is_vertical_slice_cleared()` after all three clears, reset relocking both hub gates, and reset
+keeping the 91.0 tuning value. The test leaves no flags, mastery or tuning behind.
+
+Unverified: the card's pixels (headless `_draw()` never runs) and the reset button's touch size on a
+real device; both read only from the snapshot verified above.

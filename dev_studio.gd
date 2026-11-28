@@ -32,9 +32,23 @@ const REGION_NAMES: Array[String] = ["INK_CATHEDRAL", "BLAME_MEGASTRUC", "GOTHIC
 # already grades the duel ends a stage and _apply_region() re-tunes the SAME
 # guardian for the next one.
 const BOSS_RUSH_STAGES: int = 3
+# V8 Task 2: a cleared stage pays 35% of max HP - a gauntlet is never a free heal.
+const BOSS_RUSH_HEAL_RATIO: float = 0.35
+const BOSS_RUSH_SEPARATION: float = 7.0
 var boss_rush_active: bool = false
 var boss_rush_stage: int = 0
 var boss_rush_clears: int = 0
+var boss_rush_complete: bool = false
+# Cumulative ledger, reset by start_boss_rush()/abort_boss_rush() and graded by
+# compute_boss_rush_rank() only once the third guardian falls.
+var boss_rush_elapsed: float = 0.0
+var boss_rush_damage_taken: float = 0.0
+var boss_rush_parries: int = 0
+var boss_rush_finishers: int = 0
+var boss_rush_rank: String = ""
+var boss_rush_score: int = 0
+var boss_rush_heals: int = 0
+var last_boss_rush_summary: Dictionary = {}
 
 # --- Mobile touch layout -----------------------------------------------------
 # The 8 sections keep their engine tab names (verify.sh + combat_test assert them)
@@ -51,6 +65,7 @@ var tab_pills: Array[Button] = []
 var pause_button: Button = null
 var pause_badge: Label = null
 var god_button: Button = null
+var boss_rush_button: Button = null
 var copy_button: Button = null
 var panel_telemetry: Label = null
 var toast_label: Label = null
@@ -498,6 +513,15 @@ func start_boss_rush() -> void:
 	boss_rush_active = true
 	boss_rush_stage = 0
 	boss_rush_clears = 0
+	boss_rush_complete = false
+	boss_rush_elapsed = 0.0
+	boss_rush_damage_taken = 0.0
+	boss_rush_parries = 0
+	boss_rush_finishers = 0
+	boss_rush_rank = ""
+	boss_rush_score = 0
+	boss_rush_heals = 0
+	last_boss_rush_summary = {}
 	# Stage 1 is the region's own guardian, even if the player just walked out of
 	# an authored story duel that owned the rival's name.
 	if combat:
@@ -507,11 +531,23 @@ func start_boss_rush() -> void:
 		# A gauntlet starts whole: _apply_region() deliberately never heals a duel
 		# in progress (a shortcut must not be a free heal), so stage 1 resets here.
 		combat.reset_duel()
+	_sync_boss_rush_button()
 
 func abort_boss_rush() -> void:
 	boss_rush_active = false
 	boss_rush_stage = 0
 	boss_rush_clears = 0
+	boss_rush_complete = false
+	# The ledger is per-run: an abort never leaks a score into the next gauntlet.
+	boss_rush_elapsed = 0.0
+	boss_rush_damage_taken = 0.0
+	boss_rush_parries = 0
+	boss_rush_finishers = 0
+	boss_rush_rank = ""
+	boss_rush_score = 0
+	boss_rush_heals = 0
+	last_boss_rush_summary = {}
+	_sync_boss_rush_button()
 
 func toggle_boss_rush() -> bool:
 	if boss_rush_active:
@@ -533,22 +569,104 @@ func _tick_boss_rush() -> void:
 		return
 	if combat.result_state == "DEFEAT":
 		var failed_stage: int = boss_rush_stage + 1
+		# A defeat ends the run only: the region, the guardian, the tuning and the
+		# persisted record all stay exactly where normal play left them.
 		abort_boss_rush()
 		_show_toast("BOSS RUSH FAILED — STAGE %d/%d" % [failed_stage, BOSS_RUSH_STAGES])
 		return
 	if combat.result_state != "VICTORY":
 		return
+	# The stage's own grade is still live here: reset_duel()/_apply_region() have
+	# not run yet, so the ledger reads the same numbers the victory card shows.
+	_accumulate_boss_rush_stage(combat.compute_duel_rank())
+	# HP at the moment of the clear, before reset_duel() revives to full.
+	var hp_at_clear: float = float(player.hp) if player else 0.0
 	boss_rush_clears += 1
 	if boss_rush_stage >= BOSS_RUSH_STAGES - 1:
-		boss_rush_active = false
-		_show_toast("BOSS RUSH CLEARED — %d/%d" % [BOSS_RUSH_STAGES, BOSS_RUSH_STAGES])
+		_finish_boss_rush()
 		return
 	boss_rush_stage += 1
 	_apply_region(boss_rush_stage)
 	# reset_duel() restores the next guardian to full HP and clears the victory
 	# card the KO raised; the invariant keeps it the only registered rival.
 	combat.reset_duel()
+	_heal_player_for_next_stage(hp_at_clear)
+	_seat_boss_rush_stage()
+	_sync_boss_rush_button()
 	_show_toast("BOSS RUSH — STAGE %d/%d" % [boss_rush_stage + 1, BOSS_RUSH_STAGES])
+
+# One stage of the ledger. Elapsed/damage are re-scaled by the gauntlet ranking
+# because three guardians are not three 20 s duels.
+func _accumulate_boss_rush_stage(stage: Dictionary) -> void:
+	boss_rush_elapsed += maxf(0.0, float(stage.get("elapsed", 0.0)))
+	boss_rush_damage_taken += maxf(0.0, float(stage.get("damage_taken", 0.0)))
+	boss_rush_parries += maxi(0, int(stage.get("parries", 0)))
+	boss_rush_finishers += maxi(0, int(stage.get("finishers", 0)))
+
+# Pure and deterministic: the same ledger always grades the same. Speed costs
+# 12 points/s and damage 1.2/hp (a whole gauntlet is long and bloody), while
+# style still pays the duel rates. Bands are the duel's own S/A/B/C ladder.
+func compute_boss_rush_rank() -> Dictionary:
+	var elapsed: float = maxf(0.0, boss_rush_elapsed)
+	var taken: float = maxf(0.0, boss_rush_damage_taken)
+	var parries: int = maxi(0, boss_rush_parries)
+	var finishers: int = maxi(0, boss_rush_finishers)
+	var score: int = 1000 + parries * 90 + finishers * 140 - int(round(elapsed * 12.0)) - int(round(taken * 1.2))
+	score = clampi(score, 0, 1700)
+	var rank: String = "C"
+	for band in GestureCombat.DUEL_RANK_BANDS:
+		if score >= int(band[1]):
+			rank = str(band[0])
+			break
+	return {
+		"rank": rank, "score": score, "elapsed": elapsed,
+		"damage_taken": taken, "parries": parries, "finishers": finishers,
+		"clears": maxi(0, mini(boss_rush_clears, BOSS_RUSH_STAGES)),
+	}
+
+# reset_duel() is the RETRY path and revives to full, so the partial heal is
+# stamped over it: 35% of max HP on top of what the stage was cleared with.
+func _heal_player_for_next_stage(hp_at_clear: float) -> void:
+	if player == null or player.max_hp <= 0.0:
+		return
+	var healed: float = clampf(hp_at_clear, 0.0, player.max_hp) + player.max_hp * BOSS_RUSH_HEAL_RATIO
+	player.hp = minf(player.max_hp, healed)
+	boss_rush_heals += 1
+
+# The next guardian stands a clean BOSS_RUSH_SEPARATION away from the re-seated
+# player, and that seat becomes its home so a later RETRY reads the same gap.
+func _seat_boss_rush_stage() -> void:
+	if combat == null or player == null:
+		return
+	var rival: Node3D = combat.primary_rival()
+	if rival == null:
+		return
+	rival.global_position = player.global_position + Vector3(0.0, 0.0, -BOSS_RUSH_SEPARATION)
+	var stats = combat.target_stats
+	if typeof(stats) == TYPE_DICTIONARY and (stats as Dictionary).has(rival):
+		var s: Dictionary = (stats as Dictionary)[rival]
+		s["home_pos"] = rival.global_position
+
+# The third clear: store the cumulative grade, then persist it through
+# world_story's merged "story_state" writer (tuning + region mastery survive).
+func _finish_boss_rush() -> void:
+	boss_rush_active = false
+	boss_rush_complete = true
+	var total: Dictionary = compute_boss_rush_rank()
+	boss_rush_rank = str(total["rank"])
+	boss_rush_score = int(total["score"])
+	last_boss_rush_summary = total.duplicate(true)
+	last_boss_rush_summary["heals"] = boss_rush_heals
+	last_boss_rush_summary["total_stages"] = BOSS_RUSH_STAGES
+	if story_mgr != null and story_mgr.has_method("record_boss_rush_result"):
+		var raw = story_mgr.call("record_boss_rush_result", boss_rush_rank, boss_rush_elapsed)
+		if typeof(raw) == TYPE_DICTIONARY:
+			var saved: Dictionary = raw
+			last_boss_rush_summary["best_rank"] = str(saved.get("best_rank", ""))
+			last_boss_rush_summary["best_time"] = float(saved.get("best_time", 0.0))
+			last_boss_rush_summary["clears"] = int(saved.get("clears", 0))
+	_sync_boss_rush_button()
+	_show_toast("GAUNTLET COMPLETE — RANK %s" % boss_rush_rank)
 
 func _apply_region(idx: int) -> void:
 	region_idx = idx
@@ -1225,6 +1343,19 @@ func _reset_progression() -> void:
 	_show_toast("PROGRESSION RESET — all 3 regions re-lockable")
 	_refresh_story_ui()
 
+# The tab row and the P5 blade call the same toggle, so the two can never
+# disagree about whether a run is live. Starting one closes the panel.
+func _toggle_boss_rush_from_tab() -> void:
+	var started: bool = toggle_boss_rush()
+	_sync_boss_rush_button()
+	if started:
+		_toggle_dev_panel()
+
+func _sync_boss_rush_button() -> void:
+	if boss_rush_button == null:
+		return
+	boss_rush_button.text = "[ ABORT RUSH ]" if boss_rush_active else "[ BOSS RUSH ]"
+
 func _process(delta: float) -> void:
 	if toast_timer > 0.0:
 		toast_timer = maxf(0.0, toast_timer - delta)
@@ -1241,7 +1372,7 @@ func _process(delta: float) -> void:
 		_refresh_telemetry()
 		_sync_seinen_visibility()
 		queue_redraw()
-	elif combat.impact_flash_timer > 0.0 or combat.hurt_vignette_timer > 0.0 or combat.impact_slash_timer > 0.0 or player.shortcut_banner_timer > 0.0:
+	elif combat.impact_flash_timer > 0.0 or combat.hurt_vignette_timer > 0.0 or combat.impact_slash_timer > 0.0 or player.shortcut_banner_timer > 0.0 or player.thermal_status_timer > 0.0:
 		queue_redraw()
 
 func _refresh_telemetry() -> void:
@@ -1325,6 +1456,29 @@ func get_hud_snapshot() -> Dictionary:
 			"remote_wins": 0, "local_hp_ratio": 1.0, "remote_hp_ratio": 1.0,
 			"remote_name": "", "local_rematch_ready": false, "remote_rematch_ready": false,
 		},
+		# V8 Task 2: gauntlet telemetry + the non-blocking thermal toast string.
+		"boss_rush": {
+			"active": false, "stage": 0, "total_stages": BOSS_RUSH_STAGES, "complete": false,
+			"rank": "", "score": 0, "best_rank": "", "clears": 0,
+		},
+		"thermal_status": "",
+	}
+	# The persisted record is read live from world_story, so a run that is played
+	# after boot still reports the best rank it just wrote to disk.
+	var br_mastery: Dictionary = {}
+	if story_mgr != null and story_mgr.has_method("get_boss_rush_mastery"):
+		var raw_br = story_mgr.call("get_boss_rush_mastery")
+		if typeof(raw_br) == TYPE_DICTIONARY:
+			br_mastery = raw_br
+	snap["boss_rush"] = {
+		"active": boss_rush_active,
+		"stage": boss_rush_stage,
+		"total_stages": BOSS_RUSH_STAGES,
+		"complete": boss_rush_complete,
+		"rank": boss_rush_rank,
+		"score": boss_rush_score,
+		"best_rank": str(br_mastery.get("best_rank", "")),
+		"clears": int(br_mastery.get("clears", 0)),
 	}
 	# V7 Task 2: PvP telemetry is owned by the module's RefCounted state.
 	var raw_pvp = fp_mod.get("match_state") if fp_mod != null else null
@@ -1341,6 +1495,7 @@ func get_hud_snapshot() -> Dictionary:
 		"origin_id": str(story_mgr.active_origin_id) if story_mgr != null else "",
 		"origin_title": str(story_mgr.call("active_origin_title")) if (story_mgr != null and story_mgr.has_method("active_origin_title")) else "",
 	}
+	snap["thermal_status"] = str(player.thermal_status) if float(player.thermal_status_timer) > 0.0 else ""
 	var rival: Node3D = combat.primary_rival()
 	snap["boss"] = {
 		"name": combat.boss_display_name() if rival != null else "NO RIVAL",
@@ -1445,6 +1600,18 @@ func _draw_seinen_hud(snap: Dictionary) -> void:
 		_draw_ink_panel(Vector2(px, tag_y), Vector2(tag_w, 18.0), SEINEN_INK_BORDER)
 		draw_string(font, Vector2(px + 6.0, tag_y + 13.0), "ORIGIN · %s" % origin_title, HORIZONTAL_ALIGNMENT_LEFT, tag_w - 12.0, 9, SEINEN_INK_BONE)
 
+	# --- V8 Task 2: gauntlet badge (stage X of 3), ink plate under the cluster --
+	var br: Dictionary = snap["boss_rush"]
+	if bool(br["active"]):
+		var g_y: float = py + 40.0
+		if combo > 1:
+			g_y = py + 70.0
+		if not origin_title.is_empty():
+			g_y += 22.0
+		var g_w: float = minf(196.0, vp.x * 0.30)
+		_draw_ink_panel(Vector2(px, g_y), Vector2(g_w, 26.0), SEINEN_INK_CRIMSON)
+		draw_string(font, Vector2(px, g_y + 18.0), "[ GAUNTLET %d/%d ]" % [int(br["stage"]) + 1, int(br["total_stages"])], HORIZONTAL_ALIGNMENT_CENTER, g_w, 14, SEINEN_INK_BONE)
+
 	# --- Boss cluster (top-centre, always left of [ MENU ]) ------------------
 	var bstat: Dictionary = snap["boss"]
 	var bw: float = minf(440.0, vp.x * 0.42)
@@ -1535,6 +1702,11 @@ func _draw_seinen_hud(snap: Dictionary) -> void:
 		var card_w: float = minf(430.0, vp.x - margin * 2.0)
 		var story_rival: bool = bool(vic["story_rival"])
 		var card_h: float = 196.0 if story_rival else 176.0
+		# V8 Task 2: the GAUNTLET COMPLETE stamp rides this same card, so the card
+		# grows by one row instead of overlapping the grade or the RETRY overlay.
+		var gauntlet_done: bool = bool(br["complete"])
+		if gauntlet_done:
+			card_h += 22.0
 		var card_y: float = vp.y * 0.5 - 135.0 - card_h - 14.0
 		if card_y < 150.0:
 			card_y = clampf(vp.y * 0.5 + 135.0 + 14.0, 150.0, maxf(150.0, vp.y - card_h - 150.0))
@@ -1566,6 +1738,20 @@ func _draw_seinen_hud(snap: Dictionary) -> void:
 			var stamp_w: float = minf(tw, 190.0)
 			_draw_ink_panel(Vector2(tx, card_y + 158.0), Vector2(stamp_w, 18.0), SEINEN_INK_CRIMSON)
 			draw_string(font, Vector2(tx, card_y + 171.0), "STORY RIVAL DEFEATED", HORIZONTAL_ALIGNMENT_CENTER, stamp_w, 10, SEINEN_INK_GOLD)
+		if gauntlet_done:
+			# Full-width ink plate on the extra row: a cleared gauntlet is stamped on
+			# the very card the third guardian's KO already raised.
+			_draw_ink_panel(Vector2(card_x + 14.0, card_y + card_h - 24.0), Vector2(card_w - 28.0, 20.0), SEINEN_INK_CRIMSON)
+			draw_string(font, Vector2(card_x + 14.0, card_y + card_h - 10.0), "GAUNTLET COMPLETE — RANK %s" % str(br["rank"]), HORIZONTAL_ALIGNMENT_CENTER, card_w - 28.0, 11, SEINEN_INK_GOLD)
+
+	# --- V8 Task 2: thermal toast (subtle, non-blocking, never captures input) --
+	var thermal_txt: String = str(snap.get("thermal_status", ""))
+	if not thermal_txt.is_empty():
+		var toast_w: float = minf(320.0, vp.x * 0.56)
+		var toast_x: float = clampf(vp.x * 0.5 - toast_w * 0.5, margin, maxf(margin, player_max_x - toast_w))
+		var toast_y: float = maxf(120.0, vp.y - 172.0)
+		_draw_ink_panel(Vector2(toast_x, toast_y), Vector2(toast_w, 22.0), SEINEN_INK_BORDER)
+		draw_string(font, Vector2(toast_x, toast_y + 15.0), thermal_txt, HORIZONTAL_ALIGNMENT_CENTER, toast_w, 10, SEINEN_INK_GOLD)
 
 func _draw() -> void:
 	if not player or not combat: return
@@ -1701,6 +1887,19 @@ func _build_tab_world_map() -> void:
 	reset_note.text = "Clears the shortcut + finale flags and every per-region rank. Tuned sliders are kept."
 	reset_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vb.add_child(reset_note)
+
+	# V8 Task 2: the gauntlet lives in this same tab - one chunky 44 px row, no 9th
+	# tab and no extra P5 blade. It drives the same toggle the blade row does.
+	boss_rush_button = Button.new()
+	boss_rush_button.text = "[ BOSS RUSH ]"
+	boss_rush_button.custom_minimum_size = Vector2(0, TOUCH_ROW_H)
+	boss_rush_button.focus_mode = Control.FOCUS_NONE
+	boss_rush_button.pressed.connect(_toggle_boss_rush_from_tab)
+	vb.add_child(boss_rush_button)
+	var rush_note := Label.new()
+	rush_note.text = "3 regional guardians back to back. Each cleared stage pays +35% max HP."
+	rush_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vb.add_child(rush_note)
 
 	var orig_lbl := Label.new()
 	orig_lbl.text = "— 1. CHOOSE STARTING CHARACTER ORIGIN (INTERTWINED PATHS) —"

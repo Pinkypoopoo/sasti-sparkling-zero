@@ -187,6 +187,20 @@ var shortcut_banner: String = ""
 var shortcut_banner_timer: float = 0.0
 var shortcut_sealed_sfx_cd: float = 0.0
 
+# --- V8 Task 2: step-down-only mobile thermal auto-guard ---------------------
+# 4 s under the tier's FPS floor buys exactly ONE tier, then a 10 s lockout. It
+# never climbs back on its own: a Vulkan render-target resize mid-duel costs more
+# frames than the tier it buys, so stepping back up stays a manual Tab 8 choice.
+const THERMAL_LOW_HOLD: float = 4.0
+const THERMAL_RECOVER_BAND: float = 5.0
+const THERMAL_STEP_COOLDOWN: float = 10.0
+const THERMAL_STATUS_TIME: float = 3.5
+var thermal_low_accum: float = 0.0
+var thermal_step_cooldown: float = 0.0
+var thermal_status: String = ""
+var thermal_status_timer: float = 0.0
+var thermal_steps_taken: int = 0
+
 func _ready() -> void:
 	# Never tilt the capsule. Wall-running rolls VisualRoot and the camera only;
 	# a tilted up_direction would make move_and_slide() slide down the wall.
@@ -476,6 +490,56 @@ func apply_quality_tier() -> void:
 	_push_fx_budget()
 	_applied_tier = tier
 	print("QUALITY_TIER_APPLIED: %s scale=%.2f debris=%d" % [str(prof["label"]), render_scale_applied, int(prof["debris"])])
+
+# --- V8 Task 2: Step-Down-Only Mobile Thermal Auto-Guard ---------------------
+# Fed the measured frame rate from the live physics tick. Sustained low FPS steps
+# ONE tier down and arms a 10 s cooldown; the accumulator only resets once the
+# device clears floor + 5 FPS, so a device hovering on the floor cannot ratchet
+# itself down. Returns true only on the tick that actually stepped.
+func tick_thermal_guard(dt: float, measured_fps: float) -> bool:
+	if thermal_status_timer > 0.0:
+		thermal_status_timer = maxf(0.0, thermal_status_timer - dt)
+	if data_store == null:
+		return false
+	if not data_store.tuning_bool("thermal_guard_enabled", true):
+		thermal_low_accum = 0.0
+		thermal_status = ""
+		return false
+	var tree := get_tree()
+	if tree != null and tree.paused:
+		return false
+	if measured_fps <= 0.0:
+		# No sample yet (first frames, or a headless run): never a slow device.
+		return false
+	if thermal_step_cooldown > 0.0:
+		thermal_step_cooldown = maxf(0.0, thermal_step_cooldown - dt)
+	var tier_now: int = data_store.quality_tier_index()
+	if tier_now <= 0:
+		# LOW is the floor of the ladder: nothing left to give up.
+		thermal_low_accum = 0.0
+		return false
+	var floor_fps: float = data_store.tuning_get("thermal_fps_floor", 75.0)
+	if measured_fps >= floor_fps + THERMAL_RECOVER_BAND:
+		# A clean window clears the debt, so an old dip can never stack with a new one.
+		thermal_low_accum = 0.0
+		return false
+	if measured_fps >= floor_fps:
+		# Inside the hysteresis band the accumulator only decays, never grows.
+		thermal_low_accum = maxf(0.0, thermal_low_accum - dt)
+		return false
+	thermal_low_accum += maxf(0.0, dt)
+	if thermal_low_accum < THERMAL_LOW_HOLD or thermal_step_cooldown > 0.0:
+		return false
+	var next_tier: int = maxi(0, tier_now - 1)
+	data_store.tuning["quality_tier"] = next_tier
+	data_store.tuning["render_scale"] = float(data_store.tier_profile(next_tier)["scale"])
+	apply_quality_tier()
+	thermal_low_accum = 0.0
+	thermal_step_cooldown = THERMAL_STEP_COOLDOWN
+	thermal_steps_taken += 1
+	thermal_status = "THERMAL GUARD: TIER -> %s" % data_store.tier_label(next_tier)
+	thermal_status_timer = THERMAL_STATUS_TIME
+	return true
 
 # VFX budget: tab-8 toggles + the active tier's cap, pushed to dash_vfx. Called
 # every tick next to set_water_enabled() so the checkboxes are live with no
@@ -1329,6 +1393,15 @@ func current_region_index() -> int:
 		return 0
 	return int(studio.get("region_idx"))
 
+# Read-only probe for the gauntlet flag owned by DevStudio. A scene with no
+# studio (or an older studio) simply reads false, so nothing else changes.
+func boss_rush_live() -> bool:
+	var studio: Node = get_node_or_null("../DevStudio")
+	if studio == null:
+		return false
+	var raw = studio.get("boss_rush_active")
+	return typeof(raw) == TYPE_BOOL and bool(raw)
+
 func shortcut_flag_unlocked(flag: String) -> bool:
 	if flag.is_empty():
 		return true
@@ -1386,6 +1459,13 @@ func _tick_shortcut_gates(delta: float) -> void:
 	if shortcut_sealed_sfx_cd > 0.0:
 		shortcut_sealed_sfx_cd = maxf(0.0, shortcut_sealed_sfx_cd - delta)
 	_refresh_shortcut_visuals()
+	# V8 Task 2: a gauntlet owns the arena. Dwelling inside an edge gate would yank
+	# the player into another region mid-run, so the dwell AND the travel are both
+	# suspended until the rush ends.
+	if boss_rush_live():
+		shortcut_dwell = 0.0
+		shortcut_status = ""
+		return
 	if not dash_vfx:
 		return
 	if _shortcut_busy() or shortcut_arrival_cd > 0.0:
@@ -1458,6 +1538,9 @@ func _physics_process(delta: float) -> void:
 		_push_fx_budget()
 	if face_sdf_active:
 		_push_head_basis()
+	# V8 Task 2: sustained low FPS steps one tier down (never up) on a live tick.
+	if not p5_camera_override:
+		tick_thermal_guard(delta, Engine.get_frames_per_second())
 	if p5_camera_override: return
 	_tick_shortcut_gates(delta)
 	if not is_defeated:

@@ -89,6 +89,10 @@ const RANK_VALUE: Dictionary = {"S": 4, "A": 3, "B": 2, "C": 1}
 var region_mastery: Dictionary = {}
 # V7 Task 1: authored story-choice rivals already K.O.'d (deduplicated ids).
 var story_rivals_defeated: Array[String] = []
+# V8 Task 2: the 3-stage gauntlet record. It lives in the same "story_state"
+# document as the region mastery, so one merged write persists both and the
+# tuning block can never be dropped by a gauntlet clear.
+var boss_rush_mastery: Dictionary = {}
 
 # Region order matches REGION_NAMES / CURATED_REGION_LAYOUTS: 0 hub, 1 megastruc,
 # 2 sanctum. Region 2 owns no outgoing shortcut, so its clear flag is the V6
@@ -168,6 +172,35 @@ func get_region_mastery(region_idx: int) -> Dictionary:
 		return (saved as Dictionary).duplicate(true)
 	return {"best_rank": "", "best_time": 0.0, "clears": 0, "last_rank": "", "best_origin": "", "cleared_origins": []}
 
+# --- V8 Task 2: Boss Rush gauntlet mastery ----------------------------------
+# Same contracts as record_region_victory: the rank only ever moves up
+# (S>A>B>C), best_time only takes a faster positive time, clears always counts.
+func record_boss_rush_result(rank: String, elapsed: float) -> Dictionary:
+	var prev: Dictionary = boss_rush_mastery
+	var prev_best: String = str(prev.get("best_rank", ""))
+	var best_rank: String = prev_best
+	if prev_best.is_empty() or _rank_value(rank) > _rank_value(prev_best):
+		best_rank = rank if _rank_value(rank) > 0 else "C"
+	var best_time: float = float(prev.get("best_time", 0.0))
+	if elapsed > 0.0 and (best_time <= 0.0 or elapsed < best_time):
+		best_time = elapsed
+	boss_rush_mastery = {
+		"best_rank": best_rank,
+		"best_time": best_time,
+		"clears": maxi(0, int(prev.get("clears", 0))) + 1,
+		"last_rank": rank,
+	}
+	save_state()
+	return boss_rush_mastery.duplicate(true)
+
+func get_boss_rush_mastery() -> Dictionary:
+	return {
+		"best_rank": str(boss_rush_mastery.get("best_rank", "")),
+		"best_time": float(boss_rush_mastery.get("best_time", 0.0)),
+		"clears": maxi(0, int(boss_rush_mastery.get("clears", 0))),
+		"last_rank": str(boss_rush_mastery.get("last_rank", "")),
+	}
+
 func is_vertical_slice_cleared() -> bool:
 	for f in REGION_CLEAR_FLAGS:
 		if not has_flag(f):
@@ -181,6 +214,7 @@ func reset_progression_flags() -> void:
 		story_flags.erase(f)
 	region_mastery.clear()
 	story_rivals_defeated.clear()
+	boss_rush_mastery.clear()
 	save_state()
 
 func _rank_value(rank: String) -> int:
@@ -277,6 +311,7 @@ func save_state() -> void:
 		"story_flags": story_flags,
 		"region_mastery": region_mastery,
 		"story_rivals_defeated": story_rivals_defeated,
+		"boss_rush": boss_rush_mastery,
 		"completed_nodes": completed_nodes,
 		"unlocks": unlocks,
 	}
@@ -316,6 +351,9 @@ func load_state() -> void:
 			var rival_id := str(r)
 			if not rival_id.is_empty() and not story_rivals_defeated.has(rival_id):
 				story_rivals_defeated.append(rival_id)
+	boss_rush_mastery = {}
+	if typeof(s.get("boss_rush", null)) == TYPE_DICTIONARY:
+		boss_rush_mastery = s["boss_rush"]
 	if typeof(s.get("completed_nodes", null)) == TYPE_ARRAY:
 		completed_nodes.clear()
 		for n in s["completed_nodes"]:
