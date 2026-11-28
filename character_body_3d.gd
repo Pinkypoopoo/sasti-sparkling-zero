@@ -201,6 +201,13 @@ var thermal_status: String = ""
 var thermal_status_timer: float = 0.0
 var thermal_steps_taken: int = 0
 
+# --- V8 Task 3: Arena Bounds / Fall-Through Guard ---------------------------
+# Keeps both fighters inside a 46 m cylinder and rescues fall-throughs cleanly.
+const ARENA_MAX_RADIUS: float = 46.0
+const ARENA_FALL_RESCUE_Y: float = 1.6
+const ARENA_FALL_RESCUE_XZ: float = 20.0
+const ARENA_FALL_THRESHOLD: float = -4.0
+
 func _ready() -> void:
 	# Never tilt the capsule. Wall-running rolls VisualRoot and the camera only;
 	# a tilted up_direction would make move_and_slide() slide down the wall.
@@ -547,6 +554,36 @@ func tick_thermal_guard(dt: float, measured_fps: float) -> bool:
 # Water is tier-gated: LOW never renders it (a 240x240 plane at 32x32
 # subdivisions is not free on an Adreno 618), MID and up get the full 3-band
 # shader with both contact ripples. Toggle + height + ripple come from tab 8.
+
+# Clamps the player back inside the arena cylinder and rescues fall-throughs.
+# Returns true when a correction fired (so callers can log/assert it).
+func clamp_arena_bounds() -> bool:
+	var corrected: bool = false
+	var hpos: Vector2 = Vector2(global_position.x, global_position.z)
+	var hdist: float = hpos.length()
+	if hdist > ARENA_MAX_RADIUS:
+		# Snap back onto the perimeter and kill the outward component.
+		var dir: Vector2 = hpos.normalized()
+		var rim: Vector3 = Vector3(dir.x, 0.0, dir.y) * ARENA_MAX_RADIUS
+		global_position = Vector3(rim.x, global_position.y, rim.y)
+		var hvel: Vector2 = Vector2(velocity.x, velocity.z)
+		var radial: float = hvel.dot(dir)
+		if radial > 0.0:
+			hvel = hvel - dir * radial
+		velocity.x = hvel.x
+		velocity.z = hvel.y
+		corrected = true
+	if global_position.y < ARENA_FALL_THRESHOLD:
+		# Clean rescue: keep XZ in a safe band, drop onto arena height, kill velocity.
+		global_position = Vector3(
+			clampf(global_position.x, -ARENA_FALL_RESCUE_XZ, ARENA_FALL_RESCUE_XZ),
+			ARENA_FALL_RESCUE_Y,
+			clampf(global_position.z, -ARENA_FALL_RESCUE_XZ, ARENA_FALL_RESCUE_XZ)
+		)
+		velocity = Vector3.ZERO
+		corrected = true
+	return corrected
+
 func _push_water() -> void:
 	if not (data_store and dash_vfx):
 		return
@@ -1349,6 +1386,10 @@ func trigger_dash(dir: Vector3) -> void:
 	if dash_cd_timer > 0.0: return
 	if combat and combat.try_vanish_counter_on_dash():
 		return
+	# V8 Task 3: dash-cancel mid-combo windup or swing recovery so cancelling
+	# feels instant without bypassing HITSTUN or defeat locks.
+	if state == MoveState.WINDUP or swing_anim_timer > 0.0:
+		swing_anim_timer = 0.0
 	_reset_dash_visuals()
 	state = MoveState.DASH
 	dash_timer = dash_duration
@@ -1542,6 +1583,7 @@ func _physics_process(delta: float) -> void:
 	if not p5_camera_override:
 		tick_thermal_guard(delta, Engine.get_frames_per_second())
 	if p5_camera_override: return
+	clamp_arena_bounds()
 	_tick_shortcut_gates(delta)
 	if not is_defeated:
 		hp = minf(max_hp, hp + hp_regen * delta)

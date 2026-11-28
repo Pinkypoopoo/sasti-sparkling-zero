@@ -106,6 +106,8 @@ var duel_elapsed: float = 0.0
 var duel_damage_taken: float = 0.0
 var duel_parries_landed: int = 0
 var duel_stagger_finishers: int = 0
+var duel_perfect_dodges: int = 0
+var perfect_dodge_banner_timer: float = 0.0
 var last_victory_summary: Dictionary = {}
 const DUEL_RANK_BANDS: Array = [["S", 900], ["A", 650], ["B", 400], ["C", 0]]
 var ai_attack_cooldown: float = 1.25
@@ -445,6 +447,8 @@ func _reset_duel_metrics() -> void:
 	duel_damage_taken = 0.0
 	duel_parries_landed = 0
 	duel_stagger_finishers = 0
+	duel_perfect_dodges = 0
+	perfect_dodge_banner_timer = 0.0
 	last_victory_summary = {}
 
 # Pure and deterministic: same metrics always give the same rank. Speed, clean
@@ -454,7 +458,8 @@ func compute_duel_rank() -> Dictionary:
 	var taken: float = maxf(0.0, duel_damage_taken)
 	var parries: int = maxi(0, duel_parries_landed)
 	var finishers: int = maxi(0, duel_stagger_finishers)
-	var score: int = 1000 + parries * 90 + finishers * 140 - int(round(elapsed * 20.0)) - int(round(taken * 2.0))
+	var dodges: int = maxi(0, duel_perfect_dodges)
+	var score: int = 1000 + parries * 90 + finishers * 140 + dodges * 60 - int(round(elapsed * 20.0)) - int(round(taken * 2.0))
 	score = clampi(score, 0, 1600)
 	var rank: String = "C"
 	for band in DUEL_RANK_BANDS:
@@ -464,6 +469,7 @@ func compute_duel_rank() -> Dictionary:
 	return {
 		"rank": rank, "score": score, "elapsed": elapsed,
 		"damage_taken": taken, "parries": parries, "finishers": finishers,
+		"perfect_dodges": dodges,
 	}
 
 func _phase_speed(s: Dictionary) -> float:
@@ -1277,7 +1283,21 @@ func _resolve_enemy_strike_on_player(td: Node3D, s: Dictionary) -> void:
 			_check_active_parry_against_enemies()
 			return
 		if player.state == PlayerController.MoveState.DASH:
-			last_combat_action = "DASH EVADE — SLAM WHIFFED!"
+			if tune_bool("perfect_dodge_enabled", true):
+				# SHADOW STEP: a perfect dodge through an unblockable slam.
+				duel_perfect_dodges += 1
+				perfect_dodge_banner_timer = 1.0
+				player.mana = minf(player.max_mana, player.mana + 18.0)
+				s["posture"] = minf(s["max_posture"], s["posture"] + 25.0)
+				if s["posture"] >= s["max_posture"]:
+					_break_posture(s, "SHADOW STEP POSTURE BREAK!!")
+				player.trigger_hitstop(0.045, 0.45)
+				if player.dash_vfx:
+					player.dash_vfx.play_sfx("vanish")
+					player.dash_vfx.spawn_cel_smoke(player.global_position + Vector3(0, 1.0, 0), 4, -player.global_position.normalized(), 0.7)
+				last_combat_action = "SHADOW STEP — SLAM EVADED!"
+			else:
+				last_combat_action = "DASH EVADE — SLAM WHIFFED!"
 			return
 	elif guard_up:
 		_trigger_sonic_sway()
@@ -1292,7 +1312,21 @@ func _resolve_enemy_strike_on_player(td: Node3D, s: Dictionary) -> void:
 		return
 
 	if player.state == PlayerController.MoveState.DASH:
-		last_combat_action = "DASH EVADE!"
+		if tune_bool("perfect_dodge_enabled", true):
+			# SHADOW STEP: a perfect dodge through a parriable strike.
+			duel_perfect_dodges += 1
+			perfect_dodge_banner_timer = 1.0
+			player.mana = minf(player.max_mana, player.mana + 18.0)
+			s["posture"] = minf(s["max_posture"], s["posture"] + 25.0)
+			if s["posture"] >= s["max_posture"]:
+				_break_posture(s, "SHADOW STEP POSTURE BREAK!!")
+			player.trigger_hitstop(0.045, 0.45)
+			if player.dash_vfx:
+				player.dash_vfx.play_sfx("vanish")
+				player.dash_vfx.spawn_cel_smoke(player.global_position + Vector3(0, 1.0, 0), 4, -player.global_position.normalized(), 0.7)
+			last_combat_action = "SHADOW STEP!!"
+		else:
+			last_combat_action = "DASH EVADE!"
 		return
 
 	var dmg_in := tune("enemy_damage", 55.0)
@@ -1411,7 +1445,36 @@ func _physics_process(delta: float) -> void:
 							player.dash_vfx.check_destruction(td.global_position, 4.0, Vector3.DOWN, true)
 					else:
 						v.y = 0.0
-				s["vel"] = v
+				# V8 Task 3: keep rivals inside the arena so knockbacks never soft-lock a duel.
+			clamp_rival_bounds(td, s)
+			s["vel"] = v
+
+
+# Clamps every active rival back inside ARENA_MAX_RADIUS and rescues fall-throughs.
+# Returns true when a correction fired.
+func clamp_rival_bounds(td: Node3D, s: Dictionary) -> bool:
+	var corrected: bool = false
+	var hpos: Vector2 = Vector2(td.global_position.x, td.global_position.z)
+	var hdist: float = hpos.length()
+	if hdist > 46.0:
+		var dir: Vector2 = hpos.normalized()
+		td.global_position = Vector3(dir.x * 46.0, td.global_position.y, dir.y * 46.0)
+		var hvel: Vector2 = Vector2(s["vel"].x, s["vel"].z)
+		var radial: float = hvel.dot(dir)
+		if radial > 0.0:
+			hvel = hvel - dir * radial
+		s["vel"].x = hvel.x
+		s["vel"].z = hvel.y
+		corrected = true
+	if td.global_position.y < -4.0:
+		td.global_position = Vector3(
+			clampf(td.global_position.x, -20.0, 20.0),
+			1.0,
+			clampf(td.global_position.z, -20.0, 20.0)
+		)
+		s["vel"] = Vector3.ZERO
+		corrected = true
+	return corrected
 
 func spawn_story_rival(nd: Dictionary) -> void:
 	if target_stats.is_empty() or not player: return

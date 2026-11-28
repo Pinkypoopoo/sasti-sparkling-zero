@@ -1623,7 +1623,109 @@ func _run() -> void:
 	player.shortcut_status = ""
 	player.hp = player.max_hp
 
-	# Leave no test tuning behind for the next run.
+	# --- 33. V8 Task 3: Perfect Dodge (SHADOW STEP), dash-cancel, arena bounds ---
+	# 33a. The perfect_dodge_enabled knob lives in the auto-generated Tab 8 tables.
+	check(CombatData.TUNING_BOOLS.has("perfect_dodge_enabled") and CombatData.TUNING_DEFAULTS.has("perfect_dodge_enabled"), "perfect_dodge_enabled is an auto-generated Tab 8 checkbox")
+	check(bool(CombatData.TUNING_DEFAULTS["perfect_dodge_enabled"]), "... defaulting to ON so SHADOW STEP is live out of the box")
+
+	# 33b. A dash through a PARRIABLE strike fires SHADOW STEP.
+	combat.reset_duel()
+	player.mana = 50.0
+	var t18_mana_before: float = float(player.mana)
+	player.state = PlayerController.MoveState.DASH
+	combat._resolve_enemy_strike_on_player(combat.primary_rival(), combat.target_stats[combat.primary_rival()])
+	check(str(combat.last_combat_action) == "SHADOW STEP!!", "dashing through a PARRIABLE strike reads SHADOW STEP!!")
+	check(int(combat.duel_perfect_dodges) == 1, "... and increments duel_perfect_dodges to 1")
+	check(float(combat.perfect_dodge_banner_timer) > 0.0, "... and arms the SHADOW STEP banner timer")
+	check(is_equal_approx(float(player.mana), t18_mana_before + 18.0), "... and restores +18 mana (clamped to max)")
+	var t18_snap: Dictionary = studio.get_hud_snapshot()
+	check(int(t18_snap["player"]["perfect_dodges"]) == 1, "get_hud_snapshot player exposes perfect_dodges")
+	check(str(t18_snap["player"]["evade_callout"]) == "SHADOW STEP!!", "... and exposes evade_callout as SHADOW STEP!!")
+
+	# 33c. A dash through an UNBLOCKABLE slam fires SHADOW STEP — SLAM EVADED!
+	combat.reset_duel()
+	player.sway_timer = 0.0
+	player.mana = 50.0
+	player.state = PlayerController.MoveState.DASH
+	combat.target_stats[combat.primary_rival()]["telegraph_kind"] = "UNBLOCKABLE"
+	combat._resolve_enemy_strike_on_player(combat.primary_rival(), combat.target_stats[combat.primary_rival()])
+	check(str(combat.last_combat_action) == "SHADOW STEP — SLAM EVADED!", "dashing through an UNBLOCKABLE slam reads SHADOW STEP — SLAM EVADED!")
+	check(int(combat.duel_perfect_dodges) == 1, "... and increments duel_perfect_dodges (reset_duel clears it first)")
+	combat.target_stats[combat.primary_rival()]["telegraph_kind"] = "NONE"
+
+	# 33d. compute_duel_rank() is additive: each perfect dodge adds +60 score.
+	combat.reset_duel()
+	combat.duel_elapsed = 0.0
+	combat.duel_damage_taken = 0.0
+	combat.duel_parries_landed = 0
+	combat.duel_stagger_finishers = 0
+	combat.duel_perfect_dodges = 2
+	var t18_rank_zero: Dictionary = combat.compute_duel_rank()
+	check(int(t18_rank_zero["score"]) == 1120 and int(t18_rank_zero["perfect_dodges"]) == 2, "with 0 elapsed/damage/parries/finishers, 2 perfect dodges score 1000 + 2*60")
+	check(str(t18_rank_zero["rank"]) == "S", "... and still land S (1120 >= 900)")
+	combat.duel_perfect_dodges = 0
+	var t18_rank_base: Dictionary = combat.compute_duel_rank()
+	check(int(t18_rank_base["score"]) == 1000, "with 0 perfect dodges the score is 1000 — identical to the pre-task formula")
+
+	# 33e. The SHADOW STEP path is suppressed when perfect_dodge_enabled == false.
+	player.data_store.tuning["perfect_dodge_enabled"] = false
+	combat.reset_duel()
+	player.mana = 50.0
+	player.state = PlayerController.MoveState.DASH
+	combat._resolve_enemy_strike_on_player(combat.primary_rival(), combat.target_stats[combat.primary_rival()])
+	check(str(combat.last_combat_action) == "DASH EVADE!", "with perfect_dodge_enabled off, a PARRIABLE dodge reads plain DASH EVADE!")
+	check(int(combat.duel_perfect_dodges) == 0, "... and does NOT increment duel_perfect_dodges")
+	check(float(player.mana) == 50.0, "... and grants zero bonus mana")
+	player.data_store.tuning["perfect_dodge_enabled"] = true
+
+	# 33f. clamp_arena_bounds() keeps the player inside ARENA_MAX_RADIUS and rescues fall-throughs.
+	var t18_pos: Vector3 = player.global_position
+	player.global_position = Vector3(50.0, 1.6, 0.0)
+	player.velocity = Vector3(5.0, 0.0, 0.0)
+	var t18_clamped: bool = player.clamp_arena_bounds()
+	check(t18_clamped, "clamp_arena_bounds() returns true when it clamps an out-of-bounds player")
+	check(is_equal_approx(float(Vector2(player.global_position.x, player.global_position.z).length()), 46.0), "... and clamps XZ back onto the 46.0 m perimeter")
+	check(is_equal_approx(float(Vector2(player.velocity.x, player.velocity.z).length()), 0.0), "... and strips outward radial velocity")
+
+	# A fall-through is rescued cleanly back to arena height.
+	player.global_position = Vector3(0.0, -10.0, 0.0)
+	player.velocity = Vector3(3.0, -5.0, 2.0)
+	var t18_rescued: bool = player.clamp_arena_bounds()
+	check(t18_rescued, "clamp_arena_bounds() returns true when it rescues a fall-through")
+	check(is_equal_approx(float(player.global_position.y), 1.6), "... and drops the player back to arena height (1.6 m)")
+	check(is_equal_approx(float(player.global_position.x), 0.0) and is_equal_approx(float(player.global_position.z), 0.0), "... with XZ kept in the safe band")
+	check(player.velocity == Vector3.ZERO, "... and zeroes velocity so knockbacks never soft-lock a duel")
+
+	# 33g. clamp_rival_bounds() keeps every active rival inside the arena.
+	var t18_rival: Node3D = combat.primary_rival()
+	t18_rival.global_position = Vector3(50.0, 1.0, 0.0)
+	combat.target_stats[t18_rival]["vel"] = Vector3(4.0, 0.0, 0.0)
+	var t18_rival_clamped: bool = combat.clamp_rival_bounds(t18_rival, combat.target_stats[t18_rival])
+	check(t18_rival_clamped, "clamp_rival_bounds() returns true when it clamps an out-of-bounds rival")
+	check(is_equal_approx(float(Vector2(t18_rival.global_position.x, t18_rival.global_position.z).length()), 46.0), "... and clamps the rival back onto the 46.0 m perimeter")
+
+	# A rival fall-through is rescued.
+	t18_rival.global_position = Vector3(0.0, -10.0, 0.0)
+	combat.target_stats[t18_rival]["vel"] = Vector3.ZERO
+	var t18_rival_rescued: bool = combat.clamp_rival_bounds(t18_rival, combat.target_stats[t18_rival])
+	check(t18_rival_rescued, "clamp_rival_bounds() returns true when it rescues a rival fall-through")
+	check(float(t18_rival.global_position.y) == 1.0, "... and drops the rival back to arena height (1.0 m)")
+	check(combat.target_stats[t18_rival]["vel"] == Vector3.ZERO, "... and zeroes the rival velocity")
+
+	# 33h. trigger_dash() cancels active WINDUP cleanly.
+	player.state = PlayerController.MoveState.WINDUP
+	player.swing_anim_timer = 0.15
+	var t18_was_windup: bool = (player.state == PlayerController.MoveState.WINDUP)
+	player.trigger_dash(Vector3.FORWARD)
+	check(player.state == PlayerController.MoveState.DASH, "trigger_dash() cancels MoveState.WINDUP and enters DASH")
+	check(float(player.swing_anim_timer) == 0.0, "... and zeroes swing_anim_timer so the combo feels instant")
+
+	# reset_duel() resets duel_perfect_dodges to 0.
+	combat.reset_duel()
+	check(int(combat.duel_perfect_dodges) == 0, "reset_duel() resets duel_perfect_dodges to 0")
+	check(float(combat.perfect_dodge_banner_timer) == 0.0, "... and resets perfect_dodge_banner_timer to 0.0")
+
+	# Leave no V8 Task 3 state behind.
 	player.data_store.reset_tuning()
 	player.data_store.refresh_auto_quality()
 	player.apply_quality_tier()

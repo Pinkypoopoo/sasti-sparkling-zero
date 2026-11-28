@@ -61,6 +61,7 @@ const TUNING_BOOLS: Dictionary = {
 	"seinen_hud_enabled": "Dark Seinen Combat HUD",
 	"sfx_enabled": "Procedural Synth SFX",
 	"thermal_guard_enabled": "Sustained Low-FPS Thermal Guard",
+	"perfect_dodge_enabled": "Perfect Dodge (SHADOW STEP) on DASH evade",
 }
 
 const TUNING_DEFAULTS: Dictionary = {
@@ -81,6 +82,7 @@ const TUNING_DEFAULTS: Dictionary = {
 	"seinen_hud_enabled": true,
 	"sfx_enabled": true, "sfx_volume": 0.75,
 	"thermal_guard_enabled": true, "thermal_fps_floor": 75.0,
+	"perfect_dodge_enabled": true,
 	"impact_slash_enabled": true, "impact_slash_intensity": 1.0,
 	"water_ripple_strength": 1.0,
 	"cel_smoke_enabled": true, "cel_smoke_density": 1.0,

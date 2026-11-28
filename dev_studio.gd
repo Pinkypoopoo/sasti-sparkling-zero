@@ -1372,7 +1372,7 @@ func _process(delta: float) -> void:
 		_refresh_telemetry()
 		_sync_seinen_visibility()
 		queue_redraw()
-	elif combat.impact_flash_timer > 0.0 or combat.hurt_vignette_timer > 0.0 or combat.impact_slash_timer > 0.0 or player.shortcut_banner_timer > 0.0 or player.thermal_status_timer > 0.0:
+	elif combat.impact_flash_timer > 0.0 or combat.hurt_vignette_timer > 0.0 or combat.impact_slash_timer > 0.0 or player.shortcut_banner_timer > 0.0 or player.thermal_status_timer > 0.0 or (combat and float(combat.perfect_dodge_banner_timer) > 0.0):
 		queue_redraw()
 
 func _refresh_telemetry() -> void:
@@ -1438,7 +1438,7 @@ func _sync_seinen_visibility() -> void:
 func get_hud_snapshot() -> Dictionary:
 	var snap: Dictionary = {
 		"visible": _seinen_hud_active(),
-		"player": {"hp_ratio": 0.0, "posture_ratio": 0.0, "combo": 0, "origin_id": "", "origin_title": ""},
+		"player": {"hp_ratio": 0.0, "posture_ratio": 0.0, "combo": 0, "origin_id": "", "origin_title": "", "perfect_dodges": 0, "evade_callout": ""},
 		"boss": {
 			"name": "", "phase": 1, "archetype": "", "hp_ratio": 0.0,
 			"posture_ratio": 0.0, "telegraph_kind": "NONE", "staggered": false, "present": false,
@@ -1488,12 +1488,17 @@ func get_hud_snapshot() -> Dictionary:
 			snap["pvp"] = pvp_dict
 	if not (player and combat):
 		return snap
+	var evade_callout: String = ""
+	if combat and float(combat.perfect_dodge_banner_timer) > 0.0:
+		evade_callout = "SHADOW STEP!!"
 	snap["player"] = {
 		"hp_ratio": clampf(player.hp / maxf(1.0, player.max_hp), 0.0, 1.0),
 		"posture_ratio": player.guard_ratio(),
 		"combo": combat.combo_hits,
 		"origin_id": str(story_mgr.active_origin_id) if story_mgr != null else "",
 		"origin_title": str(story_mgr.call("active_origin_title")) if (story_mgr != null and story_mgr.has_method("active_origin_title")) else "",
+		"perfect_dodges": int(combat.duel_perfect_dodges) if combat != null else 0,
+		"evade_callout": evade_callout,
 	}
 	snap["thermal_status"] = str(player.thermal_status) if float(player.thermal_status_timer) > 0.0 else ""
 	var rival: Node3D = combat.primary_rival()
@@ -1611,6 +1616,18 @@ func _draw_seinen_hud(snap: Dictionary) -> void:
 		var g_w: float = minf(196.0, vp.x * 0.30)
 		_draw_ink_panel(Vector2(px, g_y), Vector2(g_w, 26.0), SEINEN_INK_CRIMSON)
 		draw_string(font, Vector2(px, g_y + 18.0), "[ GAUNTLET %d/%d ]" % [int(br["stage"]) + 1, int(br["total_stages"])], HORIZONTAL_ALIGNMENT_CENTER, g_w, 14, SEINEN_INK_BONE)
+
+	# --- V8 Task 3: SHADOW STEP callout pill (bone-gold ink, near player cluster) --
+	var evade: String = str(pstat.get("evade_callout", ""))
+	if not evade.is_empty():
+		var es_y: float = py + 40.0
+		if combo > 1:
+			es_y = py + 70.0
+		if not origin_title.is_empty():
+			es_y += 22.0
+		var es_w: float = 144.0
+		_draw_ink_panel(Vector2(px, es_y), Vector2(es_w, 22.0), SEINEN_INK_GOLD)
+		draw_string(font, Vector2(px, es_y + 15.0), "[ SHADOW STEP ]", HORIZONTAL_ALIGNMENT_CENTER, es_w, 11, SEINEN_INK_BONE)
 
 	# --- Boss cluster (top-centre, always left of [ MENU ]) ------------------
 	var bstat: Dictionary = snap["boss"]

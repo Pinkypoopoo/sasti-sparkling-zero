@@ -87,60 +87,6 @@ Answer in §4 with a dated entry. These are decisions, not research tasks.
 
 ## 4. Message log
 
-### 2026-11-27 · Buffy (Freebuff) — V7 Task 1: story-to-progression bridge (origins, story rivals, mastery)
-
-Branch `Pinkypoopoo-patch-1`, based on `3625526`. `main` untouched.
-Gate: **VERIFY_PASSED**, 7 gates, 79 signatures, 260 combat asserts (+15 in §26), zero GDScript
-warnings (`--check-only` on `world_story.gd` / `gesture_combat.gd` / `dev_studio.gd` silent).
-`data/story_nodes.json` untouched.
-
-Audit first: V6 Task 6 already had `_reset_duel_metrics()` in `spawn_story_rival()`, the
-`boss_phase = 1` / stagger / telegraph reset, and a 7.5 m spawn offset, so V7 added no duplicate
-spawn code — only the missing read surface and the origin/story bridge.
-
-`world_story.gd` — still a pure loader (no narrative in GDScript):
-- `active_origin_title()` reads `origins[active_origin_id]["title"]` from the JSON; falls back to the
-  stored id (and to `""` when nothing is selected) instead of inventing a label.
-- `record_region_victory(region_idx, rank, elapsed, origin_id = "", is_story_rival = false,
-  rival_name = "")` — the three original arguments still work, so the existing callers are
-  untouched. It now also stores `"best_origin"` (stamped when the rank improves or on the first
-  clear) and `"cleared_origins"` (deduplicated ids) inside `region_mastery[str(idx)]`.
-- Authored story-choice KOs append the node's `rival_name` to the new deduplicated
-  `story_rivals_defeated` array in `story_state` (`_note_story_rival()`,
-  `story_rivals_defeated_count()`). Both new keys round-trip through `save_state()` / `load_state()`.
-- `reset_progression_flags()` also clears `story_rivals_defeated`; every write still goes through the
-  merged `"story_state"` writer, so `"tuning"` and the active origin selection are preserved.
-
-`gesture_combat.gd`:
-- `is_story_rival_duel()` reads `story_override` off `primary_rival()` (false when there is no rival).
-- `_kill_rival()` now pulls `active_origin_id` + `active_origin_title()` from the story manager, passes
-  them plus `story_override` and the KO'd `boss_name` into `record_region_victory(...)`, and caches
-  `origin_id`, `origin_title`, `story_rival`, `best_origin`, `cleared_origins` and
-  `story_rivals_defeated` in `last_victory_summary` for the HUD.
-- `apply_region_boss_profile()` still preserves `story_override` on purpose (a story choice owns its
-  name/scale/slots), which is why the test drives the flag explicitly instead of relying on travel.
-
-`dev_studio.gd` — existing keys unchanged, new ones additive:
-- `player.origin_id` / `player.origin_title`; `boss.story_rival`; `victory.origin_title`,
-  `victory.story_rival`, `victory.story_rivals_defeated_count` (defaults included before any KO).
-- Seinen HUD: a bone-ink `ORIGIN · <title>` tag under the VITAL/GUARD cluster (drops below the combo
-  badge when one is showing); a crimson-on-gold `[ STORY RIVAL ]` plate on the boss name row that
-  replaces the archetype tag for authored encounters; the Victory Rank Card gains an
-  `ORIGIN · <title>` line and a `STORY RIVAL DEFEATED` ink stamp, with the card growing 20 px taller
-  for it (176 → 196) so the stamp never touches the unlock line or the centred RETRY overlay.
-  Same 10 Hz snapshot, no new nodes or shaders, still hidden behind the Dev Panel / P5 menu.
-
-Test coverage is §26 (15 asserts): origin switch moves `active_origin_title()` and the snapshot
-`player.origin_id`/`origin_title`; a guardian without the override is not a story duel while
-`spawn_story_rival()` flips it, resets `boss_phase` to 1 and lands at 7.50 m separation; the KO writes
-`best_origin` + `cleared_origins` + `story_rivals_defeated` into `user://dev_profile.json` beside
-`tuning` (93.0 sentinel); the victory snapshot carries origin title, story flag and count; a repeat
-encounter is deduplicated; `reset_progression_flags()` clears rivals + mastery, keeps the origin and
-keeps the 93.0 tuning value.
-
-Unverified: the origin tag, `[ STORY RIVAL ]` plate and card stamp pixels (headless never runs
-`_draw()`); all three read only from the snapshot values asserted above.
-
 ### 2026-11-27 · Buffy (Freebuff) — V7 Task 2: decoupled PvP match state, KO rounds & rematch
 
 Branch `Pinkypoopoo-patch-1`, based on `f849a36`. `main` untouched.
@@ -423,4 +369,96 @@ OPEN: no visual run (badge/stamp/toast pixels), no on-device thermal or FPS meas
 three-stage playtest.
 NEXT: play a full gauntlet on a phone and check the badge never collides with the boss cluster, then
 watch whether the 4 s hold fires on a thermally throttled Adreno 618.
+=== END AI HANDOFF PACKET ===
+
+
+### 2026-11-28 · Buffy (Freebuff) — V8 Task 3: Perfect Dodge (SHADOW STEP), Strike-Recovery Dash Cancel & Arena Bounds Safety
+
+Branch `Pinkypoopoo-patch-1`, based on `39b2dcc` (V8 Task 2). `main` untouched.
+Gate: **VERIFY_PASSED**, 7 gates, 79 signatures, **390 combat asserts** (+32 in §33), zero GDScript
+warnings (`--check-only` on `combat_data.gd` / `character_body_3d.gd` / `gesture_combat.gd` /
+`dev_studio.gd` / `combat_test.gd` silent), zero RID/orphan leaks. `data/story_nodes.json`,
+`story_test.gd` and `flame_p5_pvp.gd` untouched.
+
+Audit first: `perfect_dodge_enabled` is a new Tab 8 knob (auto-generated, default true) in
+`combat_data.gd` `TUNING_BOOLS` / `TUNING_DEFAULTS`; the arena-bounds and dash-cancel surface lives
+in `character_body_3d.gd`; the SHADOW STEP logic, `duel_perfect_dodges` / `perfect_dodge_banner_timer`
+tracking and rival bounds live in `gesture_combat.gd`; the Seinen HUD callout pill lives in
+`dev_studio.gd`. Nothing in `flame_p5_pvp.gd` or `combat_data.gd` beyond the one new bool.
+
+`combat_data.gd` — one auto-generated Tab 8 knob:
+- `perfect_dodge_enabled` (bool, default true) added to `TUNING_BOOLS` and `TUNING_DEFAULTS`. No UI
+  code: Tab 8 reflects over the dicts and the slider appears, saves to disk and loads again.
+
+`character_body_3d.gd` — arena bounds + dash-cancel hygiene:
+- `const ARENA_MAX_RADIUS: float = 46.0` plus `clamp_arena_bounds() -> bool`, called from live
+  `_physics_process` (after the thermal guard, before shortcut gates). When horizontal distance exceeds
+  46.0 m it clamps XZ back onto the perimeter and strips outward radial velocity; when `y < -4.0` it
+  rescues the player to `(clampf(x, -20, 20), 1.6, clampf(z, -20, 20))` with `velocity = ZERO` so
+  knockbacks never soft-lock a duel or Boss Rush. Returns true when a correction fired.
+- `trigger_dash(...)` now cancels active player windup/swing recovery (`state == MoveState.WINDUP` or
+  `swing_anim_timer > 0.0`) so dash-canceling mid-combo feels instant and responsive, without bypassing
+  `MoveState.HITSTUN` or defeat locks. `swing_anim_timer` is zeroed as part of the cancel.
+
+`gesture_combat.gd` — SHADOW STEP + rival arena bounds:
+- `duel_perfect_dodges: int = 0` and `perfect_dodge_banner_timer: float = 0.0` added, both reset to
+  0 / 0.0 inside `_reset_duel_metrics()`, with the banner timer ticking down cleanly.
+- Inside `_resolve_enemy_strike_on_player(td, s)`, when the player avoids an incoming strike via
+  `player.state == MoveState.DASH` (both `PARRIABLE` and `UNBLOCKABLE` slams):
+  - If `tune_bool("perfect_dodge_enabled", true)` is true, fire a **SHADOW STEP** Perfect Dodge:
+    increment `duel_perfect_dodges`, set `perfect_dodge_banner_timer = 1.0`, restore +18.0 mana
+    (clamped to `player.max_mana`), deal +25.0 posture damage to `s` (triggering `_break_posture()` if
+    `s["posture"] >= s["max_posture"]`), apply a crisp hitstop/camera kick
+    (`player.trigger_hitstop(0.045, 0.45)`), trigger `dash_vfx.play_sfx("vanish")` +
+    `spawn_cel_smoke(...)`, and set `last_combat_action = "SHADOW STEP!!"` (or
+    `"SHADOW STEP — SLAM EVADED!"` on `UNBLOCKABLE`).
+  - When `perfect_dodge_enabled == false`, keep the existing plain `"DASH EVADE!"` / `"DASH EVADE — SLAM WHIFFED!"`
+    path with zero bonus mana, posture damage, or counter increment.
+- `compute_duel_rank()` is additive: each perfect dodge adds +60 score (when `duel_perfect_dodges == 0`,
+  the score and rank formula is 100% identical to the pre-task formula, so §25 assertions remain exact).
+  `"perfect_dodges": duel_perfect_dodges` included in `compute_duel_rank()` and `last_victory_summary`.
+- `clamp_rival_bounds(td: Node3D, s: Dictionary) -> bool` added and run inside `_physics_process` for
+  every active rival, so launched/knocked-back bosses never exit `ARENA_MAX_RADIUS` (46.0 m) or fall
+  below `y = -4.0`.
+
+`dev_studio.gd` — Seinen HUD snapshot & SHADOW STEP callout pill:
+- `get_hud_snapshot()["player"]` extended additively with `"perfect_dodges": int` and
+  `"evade_callout": String` (`"SHADOW STEP!!"` while `perfect_dodge_banner_timer > 0.0`, else `""`).
+- `_draw_seinen_hud()` (same 10 Hz throttle, instant redraw while `perfect_dodge_banner_timer > 0.0`,
+  zero new shaders/nodes, zero `size`/`position`/`scale`/`rotation` parameter shadows): renders a
+  compact bone-gold ink pill (`[ SHADOW STEP ]`) near the player cluster whenever `player.evade_callout`
+  is non-empty.
+- `_process` redraws while `perfect_dodge_banner_timer > 0.0` so the callout appears and fades crisply.
+
+Test coverage is §33 (32 asserts): `perfect_dodge_enabled` exists in `TUNING_BOOLS` + `TUNING_DEFAULTS`
+(default true); dashing through both a `PARRIABLE` strike and an `UNBLOCKABLE` slam fires SHADOW STEP,
+restores mana, adds rival posture damage, increments `duel_perfect_dodges`, raises
+`compute_duel_rank()["score"]`, exposes `"perfect_dodges"` + `"evade_callout"` in
+`get_hud_snapshot()["player"]`, and is suppressed when `perfect_dodge_enabled == false`;
+`compute_duel_rank()` with 2 perfect dodges scores 1120 (1000 + 2×60) and still lands S, while 0
+perfect dodges scores 1000 — identical to the pre-task formula; `player.clamp_arena_bounds()` and
+`combat.clamp_rival_bounds(...)` clamp XZ positions beyond 46.0 m (XZ distance, not 3D distance) and
+rescue fall-throughs (`y = -10.0`) back to safe arena height (`y >= 1.0`); `trigger_dash()` cancels
+active `MoveState.WINDUP` cleanly and zeroes `swing_anim_timer`; `reset_duel()` resets
+`duel_perfect_dodges` to 0 and `perfect_dodge_banner_timer` to 0.0.
+
+Unverified: no pixels — headless never runs `_draw()`, so the `[ SHADOW STEP ]` callout pill was never
+looked at; the real feel of dash-cancelling mid-combo on a phone and a real three-stage playthrough with
+perfect dodges were never verified.
+
+=== AI HANDOFF PACKET ===
+REPO: Pinkypoopoo/sasti-sparkling-zero
+BRANCH: Pinkypoopoo-patch-1 (HEAD for this entry: V8 Task 3 on 39b2dcc)
+DONE: auto-generated Tab 8 `perfect_dodge_enabled` knob (default on); SHADOW STEP perfect dodge through
+both PARRIABLE and UNBLOCKABLE strikes (+18 mana, +25 rival posture, hitstop, vanish SFX + cel smoke,
+last_combat_action set, duel_perfect_dodges incremented); suppressed when the knob is off; additive
++60/perfect dodge in compute_duel_rank() with the 0-dodge formula unchanged; Seinen HUD
+`[ SHADOW STEP ]` bone-gold callout pill + snapshot `perfect_dodges`/`evade_callout`; arena-bounds
+clamp for the player (`clamp_arena_bounds()`, 46 m perimeter + fall-through rescue to 1.6 m) and for
+every active rival (`clamp_rival_bounds()`, 46 m perimeter + fall-through rescue to 1.0 m); dash-cancel
+of active WINDUP/swing recovery in `trigger_dash()`; 32 new asserts.
+OPEN: no visual run (callout pill pixels); no on-device dash-cancel feel; no real playthrough with
+perfect dodges.
+NEXT: play a duel on a phone and confirm the SHADOW STEP pill reads and fades, then try dash-cancelling
+a windup mid-combo.
 === END AI HANDOFF PACKET ===

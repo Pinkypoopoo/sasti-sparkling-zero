@@ -301,6 +301,63 @@ re-run `blender --background --python build_models.py` and raise Vertex Shadow B
 
 ---
 
+### 2026-11-27 · Buffy (Freebuff) — V7 Task 1: story-to-progression bridge (origins, story rivals, mastery)
+
+
+Branch `Pinkypoopoo-patch-1`, based on `3625526`. `main` untouched.
+Gate: **VERIFY_PASSED**, 7 gates, 79 signatures, 260 combat asserts (+15 in §26), zero GDScript
+warnings (`--check-only` on `world_story.gd` / `gesture_combat.gd` / `dev_studio.gd` silent).
+`data/story_nodes.json` untouched.
+
+Audit first: V6 Task 6 already had `_reset_duel_metrics()` in `spawn_story_rival()`, the
+`boss_phase = 1` / stagger / telegraph reset, and a 7.5 m spawn offset, so V7 added no duplicate
+spawn code — only the missing read surface and the origin/story bridge.
+
+`world_story.gd` — still a pure loader (no narrative in GDScript):
+- `active_origin_title()` reads `origins[active_origin_id]["title"]` from the JSON; falls back to the
+  stored id (and to `""` when nothing is selected) instead of inventing a label.
+- `record_region_victory(region_idx, rank, elapsed, origin_id = "", is_story_rival = false,
+  rival_name = "")` — the three original arguments still work, so the existing callers are
+  untouched. It now also stores `"best_origin"` (stamped when the rank improves or on the first
+  clear) and `"cleared_origins"` (deduplicated ids) inside `region_mastery[str(idx)]`.
+- Authored story-choice KOs append the node's `rival_name` to the new deduplicated
+  `story_rivals_defeated` array in `story_state` (`_note_story_rival()`,
+  `story_rivals_defeated_count()`). Both new keys round-trip through `save_state()` / `load_state()`.
+- `reset_progression_flags()` also clears `story_rivals_defeated`; every write still goes through the
+  merged `"story_state"` writer, so `"tuning"` and the active origin selection are preserved.
+
+`gesture_combat.gd`:
+- `is_story_rival_duel()` reads `story_override` off `primary_rival()` (false when there is no rival).
+- `_kill_rival()` now pulls `active_origin_id` + `active_origin_title()` from the story manager, passes
+  them plus `story_override` and the KO'd `boss_name` into `record_region_victory(...)`, and caches
+  `origin_id`, `origin_title`, `story_rival`, `best_origin`, `cleared_origins` and
+  `story_rivals_defeated` in `last_victory_summary` for the HUD.
+- `apply_region_boss_profile()` still preserves `story_override` on purpose (a story choice owns its
+  name/scale/slots), which is why the test drives the flag explicitly instead of relying on travel.
+
+`dev_studio.gd` — existing keys unchanged, new ones additive:
+- `player.origin_id` / `player.origin_title`; `boss.story_rival`; `victory.origin_title`,
+  `victory.story_rival`, `victory.story_rivals_defeated_count` (defaults included before any KO).
+- Seinen HUD: a bone-ink `ORIGIN · <title>` tag under the VITAL/GUARD cluster (drops below the combo
+  badge when one is showing); a crimson-on-gold `[ STORY RIVAL ]` plate on the boss name row that
+  replaces the archetype tag for authored encounters; the Victory Rank Card gains an
+  `ORIGIN · <title>` line and a `STORY RIVAL DEFEATED` ink stamp, with the card growing 20 px taller
+  for it (176 → 196) so the stamp never touches the unlock line or the centred RETRY overlay.
+  Same 10 Hz snapshot, no new nodes or shaders, still hidden behind the Dev Panel / P5 menu.
+
+Test coverage is §26 (15 asserts): origin switch moves `active_origin_title()` and the snapshot
+`player.origin_id`/`origin_title`; a guardian without the override is not a story duel while
+`spawn_story_rival()` flips it, resets `boss_phase` to 1 and lands at 7.50 m separation; the KO writes
+`best_origin` + `cleared_origins` + `story_rivals_defeated` into `user://dev_profile.json` beside
+`tuning` (93.0 sentinel); the victory snapshot carries origin title, story flag and count; a repeat
+encounter is deduplicated; `reset_progression_flags()` clears rivals + mastery, keeps the origin and
+keeps the 93.0 tuning value.
+
+Unverified: the origin tag, `[ STORY RIVAL ]` plate and card stamp pixels (headless never runs
+`_draw()`); all three read only from the snapshot values asserted above.
+
+
+
 ## Archived from section 4 (V5 Task 1 entries, 26 Nov 2026)
 
 ### [2026-11-26] Buffy (Freebuff) — V5 Task 1: Intent-Gated Wall-Running, Wall Kick-Off, and Auto Ledge-Vault
