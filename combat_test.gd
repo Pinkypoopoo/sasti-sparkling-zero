@@ -1397,6 +1397,46 @@ func _run() -> void:
 	studio.travel_to_region(0)
 	combat.reset_duel()
 
+	# --- 31. V8 Task 1A: raised water, Seinen palette, hollow telegraph rings ---
+	var t16_vfx = player.dash_vfx
+	check(float(t16_vfx.water_mesh.position.y) >= 0.10, "the water plane sits above the floor (>= 0.10 m) so it cannot z-fight")
+	var t16_shader: String = str(t16_vfx.WATER_SHADER)
+	check(t16_shader.contains("1.0, 2.2)") and t16_shader.contains("0.7, 2.8)"), "the contact rings are tightened to 2.2 m (player) / 2.8 m (boss)")
+	check(t16_shader.contains("step(0.84, band)") and t16_shader.contains("max(h * wave_height, -0.10)"), "crisp ring bands over a clamped trough")
+	check(t16_shader.contains("vec4(0.03, 0.04, 0.07, 1.0)") and t16_shader.contains("vec4(0.58, 0.66, 0.72, 1.0)"), "the water uses the Dark Seinen 3-band cel palette")
+
+	# Region 0/1 dry, region 2 floods on MID, region 0 dries again on the way back.
+	player.data_store.tuning["auto_quality"] = false
+	player.data_store.tuning["quality_tier"] = 2
+	player.apply_quality_tier()
+	studio.travel_to_region(0)
+	check(not bool(player.dash_vfx.water_enabled) and not player.dash_vfx.water_mesh.visible, "region 0 boots and travels dry")
+	studio.travel_to_region(1)
+	check(not bool(player.dash_vfx.water_enabled), "region 1 travels dry too")
+	studio.travel_to_region(2)
+	check(bool(player.dash_vfx.water_enabled) and player.dash_vfx.water_mesh.visible, "region 2 floods automatically on the MID tier")
+	studio.travel_to_region(0)
+	check(not bool(player.dash_vfx.water_enabled) and not player.dash_vfx.water_mesh.visible, "returning to region 0 dries the sanctum again")
+	player.data_store.tuning["quality_tier"] = 0
+	player.apply_quality_tier()
+	studio.travel_to_region(2)
+	check(not bool(player.dash_vfx.water_enabled), "LOW tier keeps region 2 dry")
+	player.data_store.reset_tuning()
+	player.data_store.refresh_auto_quality()
+	player.apply_quality_tier()
+	studio.travel_to_region(0)
+
+	# Telegraph rings: hollow torus, alpha blended, never on the floor plane.
+	check(player.dash_vfx.sigil_rings[0].mesh is TorusMesh, "the telegraph ring is a hollow TorusMesh, not a solid disc")
+	var t16_ring_mesh: TorusMesh = player.dash_vfx.sigil_rings[0].mesh as TorusMesh
+	check(is_equal_approx(t16_ring_mesh.inner_radius, 1.15) and is_equal_approx(t16_ring_mesh.outer_radius, 1.38), "the torus keeps the authored 1.15 / 1.38 profile")
+	var t16_idx: int = int(player.dash_vfx.sigil_idx)
+	player.dash_vfx.spawn_step_sigil(Vector3(0.0, 0.0, 0.0), Color(1.0, 0.2, 0.2), 1.0)
+	check(player.dash_vfx.sigil_rings[t16_idx].global_position.y >= 0.15, "a ground-level sigil stays elevated above the floor and water")
+	check(is_equal_approx(player.dash_vfx.sigil_rings[t16_idx].scale.y, 0.08), "... and keeps its flattened 0.08 ring thickness")
+	player.dash_vfx.sigil_timers[t16_idx] = 0.0
+	player.dash_vfx.sigil_rings[t16_idx].visible = false
+
 	# Leave no test tuning behind for the next run.
 	player.data_store.reset_tuning()
 	player.data_store.refresh_auto_quality()

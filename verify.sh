@@ -184,10 +184,19 @@ ok "hand-crafted art: no .blend in models/, art/.gdignore present, exporter comp
 # and they were shipped twice already (snapped/scale shadowing in the phone log).
 # The pattern also matches typed locals ("var scale: float = ...") - the second
 # SHADOWED_VARIABLE_BASE_CLASS report from the 4.7.2 editor debugger.
-SHADOW_HITS="$(grep -nE '^[[:space:]]*var[[:space:]]+(snapped|snappedf|scale|rotation|position|basis|transform|visible|velocity|lerp|clamp|abs|sign|min|max|str|range|print)([[:space:]]*:[^=]*)?[[:space:]]*=' ./*.gd 2>/dev/null || true)"
+SHADOW_HITS="$(grep -nE '^[[:space:]]*var[[:space:]]+(snapped|snappedf|size|scale|rotation|position|basis|transform|visible|velocity|lerp|clamp|abs|sign|min|max|str|range|print)([[:space:]]*:[^=]*)?[[:space:]]*=' ./*.gd 2>/dev/null || true)"
 if [ -n "$SHADOW_HITS" ]; then
     echo "$SHADOW_HITS"
     fail "a local variable shadows a built-in (SHADOWED_VARIABLE): rename it"
+fi
+# SHADOWED_VARIABLE_BASE_CLASS also fires on a Control method PARAMETER, which the
+# local-var pattern above never saw: 4.7.2 flagged _ink_quad(pos, size, slant) in
+# dev_studio.gd (Control.size). Any parameter named size/position/scale/rotation
+# fails here, so a rename cannot silently regress.
+PARAM_SHADOW="$(grep -nE '^func [^(]*\([^)]*\b(size|position|scale|rotation)\b[^)]*\)' dev_studio.gd || true)"
+if [ -n "$PARAM_SHADOW" ]; then
+    echo "$PARAM_SHADOW"
+    fail "a dev_studio.gd function parameter shadows a Control property (rename it, e.g. box_size / bar_size / panel_size)"
 fi
 # INT_AS_ENUM_WITHOUT_CAST: assigning int() straight to a typed enum var.
 if grep -nE 'dash_style[[:space:]]*=[[:space:]]*int\(' ./*.gd 2>/dev/null | grep -v 'as DashStyle'; then

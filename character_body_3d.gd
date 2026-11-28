@@ -407,12 +407,14 @@ void fragment() {
 # samples horizontally. Drop res://assets/sdf_face.png in to override it.
 func _build_sdf_face_texture() -> void:
 	if not anime_mat: return
-	var size := 64
-	var img := Image.create(size, size, false, Image.FORMAT_RGBA8)
-	for y in range(size):
-		for x in range(size):
-			var u := (float(x) + 0.5) / float(size)
-			var v := (float(y) + 0.5) / float(size)
+	# `tex_size`, not `size`: BaseMaterial3D owns `size`, and 4.7.2 flags the local
+	# as SHADOWED_VARIABLE_BASE_CLASS.
+	var tex_size := 64
+	var img := Image.create(tex_size, tex_size, false, Image.FORMAT_RGBA8)
+	for y in range(tex_size):
+		for x in range(tex_size):
+			var u := (float(x) + 0.5) / float(tex_size)
+			var v := (float(y) + 0.5) / float(tex_size)
 			var cx := absf(u - 0.5) * 2.0
 			var nose := 1.0 - smoothstep(0.0, 0.16, absf(cx - 0.02))
 			var cheek := smoothstep(0.34, 0.86, cx)

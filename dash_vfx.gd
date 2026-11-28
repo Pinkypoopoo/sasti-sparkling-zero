@@ -12,6 +12,10 @@ var dash_fx_mesh: MeshInstance3D = null
 var dash_fx_mat: StandardMaterial3D = null
 var dash_fx_timer: float = 0.0
 
+# One hollow torus, flattened on Y: a solid alpha-hashed disc z-fights and
+# stipples against the floor and the raised water plane as it expands.
+const SIGIL_FLATTEN: float = 0.08
+const SIGIL_FLOOR_CLEARANCE: float = 0.18
 var sigil_rings: Array[MeshInstance3D] = []
 var sigil_mats: Array[StandardMaterial3D] = []
 var sigil_timers: Array[float] = [0.0, 0.0, 0.0, 0.0]
@@ -430,18 +434,23 @@ func _setup_afterimage_pool() -> void:
 	dash_fx_mesh.material_override = dash_fx_mat
 	add_child(dash_fx_mesh)
 
-	var ring_mesh := CylinderMesh.new()
-	ring_mesh.top_radius = 1.35
-	ring_mesh.bottom_radius = 1.35
-	ring_mesh.height = 0.04
+	# V8 Task 1A: hollow flattened torus. A solid disc with ALPHA_HASH stippled and
+	# flickered against the floor, and it could not read as a ring at all.
+	var ring_mesh := TorusMesh.new()
+	ring_mesh.inner_radius = 1.15
+	ring_mesh.outer_radius = 1.38
+	ring_mesh.rings = 24
+	ring_mesh.ring_segments = 8
 	for i in range(4):
 		var sm := MeshInstance3D.new()
 		sm.mesh = ring_mesh
 		sm.top_level = true
 		sm.visible = false
+		sm.scale = Vector3(1.0, SIGIL_FLATTEN, 1.0)
 		var rmat := StandardMaterial3D.new()
 		rmat.shading_mode = StandardMaterial3D.SHADING_MODE_UNSHADED
-		rmat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_HASH
+		rmat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		rmat.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_DISABLED
 		rmat.albedo_color = Color(0.95, 0.15, 0.2, 0.0)
 		sm.material_override = rmat
 		add_child(sm)
@@ -577,9 +586,9 @@ uniform float wave_height : hint_range(0.0, 0.65) = 0.12;
 uniform vec3 player_pos = vec3(0.0);
 uniform vec3 boss_pos = vec3(9999.0);
 uniform float ripple_str : hint_range(0.0, 2.0) = 1.0;
-uniform vec4 trough_col : source_color = vec4(0.020, 0.035, 0.078, 1.0);
-uniform vec4 mid_col : source_color = vec4(0.063, 0.145, 0.298, 1.0);
-uniform vec4 crest_col : source_color = vec4(0.361, 0.902, 1.0, 1.0);
+uniform vec4 trough_col : source_color = vec4(0.03, 0.04, 0.07, 1.0);
+uniform vec4 mid_col : source_color = vec4(0.08, 0.13, 0.19, 1.0);
+uniform vec4 crest_col : source_color = vec4(0.58, 0.66, 0.72, 1.0);
 
 varying float v_h;
 varying vec3 v_wpos;
@@ -587,7 +596,7 @@ varying vec3 v_wpos;
 float contact_ring(vec2 w, vec2 c, float speed, float reach) {
 	float d = length(w - c);
 	float band = sin(d * 4.6 - TIME * speed * 4.2) * 0.5 + 0.5;
-	return step(0.74, band) * smoothstep(reach, 0.0, d);
+	return step(0.84, band) * smoothstep(reach, 0.0, d);
 }
 
 void vertex() {
@@ -595,7 +604,9 @@ void vertex() {
 	float h = sin(w.x * 0.32 + TIME * 1.35) * 0.62
 	        + sin(w.z * 0.24 - TIME * 0.95) * 0.38
 	        + sin((w.x + w.z) * 0.11 + TIME * 0.55) * 0.22;
-	VERTEX.y += h * wave_height;
+	// Clamped troughs: an unclamped sine pulled vertices under the floor at the
+	// wave's low points, which is what made the water clip and z-fight.
+	VERTEX.y += max(h * wave_height, -0.10);
 	v_h = h;
 	v_wpos = w;
 }
@@ -605,8 +616,8 @@ void fragment() {
 	vec3 col = trough_col.rgb;
 	if (t >= 0.54) { col = mid_col.rgb; }
 	if (t >= 0.82) { col = crest_col.rgb; }
-	col += crest_col.rgb * contact_ring(v_wpos.xz, player_pos.xz, 1.0, 6.5) * 0.85 * ripple_str;
-	col += crest_col.rgb * contact_ring(v_wpos.xz, boss_pos.xz, 0.7, 8.5) * 0.55 * ripple_str;
+	col += crest_col.rgb * contact_ring(v_wpos.xz, player_pos.xz, 1.0, 2.2) * 0.55 * ripple_str;
+	col += crest_col.rgb * contact_ring(v_wpos.xz, boss_pos.xz, 0.7, 2.8) * 0.40 * ripple_str;
 	ALBEDO = col;
 }
 """
@@ -620,7 +631,7 @@ func _setup_water_floor() -> void:
 	water_mesh.name = "AnimeWaterFloor"
 	water_mesh.mesh = plane
 	water_mesh.top_level = true
-	water_mesh.position = Vector3(0.0, 0.03, 0.0)
+	water_mesh.position = Vector3(0.0, 0.14, 0.0)
 	water_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	water_mat = ShaderMaterial.new()
 	water_mat.shader = Shader.new()
@@ -1111,8 +1122,10 @@ func spawn_afterimage(target_xform: Transform3D, col: Color, alpha_val: float = 
 func spawn_step_sigil(pos: Vector3, col: Color, scale_mult: float = 1.0) -> void:
 	var sm := sigil_rings[sigil_idx]
 	var rmat := sigil_mats[sigil_idx]
-	sm.global_position = pos
-	sm.scale = Vector3(scale_mult, 1.0, scale_mult)
+	# Never on the floor plane: 0.18 m clears both the arena floor and the raised
+	# water sheet, so the two alpha surfaces cannot z-fight while the ring expands.
+	sm.global_position = Vector3(pos.x, maxf(pos.y, SIGIL_FLOOR_CLEARANCE), pos.z)
+	sm.scale = Vector3(scale_mult, SIGIL_FLATTEN, scale_mult)
 	sm.visible = true
 	rmat.albedo_color = Color(col.r, col.g, col.b, 0.88)
 	sigil_timers[sigil_idx] = 0.42

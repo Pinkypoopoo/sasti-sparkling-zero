@@ -1391,26 +1391,29 @@ func get_hud_snapshot() -> Dictionary:
 	return snap
 
 # A slanted ink quad: the shared silhouette for every bar and badge.
-func _ink_quad(pos: Vector2, size: Vector2, slant: float) -> PackedVector2Array:
-	var s: float = minf(slant, size.x * 0.35)
+# A slanted ink quad: the shared silhouette for every bar and badge. The box is
+# `box_size`, never `size` — Control already owns `size`, and 4.7.2 flags the
+# shadowed parameter (SHADOWED_VARIABLE_BASE_CLASS).
+func _ink_quad(pos: Vector2, box_size: Vector2, slant: float) -> PackedVector2Array:
+	var s: float = minf(slant, box_size.x * 0.35)
 	return PackedVector2Array([
 		pos + Vector2(s, 0.0),
-		pos + Vector2(size.x, 0.0),
-		pos + Vector2(size.x - s, size.y),
-		pos + Vector2(0.0, size.y),
+		pos + Vector2(box_size.x, 0.0),
+		pos + Vector2(box_size.x - s, box_size.y),
+		pos + Vector2(0.0, box_size.y),
 	])
 
-func _draw_ink_bar(pos: Vector2, size: Vector2, ratio: float, fill: Color, border: Color) -> void:
-	draw_colored_polygon(_ink_quad(pos, size, SEINEN_SLANT), border)
-	var inner := Vector2(maxf(0.0, size.x - 2.0), maxf(0.0, size.y - 2.0))
+func _draw_ink_bar(pos: Vector2, bar_size: Vector2, ratio: float, fill: Color, border: Color) -> void:
+	draw_colored_polygon(_ink_quad(pos, bar_size, SEINEN_SLANT), border)
+	var inner := Vector2(maxf(0.0, bar_size.x - 2.0), maxf(0.0, bar_size.y - 2.0))
 	draw_colored_polygon(_ink_quad(pos + Vector2(1.0, 1.0), inner, SEINEN_SLANT), SEINEN_INK_BG)
 	var fw: float = inner.x * clampf(ratio, 0.0, 1.0)
 	if fw > 2.0:
 		draw_colored_polygon(_ink_quad(pos + Vector2(2.0, 2.0), Vector2(fw, maxf(2.0, inner.y - 2.0)), SEINEN_SLANT * 0.7), fill)
 
-func _draw_ink_panel(pos: Vector2, size: Vector2, border: Color) -> void:
-	draw_colored_polygon(_ink_quad(pos, size, SEINEN_SLANT * 1.4), border)
-	draw_colored_polygon(_ink_quad(pos + Vector2(2.0, 2.0), Vector2(maxf(0.0, size.x - 4.0), maxf(0.0, size.y - 4.0)), SEINEN_SLANT), SEINEN_INK_BG)
+func _draw_ink_panel(pos: Vector2, panel_size: Vector2, border: Color) -> void:
+	draw_colored_polygon(_ink_quad(pos, panel_size, SEINEN_SLANT * 1.4), border)
+	draw_colored_polygon(_ink_quad(pos + Vector2(2.0, 2.0), Vector2(maxf(0.0, panel_size.x - 4.0), maxf(0.0, panel_size.y - 4.0)), SEINEN_SLANT), SEINEN_INK_BG)
 
 func _draw_seinen_hud(snap: Dictionary) -> void:
 	var vp := get_viewport_rect().size

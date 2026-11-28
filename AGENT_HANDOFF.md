@@ -87,83 +87,6 @@ Answer in §4 with a dated entry. These are decisions, not research tasks.
 
 ## 4. Message log
 
-### 2026-11-27 · Buffy (Freebuff) — V6 Task 5: procedural Seinen synth cues + V6 feedback polish
-
-Branch `Pinkypoopoo-patch-1`, based on `9212dae`. `main` untouched (`0c80d97`).
-Gate: **VERIFY_PASSED**, 7 gates, 79 signatures, 223 combat asserts, zero GDScript warnings
-(`--check-only` on `combat_data.gd` / `dash_vfx.gd` / `character_body_3d.gd` /
-`gesture_combat.gd` / `combat_test.gd` silent), zero RID/orphan leaks.
-
-Audit first: `dash_vfx.gd` already had one `AudioStreamPlayer` + `AudioStreamGenerator`, a
-`play_sfx(kind)` `match` of 6 hardcoded frequency pairs, and `_pump_synth_audio(delta)` writing
-samples on the render tick. **No** SFX tuning knobs existed in `combat_data.gd`, and
-`_setup_synth_audio()` returns early on headless, so `play_sfx` was a no-op with no way to test it.
-
-`combat_data.gd` — the two missing knobs, no UI code: `sfx_enabled: true` in `TUNING_BOOLS` +
-`TUNING_DEFAULTS`, and `sfx_volume: [0.0, 1.0, 0.05, "SFX Volume"]` with default `0.75`.
-
-`dash_vfx.gd` — one pipeline, not a second one:
-- `SYNTH_CUES` replaces the inline `match`: cue -> `[duration_s, [[start_hz, end_hz, gain,
-  noise_mix, partial], ...]]`, so the 6 legacy cues and the 7 new V6 cues (`boss_awaken`,
-  `unblockable_warn`, `stagger_break`, `stagger_finisher`, `gate_travel`, `gate_sealed`,
-  `wall_kick`) share one table and one oscillator. Constants `SFX_BOSS_AWAKEN` … `SFX_WALL_KICK`
-  are the clean identifiers call sites use.
-- `_bake_synth_cue()` renders each cue once into a seeded `PackedVector2Array` (22.05 kHz, 2 ms
-  attack, exponential decay, integrated frequency sweep so a sweep never clicks). The bank is
-  baked at `_ready` (~3.2 s / ~560 KB) instead of hitching the frame a boss awakens on;
-  `_synth_frames_for()` still lazily bakes anything missing.
-- `_pump_synth_audio()` keeps running on the render tick — the documented invariant — but now
-  pushes the pre-baked frames through `push_buffer()` instead of synthesising per sample. Still
-  exactly one `AudioStreamPlayer`, so no new RID to leak.
-- `play_sfx()` records `last_sfx_cue`, `sfx_play_count` and an 8-deep `sfx_history` (so a test can
-  see two cues fired by one action), returns before all of that when `sfx_enabled == false`, and
-  sets volume through `synth_volume_db()` = `linear_to_db(max(0.001, volume))`. It records the cue
-  even with no audio device, which is what makes the headless assertions meaningful.
-- `set_sfx_tuning(enabled, linear_volume)` is pushed from the player, because `dash_vfx` has no
-  `player`/`data_store` reference and reaching back would add a node lookup per shot.
-
-`character_body_3d.gd` — `_push_fx_budget()` now also pushes the SFX state. `GATE_SEALED` fires
-inside `_tick_shortcut_gates()` (called from `_physics_process`) behind
-`SHORTCUT_SEALED_SFX_CD = 1.2 s`, decremented on the same tick, so standing on a sealed gate
-thuds once and then stays silent. `GATE_TRAVEL` fires in `_travel_through_shortcut()`. The
-wall-run jump kick-off and `_vault_onto_ledge()` now use `WALL_KICK` in place of the old
-`clash`/`vanish` cues.
-
-`gesture_combat.gd` — `_awaken_phase_two()` fires `BOSS_AWAKEN` and adds camera trauma with
-`trigger_hitstop(0.0, 0.9)`: zero duration means no hitstop, so the boss is never frozen
-mid-transition. `_begin_telegraph()` fires `UNBLOCKABLE_WARN` only for the crimson slam (a
-`PARRIABLE` wind-up stays silent). `_break_posture()` fires `STAGGER_BREAK`. `_stagger_finisher_fx()`
-fires `STAGGER_FINISHER` and raises the kick from shake `0.8` to `1.0` alongside its existing
-`0.075 s` hitstop, slash, smoke and sigil.
-
-Verified (headless, `combat_test.gd` §24, 19 new asserts -> 223): `sfx_enabled` / `sfx_volume`
-exist with the required defaults and range and reach the host through `_push_fx_budget()`; all 7
-V6 cues bake non-silent buffers with a device-less run (frame count >= 256, peak > 0.01); a cue
-records name/count/history, `sfx_enabled = false` leaves count, last cue and history untouched, and
-`sfx_volume = 0.5` maps to `linear_to_db(0.5)`; crossing 50% HP fires `BOSS_AWAKEN`; a direct
-`_awaken_phase_two()` raises `cam_shake_trauma` while leaving `hitstop_timer` at 0; an
-`UNBLOCKABLE` wind-up fires `UNBLOCKABLE_WARN` and a `PARRIABLE` one stays silent; a posture break
-fires `STAGGER_BREAK`; the finisher fires `STAGGER_FINISHER` with hitstop and trauma; a sealed gate
-fires `GATE_SEALED` exactly once, six further 1/60 s ticks add nothing, and 1.3 s later it thuds
-again; open travel fires `GATE_TRAVEL`; wall kick-off and the auto ledge-vault both fire `WALL_KICK`.
-Not verified: no audio was heard — headless runs `--audio-driver Dummy` and `_setup_synth_audio()`
-still skips device setup there, so buffer validity, cue selection and count/cooldown throttling are
-proven, but the actual timbre, loudness balance against the existing cues and phone-speaker
-readability are unjudged.
-
-=== AI HANDOFF PACKET ===
-REPO: Pinkypoopoo/sasti-sparkling-zero
-BRANCH: Pinkypoopoo-patch-1 (HEAD for this entry: V6 Task 5)
-DONE: Tab 8 `sfx_enabled` + `sfx_volume`; 7 new V6 synth cues (boss awaken gong, unblockable
-twin-tone sting, stagger crack, finisher sub-impact, gate travel chime, gate sealed thud, wall kick)
-baked once into the existing generator pipeline; cue name/count/history for headless verification;
-1.2 s sealed-gate audio throttle; camera trauma on awakening and a heavier finisher kick; 19 new
-asserts.
-OPEN: no on-device listening pass (timbre, mix balance, phone speaker); Blender 5.2 exporter still
-unrun.
-NEXT: listen on a phone and balance `sfx_volume`, then continue V6.
-=== END AI HANDOFF PACKET ===
-
 ### 2026-11-27 · Buffy (Freebuff) — V6 Task 6: regional mastery loop, S/A/B/C duel grading, eclipse finale
 
 Branch `Pinkypoopoo-patch-1`, based on `754ae4b`. `main` untouched.
@@ -401,4 +324,67 @@ OPEN: no listening pass on the retuned cues; no on-phone look at the 20-row menu
 on this branch (V7 Task 3 shipped no Boss Rush).
 NEXT: listen on a phone and rebalance `sfx_volume`, then check the 20-row blade list on a narrow
 phone.
+=== END AI HANDOFF PACKET ===
+### 2026-11-28 · Buffy (Freebuff) — V8 Task 1A: editor warning fix, Dark Seinen water, hollow ring
+
+Branch `Pinkypoopoo-patch-1`, based on `170d2d0` (V8 Task 1B). `main` untouched.
+Gate: **VERIFY_PASSED**, 7 gates, 79 signatures, 315 combat asserts (+13 in §31), zero GDScript
+warnings (`--check-only` on `dash_vfx.gd` / `dev_studio.gd` / `character_body_3d.gd` /
+`combat_test.gd` silent), zero RID/orphan leaks. `SYNTH_CUES`, `flame_p5_pvp.gd`,
+`data/story_nodes.json` and `story_test.gd` untouched.
+
+`AGENTS.md` — one new branch rule: cloud sandboxes never `git rebase`, `git pull --rebase` or detach
+HEAD; integrate with `git merge --ff-only` (or `--no-rebase`) because siblings share the branch.
+
+`SHADOWED_VARIABLE_BASE_CLASS` (the 4.7.2 editor errors):
+- `dev_studio.gd`: `_ink_quad(pos, size, slant)`, `_draw_ink_bar(pos, size, ...)` and
+  `_draw_ink_panel(pos, size, ...)` now take `box_size` / `bar_size` / `panel_size`. Those were the
+  only three Control-property parameters in the file (grep is 0 now).
+- `character_body_3d.gd`: `_build_sdf_face_texture()`'s `var size := 64` is `var tex_size := 64`
+  (BaseMaterial3D owns `size`).
+- `verify.sh` Gate 2b: `size` joined the local-var shadow list (it had been missing, which is why
+  `var size` survived), and a new `PARAM_SHADOW` rule fails on any
+  `^func ...[size|position|scale|rotation]...` parameter in `dev_studio.gd`. Negative control run:
+  the pre-fix `_ink_quad` signature is caught by the new pattern.
+
+`dash_vfx.gd` — water (still one plane, one unshaded shader, no `light()`, no post-processing):
+- `water_mesh.position.y` 0.03 -> **0.14**, and the vertex stage clamps
+  `VERTEX.y += max(h * wave_height, -0.10)` so troughs can never dip under the floor plane.
+- 3-band cel palette retuned to the Dark Seinen set: trough `vec4(0.03, 0.04, 0.07, 1.0)`, mid
+  `vec4(0.08, 0.13, 0.19, 1.0)`, crest `vec4(0.58, 0.66, 0.72, 1.0)` — cold ink instead of cyan.
+- `contact_ring` tightened to foot-level: `step(0.84, band)`, reach **2.2** m player / **2.8** m boss
+  (was 6.5 / 8.5), weights **0.55** / **0.40** (was 0.85 / 0.55).
+- Region gating was already correct (`_apply_region` writes `water_floor_enabled = region_idx == 2`
+  and `_push_water()` requires `tier >= 1`); §31 now proves 0/1 dry, 2 wet on MID, 2 dry on LOW.
+
+`dash_vfx.gd` — telegraph ring:
+- The solid `CylinderMesh` + `TRANSPARENCY_ALPHA_HASH` disc is a hollow `TorusMesh`
+  (`inner_radius` 1.15, `outer_radius` 1.38, `rings` 24, `ring_segments` 8) on `TRANSPARENCY_ALPHA`
+  with `depth_draw_mode = DEPTH_DRAW_DISABLED`, flattened by `SIGIL_FLATTEN` (`scale.y = 0.08`).
+  The hash-stipple against the floor was the flicker.
+- `spawn_step_sigil()` pins the ring at `y = maxf(pos.y, 0.18)` (`SIGIL_FLOOR_CLEARANCE`) and keeps
+  the flattened Y scale, so it clears both the floor and the raised water sheet while it expands.
+
+Test coverage is §31 (13 asserts): `water_mesh.position.y >= 0.10`; the shader carries the 2.2/2.8
+reaches, `step(0.84, band)` and the `-0.10` trough clamp; the palette literals match the spec;
+region 0 dry at boot, region 1 dry, region 2 wet on MID, back to region 0 dry, region 2 dry on LOW;
+`sigil_rings[0].mesh is TorusMesh` with the 1.15 / 1.38 profile; a `spawn_step_sigil(Vector3.ZERO)`
+ring sits at `y >= 0.15` with `scale.y == 0.08`.
+
+Unverified: no visual run — headless uses the dummy renderer, which never compiles or draws a spatial
+shader, so the palette, the contact rings, the water height and the ring flicker fix are all
+unjudged in pixels, and the GLSL itself was not compiler-checked here (it only changes literals,
+`max()`/`step()` arguments inside the already-shipping shader).
+
+=== AI HANDOFF PACKET ===
+REPO: Pinkypoopoo/sasti-sparkling-zero
+BRANCH: Pinkypoopoo-patch-1 (HEAD for this entry: V8 Task 1A on 170d2d0)
+DONE: AGENTS.md no-rebase rule; 4.7.2 shadow fixes (`box_size`/`bar_size`/`panel_size`, `tex_size`)
+plus a `verify.sh` Gate 2b parameter rule and `size` in the local list; water raised to 0.14 with
+clamped troughs, Dark Seinen 3-band palette and 2.2/2.8 m contact rings; hollow flattened torus
+telegraph rings with a 0.18 m floor clearance; 13 new asserts.
+OPEN: no on-device/mobile look at the water or the rings; the shader was never compiled by a real
+renderer in this sandbox.
+NEXT: open Gothic Eclipse on a phone and confirm the ring stops flickering and the water no longer
+z-fights the floor.
 === END AI HANDOFF PACKET ===

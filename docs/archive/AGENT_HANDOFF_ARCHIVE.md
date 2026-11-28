@@ -856,3 +856,81 @@ OPEN: no on-device visual pass (bar geometry, text fit, safe margins, contrast);
 exporter still unrun.
 NEXT: look at the HUD on a phone and tune sizes, then continue V6.
 === END AI HANDOFF PACKET ===
+
+---
+
+### 2026-11-27 · Buffy (Freebuff) — V6 Task 5: procedural Seinen synth cues + V6 feedback polish
+Branch `Pinkypoopoo-patch-1`, based on `9212dae`. `main` untouched (`0c80d97`).
+Gate: **VERIFY_PASSED**, 7 gates, 79 signatures, 223 combat asserts, zero GDScript warnings
+(`--check-only` on `combat_data.gd` / `dash_vfx.gd` / `character_body_3d.gd` /
+`gesture_combat.gd` / `combat_test.gd` silent), zero RID/orphan leaks.
+
+Audit first: `dash_vfx.gd` already had one `AudioStreamPlayer` + `AudioStreamGenerator`, a
+`play_sfx(kind)` `match` of 6 hardcoded frequency pairs, and `_pump_synth_audio(delta)` writing
+samples on the render tick. **No** SFX tuning knobs existed in `combat_data.gd`, and
+`_setup_synth_audio()` returns early on headless, so `play_sfx` was a no-op with no way to test it.
+
+`combat_data.gd` — the two missing knobs, no UI code: `sfx_enabled: true` in `TUNING_BOOLS` +
+`TUNING_DEFAULTS`, and `sfx_volume: [0.0, 1.0, 0.05, "SFX Volume"]` with default `0.75`.
+
+`dash_vfx.gd` — one pipeline, not a second one:
+- `SYNTH_CUES` replaces the inline `match`: cue -> `[duration_s, [[start_hz, end_hz, gain,
+  noise_mix, partial], ...]]`, so the 6 legacy cues and the 7 new V6 cues (`boss_awaken`,
+  `unblockable_warn`, `stagger_break`, `stagger_finisher`, `gate_travel`, `gate_sealed`,
+  `wall_kick`) share one table and one oscillator. Constants `SFX_BOSS_AWAKEN` … `SFX_WALL_KICK`
+  are the clean identifiers call sites use.
+- `_bake_synth_cue()` renders each cue once into a seeded `PackedVector2Array` (22.05 kHz, 2 ms
+  attack, exponential decay, integrated frequency sweep so a sweep never clicks). The bank is
+  baked at `_ready` (~3.2 s / ~560 KB) instead of hitching the frame a boss awakens on;
+  `_synth_frames_for()` still lazily bakes anything missing.
+- `_pump_synth_audio()` keeps running on the render tick — the documented invariant — but now
+  pushes the pre-baked frames through `push_buffer()` instead of synthesising per sample. Still
+  exactly one `AudioStreamPlayer`, so no new RID to leak.
+- `play_sfx()` records `last_sfx_cue`, `sfx_play_count` and an 8-deep `sfx_history` (so a test can
+  see two cues fired by one action), returns before all of that when `sfx_enabled == false`, and
+  sets volume through `synth_volume_db()` = `linear_to_db(max(0.001, volume))`. It records the cue
+  even with no audio device, which is what makes the headless assertions meaningful.
+- `set_sfx_tuning(enabled, linear_volume)` is pushed from the player, because `dash_vfx` has no
+  `player`/`data_store` reference and reaching back would add a node lookup per shot.
+
+`character_body_3d.gd` — `_push_fx_budget()` now also pushes the SFX state. `GATE_SEALED` fires
+inside `_tick_shortcut_gates()` (called from `_physics_process`) behind
+`SHORTCUT_SEALED_SFX_CD = 1.2 s`, decremented on the same tick, so standing on a sealed gate
+thuds once and then stays silent. `GATE_TRAVEL` fires in `_travel_through_shortcut()`. The
+wall-run jump kick-off and `_vault_onto_ledge()` now use `WALL_KICK` in place of the old
+`clash`/`vanish` cues.
+
+`gesture_combat.gd` — `_awaken_phase_two()` fires `BOSS_AWAKEN` and adds camera trauma with
+`trigger_hitstop(0.0, 0.9)`: zero duration means no hitstop, so the boss is never frozen
+mid-transition. `_begin_telegraph()` fires `UNBLOCKABLE_WARN` only for the crimson slam (a
+`PARRIABLE` wind-up stays silent). `_break_posture()` fires `STAGGER_BREAK`. `_stagger_finisher_fx()`
+fires `STAGGER_FINISHER` and raises the kick from shake `0.8` to `1.0` alongside its existing
+`0.075 s` hitstop, slash, smoke and sigil.
+
+Verified (headless, `combat_test.gd` §24, 19 new asserts -> 223): `sfx_enabled` / `sfx_volume`
+exist with the required defaults and range and reach the host through `_push_fx_budget()`; all 7
+V6 cues bake non-silent buffers with a device-less run (frame count >= 256, peak > 0.01); a cue
+records name/count/history, `sfx_enabled = false` leaves count, last cue and history untouched, and
+`sfx_volume = 0.5` maps to `linear_to_db(0.5)`; crossing 50% HP fires `BOSS_AWAKEN`; a direct
+`_awaken_phase_two()` raises `cam_shake_trauma` while leaving `hitstop_timer` at 0; an
+`UNBLOCKABLE` wind-up fires `UNBLOCKABLE_WARN` and a `PARRIABLE` one stays silent; a posture break
+fires `STAGGER_BREAK`; the finisher fires `STAGGER_FINISHER` with hitstop and trauma; a sealed gate
+fires `GATE_SEALED` exactly once, six further 1/60 s ticks add nothing, and 1.3 s later it thuds
+again; open travel fires `GATE_TRAVEL`; wall kick-off and the auto ledge-vault both fire `WALL_KICK`.
+Not verified: no audio was heard — headless runs `--audio-driver Dummy` and `_setup_synth_audio()`
+still skips device setup there, so buffer validity, cue selection and count/cooldown throttling are
+proven, but the actual timbre, loudness balance against the existing cues and phone-speaker
+readability are unjudged.
+
+=== AI HANDOFF PACKET ===
+REPO: Pinkypoopoo/sasti-sparkling-zero
+BRANCH: Pinkypoopoo-patch-1 (HEAD for this entry: V6 Task 5)
+DONE: Tab 8 `sfx_enabled` + `sfx_volume`; 7 new V6 synth cues (boss awaken gong, unblockable
+twin-tone sting, stagger crack, finisher sub-impact, gate travel chime, gate sealed thud, wall kick)
+baked once into the existing generator pipeline; cue name/count/history for headless verification;
+1.2 s sealed-gate audio throttle; camera trauma on awakening and a heavier finisher kick; 19 new
+asserts.
+OPEN: no on-device listening pass (timbre, mix balance, phone speaker); Blender 5.2 exporter still
+unrun.
+NEXT: listen on a phone and balance `sfx_volume`, then continue V6.
+=== END AI HANDOFF PACKET ===

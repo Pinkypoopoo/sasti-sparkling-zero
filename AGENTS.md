@@ -3,6 +3,9 @@
 ## 1. Branch & Gate Rules (NON-NEGOTIABLE)
 - Repo: `Pinkypoopoo/sasti-sparkling-zero` | Active branch: `Pinkypoopoo-patch-1`.
 - NEVER checkout, commit, merge, or push to `main` (`0c80d97` fallback).
+- **Cloud sandboxes: never `git rebase`, `git pull --rebase`, or detach HEAD.** Several agents share
+  this branch, so integrate with `git merge --ff-only origin/<branch>` (or `git pull --no-rebase`)
+  only; a rebase rewrites commits a sibling sandbox already pushed.
 - Code changes MUST pass `bash verify.sh` on PC/CI before committing (Termux has no Godot CLI).
 - Zero new GDScript warnings: never shadow built-ins (`snapped`, `scale`), cast ints to enums with `as`, prefix unused args with `_`.
 
