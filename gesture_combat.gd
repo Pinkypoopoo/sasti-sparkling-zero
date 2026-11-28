@@ -83,6 +83,14 @@ var delete_mode_active: bool = false
 var projectiles: Array[Dictionary] = []
 
 var target_stats: Dictionary = {}
+# V8 Task 1B: one regional boss at a time.
+# main.tscn ships TWO nodes in "lock_on_targets". _init_targets() used to register
+# both, so apply_region_boss_profile() stamped the same regional name on each and
+# a phone playtest met two MONOLITH STALKERs in BLAME MEGASTRUCTURE. Anything
+# past the primary rival is parked here: hidden, out of target_stats, out of the
+# lock-on group, collision off. set_multi_enemy_sandbox(true) is the only way
+# back, and it is an explicit dev-panel toggle.
+var parked_rivals: Dictionary = {}
 var player_habits: Dictionary = {}
 var ai_mode: AIMode = AIMode.ADAPTIVE_RIVAL
 var ai_telegraph_time: float = 0.46
@@ -301,6 +309,59 @@ func _init_targets() -> void:
 				"archetype_telegraph": 1.0, "archetype_combo": 3,
 				"phase2_attack": "THRUST", "telegraph_seq": 0, "story_override": false
 			}
+	# Boot ends with the single-boss invariant applied, exactly like region travel.
+	enforce_single_active_rival()
+
+# The single-active-boss invariant. Called from _init_targets() (boot),
+# apply_region_boss_profile() (region travel + boss rush) and the sandbox toggle,
+# so those three paths can never disagree about how many rivals are alive.
+func enforce_single_active_rival() -> Node3D:
+	var primary: Node3D = null
+	if player and player.is_locked_on and is_instance_valid(player.lock_target) and target_stats.has(player.lock_target):
+		primary = player.lock_target
+	else:
+		for t in target_stats.keys():
+			if is_instance_valid(t) and t is Node3D:
+				primary = t as Node3D
+				break
+	if primary == null:
+		return null
+	for t in target_stats.keys():
+		if not is_instance_valid(t) or not (t is Node3D) or t == primary:
+			continue
+		var extra := t as Node3D
+		_park_rival(extra, target_stats[extra])
+		target_stats.erase(extra)
+	return primary
+
+func _park_rival(td: Node3D, s: Dictionary) -> void:
+	if parked_rivals.has(td):
+		return
+	parked_rivals[td] = {"stats": s, "layer": td.collision_layer, "mask": td.collision_mask}
+	td.visible = false
+	td.remove_from_group("lock_on_targets")
+	td.collision_layer = 0
+	td.collision_mask = 0
+
+# The "multi-enemy sandbox button" exception, in one call: true wakes every
+# parked dummy with the stats it went to sleep with, false re-parks all but the
+# primary rival. Returns the number of live rivals.
+func set_multi_enemy_sandbox(enabled: bool) -> int:
+	if enabled:
+		for t in parked_rivals.keys():
+			var entry: Dictionary = parked_rivals[t]
+			parked_rivals.erase(t)
+			if not is_instance_valid(t) or not (t is Node3D):
+				continue
+			var td := t as Node3D
+			target_stats[td] = entry.get("stats", {})
+			td.visible = true
+			td.add_to_group("lock_on_targets")
+			td.collision_layer = int(entry.get("layer", 1))
+			td.collision_mask = int(entry.get("mask", 1))
+	else:
+		enforce_single_active_rival()
+	return target_stats.size()
 
 # =============================================================================
 #  V6 Task 3: regional boss identity, 50% phase 2, stagger finishers
@@ -323,6 +384,9 @@ func apply_region_boss_profile(region_idx: int) -> String:
 	region_archetype = str(prof.get("archetype", "INK_DUELIST"))
 	boss_phase = 1
 	_reset_duel_metrics()
+	# One regional boss before one regional name: a tram can never leave a second
+	# rival standing beside the new guardian.
+	enforce_single_active_rival()
 	for t in target_stats.keys():
 		if not is_instance_valid(t) or not (t is Node3D):
 			continue
@@ -349,6 +413,14 @@ func apply_region_boss_profile(region_idx: int) -> String:
 # --- V7 Task 1: authored story-choice rival duels ----------------------------
 # True while the duel's rival carries the JSON story override, so the HUD can
 # badge story encounters differently from generic regional guardians.
+# A Boss Rush stage is the regional guardian, not an authored story choice: drop
+# the story name/scale lock so apply_region_boss_profile() can stamp the stage's
+# own region on it. The authored identity returns on the next spawn_story_rival().
+func clear_story_override() -> void:
+	for t in target_stats.keys():
+		if is_instance_valid(t) and t is Node3D:
+			(target_stats[t] as Dictionary)["story_override"] = false
+
 func is_story_rival_duel() -> bool:
 	var td := primary_rival()
 	if td == null or not target_stats.has(td):
@@ -773,6 +845,8 @@ func _trigger_sonic_sway() -> void:
 func _trigger_super_parry() -> void:
 	last_combat_action = "SUPER PARRY BREAKER!"
 	duel_parries_landed += 1
+	if player and player.dash_vfx:
+		player.dash_vfx.play_sfx(DashVFX.SFX_PARRY)
 	if player:
 		player.hitstun_timer = 0.0
 		player.state = PlayerController.MoveState.GROUND

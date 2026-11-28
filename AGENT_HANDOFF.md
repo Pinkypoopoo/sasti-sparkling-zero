@@ -87,73 +87,6 @@ Answer in §4 with a dated entry. These are decisions, not research tasks.
 
 ## 4. Message log
 
-### 2026-11-27 · Buffy (Freebuff) — V6 Task 4: Dark Seinen playable HUD + gate dwell readout
-
-Branch `Pinkypoopoo-patch-1`, based on `f87ddc5`. `main` untouched (`0c80d97`).
-Gate: **VERIFY_PASSED**, 7 gates, 79 signatures, 204 combat asserts, zero GDScript warnings
-(`--check-only` on `combat_data.gd` / `character_body_3d.gd` / `gesture_combat.gd` /
-`dev_studio.gd` / `combat_test.gd` silent), zero RID/orphan leaks.
-
-`combat_data.gd` — one bool in `TUNING_BOOLS` + `TUNING_DEFAULTS` (`seinen_hud_enabled: true`).
-Tab 8 builds the checkbox with no UI code, so the cinematic mode is a single tap on a phone.
-
-Read-only hooks (no new gameplay state, nothing written from the HUD):
-- `character_body_3d.shortcut_dwell_ratio()` = dwell / 0.85, clamped; `guard_ratio()` = the
-  player's poise, read from the hitstun recovery window (1.0 steady, falling for 0.36 s after a hit).
-  The player has no separate posture meter, so the HUD derives it instead of inventing one.
-- `gesture_combat.primary_rival()`, `boss_display_name()`, `boss_hp_ratio()`,
-  `boss_posture_ratio()`, `is_boss_staggered()`. `current_boss_phase()` and
-  `current_telegraph_kind()` now read the primary rival's state directly (the physics-tick mirrors
-  remain for anything else), and `_physics_process` picks its `primary_duelist` through the same
-  `primary_rival()` helper, so the HUD and the AI can never disagree about who the boss is.
-
-`dev_studio.gd` — pure data first, then one draw pass:
-- `_seinen_hud_active()` is the single visibility rule: `seinen_hud_enabled`, no full-bleed Dev
-  Studio panel, no P5 pause menu. `_sync_seinen_visibility()` (10 Hz, beside `_refresh_telemetry()`)
-  hides the debug telemetry label while it is on, because that line was the only thing sitting
-  under the player cluster.
-- `get_hud_snapshot()` returns `visible` + `player` (hp ratio, guard ratio, combo) + `boss` (name,
-  phase, archetype, hp ratio, posture ratio, telegraph kind, staggered, present) + `world` (region
-  title from `SHORTCUT_REGION_BANNERS`, gate status, gate dwell ratio). No nodes, no engine reads
-  the HUD would have to guess at.
-- `_draw_seinen_hud()` draws slanted `draw_colored_polygon` ink bars (obsidian fill, bone-white
-  border, crimson/gold accents, 9 px lean): top-left VITAL + GUARD + combo badge; top-centre
-  region title, rival name, `[ ARCHETYPE ]` tag, boss HP (border/accent shifts crimson in phase 2),
-  boss posture, a crimson `PHASE II — AWAKENED` badge, and a centred callout pill that reads
-  `[ STAGGERED — STRIKE FOR FINISHER! ]` (gold) / `[ UNBLOCKABLE — DODGE! ]` (crimson) /
-  `[ PARRIABLE ]` (bone-gold). The dwell bar sits at `vp.y - 136` with `TRAVELING...` above it.
-- Layout safety: the boss cluster is clamped to `vp.x - 176` so it can never reach `[ MENU ]`, the
-  player bar is `min(300, 24% width)` so the two top clusters cannot touch on a phone-width
-  viewport, and every centred element reuses the same clamp. Zero new shaders, zero new nodes.
-- No duplicated readouts: while the cinematic HUD is on, the old bottom-left HP/TOUKI strip and the
-  old `N HIT` combo counter are skipped (they are exactly what the player cluster replaces). The
-  world-anchored per-rival mini bars, damage numbers, hurt vignette, sealed-gate status and region
-  banner still draw as before.
-
-Verified (headless, `combat_test.gd` §23, 19 new asserts -> 204): the bool exists with a `true`
-default; the snapshot reports player HP 0.5, a guard ratio strictly between 0 and 1 at 0.18 s of
-hitstun, and the live combo count; boss HP 0.5 / posture 0.25 plus the `INK_DUELIST` archetype and
-`KATANA…` name; a hit that crosses 50% HP reports `phase == 2`; `PARRIABLE` and `UNBLOCKABLE`
-round-trip; a posture break reports `staggered` with an empty posture bar and `NONE` telegraph;
-0.4 s in an unlocked gate reports `0 < gate_dwell_ratio < 1`, the `SHORTCUT OPEN…` status and the
-`INK CATHEDRAL` title; and `visible` goes false for the bool off, the studio panel open and the P5
-menu open, and true again once both are closed.
-Not verified: no visual run — headless uses the dummy renderer, so `_draw()` never executes and the
-ink-bar geometry, the gold-vs-crimson read, the bar/text fit at real font sizes and the on-phone
-safe margins are all unjudged.
-
-=== AI HANDOFF PACKET ===
-REPO: Pinkypoopoo/sasti-sparkling-zero
-BRANCH: Pinkypoopoo-patch-1 (HEAD for this entry: V6 Task 4)
-DONE: `seinen_hud_enabled` Tab 8 bool; pure-data `get_hud_snapshot()`; slanted Dark Seinen ink HUD
-(player VITAL/GUARD/combo, boss name/archetype/phase-2/HP/posture, stagger/unblockable/parriable
-callout, gate dwell bar) on the 10 Hz throttle; read-only dwell/guard/boss hooks; legacy duplicated
-readouts suppressed while it is on; 19 new asserts.
-OPEN: no on-device visual pass (bar geometry, text fit, safe margins, contrast); Blender 5.2
-exporter still unrun.
-NEXT: look at the HUD on a phone and tune sizes, then continue V6.
-=== END AI HANDOFF PACKET ===
-
 ### 2026-11-27 · Buffy (Freebuff) — V6 Task 5: procedural Seinen synth cues + V6 feedback polish
 
 Branch `Pinkypoopoo-patch-1`, based on `9212dae`. `main` untouched (`0c80d97`).
@@ -391,3 +324,81 @@ away; `disconnect_p2p()` clears the snapshot.
 Unverified: the PvP Duel Bar and rematch button pixels (headless never runs `_draw()`), and real
 two-device UDP traffic (no network in the gate) - the receive path is driven in-process instead.
 
+### 2026-11-28 · Buffy (Freebuff) — V8 Task 1B: Dark Seinen SFX retune, one rival, 2-tap BOSS RUSH
+
+Branch `Pinkypoopoo-patch-1`, based on `07ae381` (the V7 Task 3 tip). There is **no V8 Task 1A
+commit on this branch**, so 1B is built directly on that tip. `main` untouched.
+Gate: **VERIFY_PASSED**, 7 gates, 79 signatures, 302 combat asserts (+27 in §30), zero GDScript
+warnings (`--check-only` on `dash_vfx.gd` / `gesture_combat.gd` / `dev_studio.gd` /
+`flame_p5_pvp.gd` / `combat_test.gd` silent), zero RID/orphan leaks.
+`data/story_nodes.json` and `story_test.gd` untouched.
+
+Audit first: `SYNTH_CUES` / `_bake_synth_cue()` / the single `AudioStreamGenerator` were already the
+only SFX path (V6 Task 5), so this task retunes the table and adds no second pipeline. The duplicate
+rival was **not** a spawn bug: `main.tscn` ships TWO `lock_on_targets` dummies, `_init_targets()`
+registered both, and `apply_region_boss_profile()` stamped the same regional name on each — that is
+why Region 1 showed two `MONOLITH STALKER`s. There was also no Boss Rush anywhere in the repo (the
+V7 Task 3 commit deleted 290 lines of `combat_data.gd` and nothing else; `07ae381` restored them), so
+1B had to provide the state its new row exposes.
+
+`dash_vfx.gd` — same one player, one baker, zero new RIDs:
+- All 14 cues retuned to steel / stone / sub-bass. `slash`, `hit`, `clash`, `parry`, `vanish`,
+  `shatter` and `build` lost their sine sweeps: transients now use a 0.35-0.65 noise mix over the
+  inharmonic partials 2.76 / 3.41 and decay in 0.06-0.16 s.
+- New `SFX_PARRY` ("parry") cue, fired from `_trigger_super_parry()` — the one place a parry lands.
+- `boss_awaken` 42 Hz, `stagger_finisher` 62 Hz and `gate_sealed` 55 Hz fundamentals under a dark
+  metallic shimmer; `unblockable_warn` is a 196 / 233 / 392 Hz low-mid ring with no upward sweep;
+  `gate_travel` is a 0.60 s 110 -> 132 Hz chime swell.
+
+`gesture_combat.gd` — the single-active-rival invariant:
+- `parked_rivals` + `enforce_single_active_rival()` (primary = lock target, else the first
+  registered), `_park_rival()` (hidden, out of `target_stats`, out of `lock_on_targets`, collision
+  0) and `set_multi_enemy_sandbox(enabled)`, the only path back, returning the live count.
+- `_init_targets()` ends with the invariant and `apply_region_boss_profile()` applies it before it
+  stamps a name, so boot, every region tram and every Boss Rush stage host exactly one rival.
+- `clear_story_override()`: a gauntlet stage is the regional guardian, so Boss Rush drops the
+  authored story name/scale lock that `_apply_region()` deliberately preserves.
+
+`dev_studio.gd` — 2-tap BOSS RUSH:
+- `BOSS_RUSH_STAGES = 3`, `boss_rush_active` / `boss_rush_stage` / `boss_rush_clears`,
+  `boss_rush_value_text()` = `START 3-STAGE` or `ACTIVE X/3`, `start/abort/toggle_boss_rush()`, and
+  `_tick_boss_rush()` on the existing 10 Hz telemetry tick: the graded KO ends a stage, stage N is
+  region N, the third clear ends the run, a DEFEAT or a paused tree aborts it.
+- `_p5_menu_action(18)` closes the menu and toggles the rush in the same tap; index 19 is now
+  RESUME COMBAT. `_p5_value_text(18)` returns the value above.
+- `_handle_p5_blade_tap()` now returns bool so a test can prove the consume-first path ran;
+  `set_input_as_handled()` is still its first statement.
+- Tab 5 gains the `Multi-Enemy Sandbox` checkbox — the explicit multi-enemy exception — wired to
+  `set_multi_enemy_sandbox()`.
+
+`flame_p5_pvp.gd` — `MENU_ITEMS` is 20 rows (`19 // BOSS RUSH`, `20 // RESUME COMBAT` last), still
+with zero `PlayerController` text (Gate 2b greps 0).
+
+Test coverage is §30 (27 asserts): every `SYNTH_CUES` entry bakes >= 256 frames with peak > 0.01 and
+the parry cue bakes; `clash` is <= 0.16 s with every layer inside the 0.35-0.65 noise band and a
+2.76/3.41 partial; `unblockable_warn` sweeps <= 25% of its start frequency; the three impact cues
+start at <= 45/90/100 Hz and `gate_travel` at <= 132 Hz; the blade list has 20 rows with BOSS RUSH
+above RESUME COMBAT and the last row still fits the viewport; one tap is consumed, closes the menu,
+starts stage 1 in region 0 with one rival and reads `ACTIVE 1/3`; the graded KO rolls stage 1 into
+region 1 as exactly one `MONOLITH STALKER`; stage 2 reaches region 2; the third clear ends the rush;
+a second tap aborts and the row reads `START 3-STAGE`; regions 0 -> 1 -> 2 -> 0 keep one rival each,
+the second dummy stays parked, and the sandbox toggle is the only way to 2 and back to 1.
+
+Unverified: no audio was heard (headless runs `--audio-driver Dummy` and `_setup_synth_audio()` still
+skips device setup), so the new timbres, the mix against the old cues and phone-speaker readability
+are unjudged; the BOSS RUSH row and its value text were never drawn (headless `_draw()` never runs);
+and no real two-device playtest of the duplicate-rival fix happened — the invariant is asserted
+through `target_stats` / `parked_rivals` instead.
+
+=== AI HANDOFF PACKET ===
+REPO: Pinkypoopoo/sasti-sparkling-zero
+BRANCH: Pinkypoopoo-patch-1 (HEAD for this entry: V8 Task 1B on 07ae381)
+DONE: retuned the whole procedural synth bank to gritty steel/stone/sub-bass plus a new parry
+transient; single-active-rival invariant (park/restore) across boot, region travel and Boss Rush;
+3-stage BOSS RUSH with a 2-tap `19 // BOSS RUSH` blade row (`ACTIVE X/3` / `START 3-STAGE`) and a
+Tab 5 multi-enemy sandbox escape hatch; 20-row menu; 27 new asserts.
+OPEN: no listening pass on the retuned cues; no on-phone look at the 20-row menu; V8 Task 1A is not
+on this branch (V7 Task 3 shipped no Boss Rush).
+NEXT: listen on a phone and rebalance `sfx_volume`, then check the 20-row blade list on a narrow
+phone.
+=== END AI HANDOFF PACKET ===

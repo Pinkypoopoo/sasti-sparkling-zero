@@ -127,7 +127,7 @@ func _run() -> void:
 	check(int(studio.tab_container.get_tab_count()) == 8, "Dev Studio has 8 tabs (Combat Feel added)")
 	check(studio.combat_feel_vb != null and studio.combat_feel_vb.get_child_count() >= 12, "Combat Feel tab generated its rows")
 	var rows: int = int(studio._p5_row_count())
-	check(rows == 19, "in-game menu has 19 rows")
+	check(rows == 20, "in-game menu has 20 rows")
 	var vp: Vector2 = studio.get_viewport_rect().size
 	check(studio._p5_row_rect(rows - 1).end.y <= vp.y, "last menu row fits on screen")
 
@@ -1297,6 +1297,105 @@ func _run() -> void:
 	combat.reset_duel()
 	studio.travel_to_region(0)
 	player._refresh_shortcut_visuals()
+
+	# --- 30. V8 Task 1B: Seinen SFX retune, one rival, 2-tap BOSS RUSH --------
+	var t15_fx = player.dash_vfx
+	var t15_cues: Dictionary = t15_fx.get("SYNTH_CUES")
+	var t15_short: Array[String] = []
+	var t15_silent: Array[String] = []
+	for t15_name in t15_cues.keys():
+		var t15_key: String = str(t15_name)
+		if t15_fx.synth_frame_count(t15_key) < 256:
+			t15_short.append(t15_key)
+		if t15_fx.synth_peak(t15_key) <= 0.01:
+			t15_silent.append(t15_key)
+	check(t15_short.is_empty(), "every retuned cue bakes >= 256 frames")
+	check(t15_silent.is_empty(), "every retuned cue bakes a non-silent buffer (peak > 0.01)")
+	check(t15_fx.has_synth_cue("parry") and t15_fx.synth_peak("parry") > 0.01, "the new parry transient bakes like the rest of the bank")
+
+	var t15_clash: Array = t15_cues["clash"]
+	var t15_noise_ok: bool = true
+	var t15_metal_ok: bool = false
+	for t15_layer in t15_clash[1]:
+		var t15_mix: float = float(t15_layer[3])
+		if t15_mix < 0.35 or t15_mix > 0.65:
+			t15_noise_ok = false
+		if is_equal_approx(float(t15_layer[4]), 2.76) or is_equal_approx(float(t15_layer[4]), 3.41):
+			t15_metal_ok = true
+	check(float(t15_clash[0]) <= 0.16 and t15_noise_ok, "the clash is a <= 0.16 s steel burst in the 0.35-0.65 noise band")
+	check(t15_metal_ok, "the clash stacks tight metallic inharmonic partials (2.76 / 3.41)")
+
+	var t15_warn: Array = t15_cues["unblockable_warn"]
+	var t15_sweep: float = 0.0
+	for t15_layer in t15_warn[1]:
+		t15_sweep = maxf(t15_sweep, absf(float(t15_layer[1]) - float(t15_layer[0])) / maxf(1.0, float(t15_layer[0])))
+	check(t15_sweep <= 0.25, "the unblockable sting is a tense low-mid ring, not a laser sweep")
+
+	var t15_subs: Array[float] = []
+	for t15_key in ["boss_awaken", "stagger_finisher", "gate_sealed"]:
+		var t15_fund: float = 9999.0
+		for t15_layer in (t15_cues[t15_key] as Array)[1]:
+			t15_fund = minf(t15_fund, float(t15_layer[0]))
+		t15_subs.append(t15_fund)
+	check(t15_subs[0] <= 45.0 and t15_subs[1] <= 90.0 and t15_subs[2] <= 100.0, "the impact cues sit on 42-100 Hz sub-bass fundamentals")
+	var t15_travel: float = float(((t15_cues["gate_travel"] as Array)[1] as Array)[0][0])
+	check(t15_travel <= 132.0, "the gate chime starts deep (<= 132 Hz) instead of a bright ping")
+
+	# The 20th blade is BOSS RUSH, directly above the final RESUME COMBAT row.
+	check(int(studio._p5_row_count()) == 20, "the P5 blade list exposes 20 rows")
+	var t15_items: Array = studio.fp_mod.get("MENU_ITEMS")
+	check(t15_items.size() == 20 and str(t15_items[18]).contains("BOSS RUSH") and str(t15_items[19]).contains("RESUME COMBAT"), "BOSS RUSH sits directly above the final RESUME COMBAT row")
+	var t15_vp: Vector2 = studio.get_viewport_rect().size
+	check(studio._p5_row_rect(19).end.y <= t15_vp.y, "all 20 rows still fit the viewport")
+
+	var t15_fp = studio.fp_mod
+	check(studio.boss_rush_value_text() == "START 3-STAGE", "the BOSS RUSH row reads START 3-STAGE before the run")
+	t15_fp.set("p5_pause_active", true)
+	var t15_handled: bool = studio._handle_p5_blade_tap(studio._p5_row_rect(18).get_center())
+	check(t15_handled, "the BOSS RUSH tap is consumed by the blade list before the Button layer")
+	check(not bool(t15_fp.get("p5_pause_active")) and bool(studio.boss_rush_active), "one tap closes the menu and starts the rush")
+	check(int(studio.region_idx) == 0 and int(studio.boss_rush_stage) == 0 and int(combat.target_stats.size()) == 1, "... at stage 1 in region 0 with a single active rival")
+	check(studio._p5_value_text(18) == "ACTIVE 1/3", "the row reports ACTIVE 1/3 while the rush is live")
+
+	# The normal KO path ends a stage; the rush re-tunes the SAME guardian.
+	combat.apply_damage(combat.primary_rival(), 99999.0, 0.0, Vector3.ZERO)
+	Engine.time_scale = 1.0
+	check(str(combat.result_state) == "VICTORY", "stage 1 falls through the graded KO path")
+	studio._tick_boss_rush()
+	check(int(studio.boss_rush_stage) == 1 and int(studio.region_idx) == 1 and str(combat.result_state) == "", "a cleared stage rolls into region 1 with the victory card cleared")
+	var t15_r1: Dictionary = combat.target_stats[combat.primary_rival()]
+	check(str(t15_r1.get("boss_name", "")) == "MONOLITH STALKER" and int(combat.target_stats.size()) == 1, "... and region 1 hosts exactly one MONOLITH STALKER")
+	combat.apply_damage(combat.primary_rival(), 99999.0, 0.0, Vector3.ZERO)
+	Engine.time_scale = 1.0
+	studio._tick_boss_rush()
+	check(int(studio.boss_rush_stage) == 2 and int(studio.region_idx) == 2, "the second clear rolls into the region 2 finale")
+	combat.apply_damage(combat.primary_rival(), 99999.0, 0.0, Vector3.ZERO)
+	Engine.time_scale = 1.0
+	studio._tick_boss_rush()
+	check(not bool(studio.boss_rush_active) and int(studio.boss_rush_clears) == 3, "the third clear ends the rush instead of looping")
+
+	# A second tap on the same row aborts instead of stacking a second gauntlet.
+	studio.start_boss_rush()
+	t15_fp.set("p5_pause_active", true)
+	var t15_abort: bool = studio._handle_p5_blade_tap(studio._p5_row_rect(18).get_center())
+	check(t15_abort and not bool(studio.boss_rush_active) and int(studio.boss_rush_stage) == 0, "a second tap on the same row aborts the rush")
+	check(studio.boss_rush_value_text() == "START 3-STAGE", "... and the row returns to START 3-STAGE")
+
+	# Regions 0 -> 1 -> 2 -> 0 with the invariant applied on every tram.
+	var t15_counts: Array[int] = []
+	for t15_region in [0, 1, 2, 0]:
+		studio.travel_to_region(int(t15_region))
+		t15_counts.append(int(combat.target_stats.size()))
+	check(t15_counts == [1, 1, 1, 1], "regions 0 -> 1 -> 2 -> 0 keep exactly one active rival each")
+	check(int(combat.parked_rivals.size()) == 1, "the second authored dummy stays parked through every tram")
+	check(int(combat.set_multi_enemy_sandbox(true)) == 2, "the explicit multi-enemy toggle is the only way back to two live dummies")
+	check(int(combat.set_multi_enemy_sandbox(false)) == 1, "... and switching it off re-parks the extra dummy")
+
+	# Leave no V8 Task 1B state behind.
+	t15_fp.set("p5_pause_active", false)
+	studio.abort_boss_rush()
+	studio.travel_to_region(0)
+	combat.reset_duel()
 
 	# Leave no test tuning behind for the next run.
 	player.data_store.reset_tuning()

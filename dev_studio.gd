@@ -27,6 +27,15 @@ var story_choices_box: VBoxContainer = null
 
 const REGION_NAMES: Array[String] = ["INK_CATHEDRAL", "BLAME_MEGASTRUC", "GOTHIC_ECLIPSE"]
 
+# --- V8 Task 1B: 3-stage BOSS RUSH, one row in the P5 blade list -------------
+# Stage N is region N, so the rush never spawns a second rival: the KO that
+# already grades the duel ends a stage and _apply_region() re-tunes the SAME
+# guardian for the next one.
+const BOSS_RUSH_STAGES: int = 3
+var boss_rush_active: bool = false
+var boss_rush_stage: int = 0
+var boss_rush_clears: int = 0
+
 # --- Mobile touch layout -----------------------------------------------------
 # The 8 sections keep their engine tab names (verify.sh + combat_test assert them)
 # but the tiny native tab bar is hidden and replaced by this 2 x 4 pill grid.
@@ -477,6 +486,69 @@ func _cycle_region() -> void:
 # can never land on a half-applied arena.
 func travel_to_region(idx: int) -> void:
 	_apply_region(clampi(idx, 0, REGION_NAMES.size() - 1))
+
+# The P5 row's right-hand value: 1 tap from the menu tells the player whether a
+# tap now starts the gauntlet or ends it.
+func boss_rush_value_text() -> String:
+	if not boss_rush_active:
+		return "START 3-STAGE"
+	return "ACTIVE %d/%d" % [boss_rush_stage + 1, BOSS_RUSH_STAGES]
+
+func start_boss_rush() -> void:
+	boss_rush_active = true
+	boss_rush_stage = 0
+	boss_rush_clears = 0
+	# Stage 1 is the region's own guardian, even if the player just walked out of
+	# an authored story duel that owned the rival's name.
+	if combat:
+		combat.clear_story_override()
+	_apply_region(0)
+	if combat:
+		# A gauntlet starts whole: _apply_region() deliberately never heals a duel
+		# in progress (a shortcut must not be a free heal), so stage 1 resets here.
+		combat.reset_duel()
+
+func abort_boss_rush() -> void:
+	boss_rush_active = false
+	boss_rush_stage = 0
+	boss_rush_clears = 0
+
+func toggle_boss_rush() -> bool:
+	if boss_rush_active:
+		abort_boss_rush()
+		_show_toast("BOSS RUSH ABORTED")
+		return false
+	start_boss_rush()
+	_show_toast("BOSS RUSH — STAGE 1/%d" % BOSS_RUSH_STAGES)
+	return true
+
+# Runs on the same 10 Hz telemetry throttle as the HUD. A cleared stage rolls
+# into the next region; the third clear ends the run. A paused tree (P5 menu or
+# the pause button) never advances the gauntlet behind the player's back.
+func _tick_boss_rush() -> void:
+	if not boss_rush_active or not combat:
+		return
+	var tree := get_tree()
+	if tree and tree.paused:
+		return
+	if combat.result_state == "DEFEAT":
+		var failed_stage: int = boss_rush_stage + 1
+		abort_boss_rush()
+		_show_toast("BOSS RUSH FAILED — STAGE %d/%d" % [failed_stage, BOSS_RUSH_STAGES])
+		return
+	if combat.result_state != "VICTORY":
+		return
+	boss_rush_clears += 1
+	if boss_rush_stage >= BOSS_RUSH_STAGES - 1:
+		boss_rush_active = false
+		_show_toast("BOSS RUSH CLEARED — %d/%d" % [BOSS_RUSH_STAGES, BOSS_RUSH_STAGES])
+		return
+	boss_rush_stage += 1
+	_apply_region(boss_rush_stage)
+	# reset_duel() restores the next guardian to full HP and clears the victory
+	# card the KO raised; the invariant keeps it the only registered rival.
+	combat.reset_duel()
+	_show_toast("BOSS RUSH — STAGE %d/%d" % [boss_rush_stage + 1, BOSS_RUSH_STAGES])
 
 func _apply_region(idx: int) -> void:
 	region_idx = idx
@@ -1023,6 +1095,15 @@ func _build_tab_visuals() -> void:
 	)
 	vb.add_child(rst)
 
+	# V8 Task 1B: the ONLY way back to a second live dummy. Boot, region travel and
+	# Boss Rush all keep one regional boss, so a phone never meets two rivals.
+	var multi_chk := CheckBox.new()
+	multi_chk.text = "Multi-Enemy Sandbox (wake the parked second dummy)"
+	multi_chk.toggled.connect(func(on: bool):
+		if combat: combat.set_multi_enemy_sandbox(on)
+	)
+	vb.add_child(multi_chk)
+
 func _build_tab_world_and_char() -> void:
 	var vb := _make_scroll_tab("6. World & Char Maker")
 
@@ -1164,6 +1245,7 @@ func _process(delta: float) -> void:
 		queue_redraw()
 
 func _refresh_telemetry() -> void:
+	_tick_boss_rush()
 	var fps := Engine.get_frames_per_second()
 	# Panel header readout: refreshed on the same 10 Hz throttle as the HUD text.
 	var tier_txt := "-"
@@ -1712,23 +1794,24 @@ func _p5_row_rect(idx: int) -> Rect2:
 	var h: float = _p5_row_h()
 	return Rect2(Vector2(bx - 6.0, P5_ROW_TOP + float(idx) * h), Vector2(w, h - 3.0))
 
-func _handle_p5_blade_tap(pos: Vector2) -> void:
-	if not fp_mod: return
-	if not bool(fp_mod.get("p5_pause_active")): return
-	# Consume the touch before anything else. Without this the same physical tap
-	# was also delivered to the Button layer underneath (btn_menu), which closed
-	# the menu again, so every row looked like it needed a second tap.
+# Returns true when the tap was consumed by the blade list. The consume happens
+# first (set_input_as_handled) so the same physical tap never reaches btn_menu;
+# the bool is only there so a test can prove that path ran.
+func _handle_p5_blade_tap(pos: Vector2) -> bool:
+	if not fp_mod: return false
+	if not bool(fp_mod.get("p5_pause_active")): return false
 	get_viewport().set_input_as_handled()
-	if pos.y < 54.0: return
+	if pos.y < 54.0: return true
 	for i in range(_p5_row_count()):
 		if _p5_row_rect(i).has_point(pos):
 			fp_mod.set("p5_selected_idx", i)
 			_p5_menu_action(i)
-			return
+			return true
 	# Only the character-preview side rolls a new pose. Tapping the empty gutter on
 	# the right no longer silently changes the camera.
 	if pos.x < get_viewport_rect().size.x * 0.5:
 		fp_mod.call("roll_next_pose")
+	return true
 
 func _p5_menu_action(idx: int) -> void:
 	match idx:
@@ -1786,6 +1869,11 @@ func _p5_menu_action(idx: int) -> void:
 			fp_mod.call("toggle_p5_pause")
 			if combat: combat.reset_duel()
 		18:
+			# V8 Task 1B: BOSS RUSH. Closing the menu and starting/aborting the
+			# gauntlet is the same tap, so the row can never leave a paused menu.
+			fp_mod.call("toggle_p5_pause")
+			toggle_boss_rush()
+		19:
 			fp_mod.call("toggle_p5_pause")
 
 func _p5_value_text(idx: int) -> String:
@@ -1804,6 +1892,7 @@ func _p5_value_text(idx: int) -> String:
 		15: return "%.2f" % (player.data_store.tuning_get("render_scale", 0.92) if player and player.data_store else 1.0)
 		16: return "ON" if player and player.data_store and player.data_store.tuning_bool("immortal_mode", false) else "OFF"
 		17: return "VICTORY" if combat and combat.result_state == "VICTORY" else ("DEFEAT" if combat and combat.result_state == "DEFEAT" else "")
+		18: return boss_rush_value_text()
 	return ""
 
 func _draw_p5_menu() -> void:
