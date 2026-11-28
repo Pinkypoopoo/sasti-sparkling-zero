@@ -72,7 +72,8 @@ func _validate(doc: Dictionary) -> void:
 		var nlab := "node '%s'" % str(nkey)
 		for k in ["title", "region", "rival_name", "rival_slots", "rival_hp", "desc", "choices"]:
 			need(n, k, nlab)
-		if not n.has("choices"): continue
+		if n["choices"] == null:
+			continue
 		var choices: Array = n["choices"]
 		if choices.is_empty():
 			failures.append("%s has no choices (the story would dead-end)" % nlab)
@@ -92,8 +93,59 @@ func _validate(doc: Dictionary) -> void:
 			for s in ["Slot_HeadMask_", "Slot_VeilCloak_", "Slot_UpperGarb_", "Slot_LowerSkirt_", "Slot_Weapon_"]:
 				if not slots.has(s):
 					failures.append("%s rival_slots is missing %s" % [nlab, s])
-				elif not (str(slots[s]) in ["HERO", "VEIL", "NONE", "ANIME_FACE"]):
-					failures.append("%s rival_slots.%s = '%s' is not HERO/VEIL/NONE/ANIME_FACE" % [nlab, s, str(slots[s])])
+				elif not(["HERO", "VEIL", "NONE"].has(str(slots[s]))):
+					failures.append("%s rival_slots.%s = '%s' is not HERO/VEIL/NONE" % [nlab, s, str(slots[s])])
+
+		# V8 Lore Pack: every region must be represented and every node must be
+		# reachable from at least one origin start_node through the choice graph.
+		var regions: Dictionary = {}
+		var reachable: Dictionary = {}
+		for okey in origins.keys():
+			var start := str(origins[okey].get("start_node", ""))
+			if not start.is_empty() and nodes.has(start):
+				_regions_add(regions, nodes[start].get("region", "UNKNOWN"))
+				_reachable_dfs(start, nodes, reachable)
+		for nk2 in nodes.keys():
+			var nn: Dictionary = nodes[nk2]
+			if nn != null:
+				_regions_add(regions, nn.get("region", "UNKNOWN"))
+			if not reachable.has(nk2):
+				failures.append("node '%s' is not reachable from any origin start_node" % str(nk2))
+		var wanted_regions: Array[String] = ["INK_CATHEDRAL", "BLAME_MEGASTRUC", "GOTHIC_ECLIPSE"]
+		var missing_regions: Array[String] = []
+		for rkey in wanted_regions:
+			if not regions.has(rkey):
+				missing_regions.append(rkey)
+		if not missing_regions.is_empty():
+			var mr: String = ""
+			for i in range(missing_regions.size()):
+				if i > 0:
+					mr += ", "
+				mr += missing_regions[i]
+			if not mr.is_empty():
+				failures.append("story nodes are missing region(s): " + mr)
+
+func _regions_add(regions: Dictionary, region: String) -> void:
+	if region == "":
+		return
+	regions[region] = true
+
+func _reachable_dfs(start: String, nodes: Dictionary, reachable: Dictionary) -> void:
+	if reachable.has(start):
+		return
+	reachable[start] = true
+	var node: Dictionary = nodes.get(start, {})
+	if typeof(node) != TYPE_DICTIONARY:
+		return
+	var choices: Array = node.get("choices", [])
+	if typeof(choices) != TYPE_ARRAY:
+		return
+	for ch in choices:
+		if typeof(ch) != TYPE_DICTIONARY:
+			continue
+		var nxt: String = str(ch.get("next", ""))
+		if not nxt.is_empty() and nodes.has(nxt):
+			_reachable_dfs(nxt, nodes, reachable)
 
 
 # Merged-write round trip. The profile is shared by CombatData ("tuning") and
